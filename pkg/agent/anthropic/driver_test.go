@@ -157,8 +157,8 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if snapshot[0].Request.ToolChoice == nil || snapshot[0].Request.ToolChoice.Type != "auto" {
 		t.Fatalf("request tool_choice = %#v, want auto", snapshot[0].Request.ToolChoice)
 	}
-	if !snapshot[0].Request.DisableParallelToolUse {
-		t.Fatal("request disable_parallel_tool_use = false, want true")
+	if !snapshot[0].Request.ToolChoice.DisableParallelToolUse {
+		t.Fatal("request tool_choice.disable_parallel_tool_use = false, want true")
 	}
 	if len(snapshot[0].Request.Tools) != 2 {
 		t.Fatalf("len(request tools) = %d, want 2", len(snapshot[0].Request.Tools))
@@ -326,17 +326,26 @@ func TestRequestMarshalingIncludesDisableParallelToolUse(t *testing.T) {
 	t.Parallel()
 
 	body, err := json.Marshal(messagesRequest{
-		Model:                  "claude-sonnet-4-6",
-		MaxTokens:              DefaultMaxTokens,
-		Messages:               []anthropicMessage{{Role: agent.MessageRoleUser, Content: "hi"}},
-		ToolChoice:             &anthropicToolChoice{Type: "auto"},
-		DisableParallelToolUse: true,
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: DefaultMaxTokens,
+		Messages:  []anthropicMessage{{Role: agent.MessageRoleUser, Content: "hi"}},
+		ToolChoice: &anthropicToolChoice{
+			Type:                   "auto",
+			DisableParallelToolUse: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("json.Marshal(messagesRequest): %v", err)
 	}
-	if !strings.Contains(string(body), `"disable_parallel_tool_use":true`) {
-		t.Fatalf("request JSON = %s, want explicit disable_parallel_tool_use true", string(body))
+	if !strings.Contains(string(body), `"tool_choice":{"type":"auto","disable_parallel_tool_use":true}`) {
+		t.Fatalf("request JSON = %s, want tool_choice.disable_parallel_tool_use true", string(body))
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("json.Unmarshal(request JSON): %v", err)
+	}
+	if _, ok := decoded["disable_parallel_tool_use"]; ok {
+		t.Fatalf("request JSON = %s, want disable_parallel_tool_use nested under tool_choice only", string(body))
 	}
 }
 

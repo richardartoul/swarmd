@@ -53,13 +53,12 @@ type Driver struct {
 }
 
 type messagesRequest struct {
-	Model                  string               `json:"model"`
-	MaxTokens              int                  `json:"max_tokens"`
-	System                 string               `json:"system,omitempty"`
-	Messages               []anthropicMessage   `json:"messages"`
-	Tools                  []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice             *anthropicToolChoice `json:"tool_choice,omitempty"`
-	DisableParallelToolUse bool                 `json:"disable_parallel_tool_use,omitempty"`
+	Model      string               `json:"model"`
+	MaxTokens  int                  `json:"max_tokens"`
+	System     string               `json:"system,omitempty"`
+	Messages   []anthropicMessage   `json:"messages"`
+	Tools      []anthropicTool      `json:"tools,omitempty"`
+	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -74,8 +73,9 @@ type anthropicTool struct {
 }
 
 type anthropicToolChoice struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type                    string `json:"type"`
+	Name                    string `json:"name,omitempty"`
+	DisableParallelToolUse  bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
 type messagesResponse struct {
@@ -176,8 +176,10 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 	}
 	if len(req.Tools) > 0 {
 		payload.Tools = buildAnthropicTools(req.Tools)
-		payload.ToolChoice = &anthropicToolChoice{Type: "auto"}
-		payload.DisableParallelToolUse = true
+		payload.ToolChoice = &anthropicToolChoice{
+			Type:                   "auto",
+			DisableParallelToolUse: true,
+		}
 	}
 	return payload, nil
 }
