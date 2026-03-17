@@ -216,6 +216,9 @@ func DefaultExecHandler(killTimeout time.Duration) ExecHandlerFunc {
 }
 
 func resolveStatPath(fsys fs.StatFS, dir, path string) (string, error) {
+	if IsDevNullPath(path) {
+		return path, nil
+	}
 	if resolver, ok := fsys.(ResolvePathFileSystem); ok {
 		return resolver.ResolvePath(dir, path)
 	}

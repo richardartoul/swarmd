@@ -150,26 +150,32 @@ type RunRecord struct {
 }
 
 type StepRecord struct {
-	NamespaceID       string
-	RunID             string
-	MessageID         string
-	AgentID           string
-	StepIndex         int
-	Thought           string
-	Shell             string
-	UsageCachedTokens int
-	CWDBefore         string
-	CWDAfter          string
-	Stdout            string
-	Stderr            string
-	StdoutTruncated   bool
-	StderrTruncated   bool
-	StartedAt         time.Time
-	FinishedAt        time.Time
-	Duration          time.Duration
-	Status            string
-	ExitStatus        int
-	Error             string
+	NamespaceID           string
+	RunID                 string
+	MessageID             string
+	AgentID               string
+	StepIndex             int
+	StepType              string
+	Thought               string
+	Shell                 string
+	ActionName            string
+	ActionToolKind        string
+	ActionInput           string
+	ActionOutput          string
+	ActionOutputTruncated bool
+	UsageCachedTokens     int
+	CWDBefore             string
+	CWDAfter              string
+	Stdout                string
+	Stderr                string
+	StdoutTruncated       bool
+	StderrTruncated       bool
+	StartedAt             time.Time
+	FinishedAt            time.Time
+	Duration              time.Duration
+	Status                string
+	ExitStatus            int
+	Error                 string
 }
 
 type MailboxThreadMessage struct {

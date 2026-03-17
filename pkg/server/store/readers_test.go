@@ -44,21 +44,25 @@ func TestStoreListReaders(t *testing.T) {
 	startedAt := time.Now().UTC()
 	finishedAt := startedAt.Add(15 * time.Millisecond)
 	if err := s.RecordStep(ctx, StepRecord{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		AgentID:           agentRecord.ID,
-		StepIndex:         1,
-		Thought:           "say hi",
-		Shell:             "printf 'hi'",
-		UsageCachedTokens: 3,
-		CWDBefore:         agentRecord.RootPath,
-		CWDAfter:          agentRecord.RootPath,
-		Stdout:            "hi",
-		StartedAt:         startedAt,
-		FinishedAt:        finishedAt,
-		Duration:          finishedAt.Sub(startedAt),
-		Status:            "ok",
+		NamespaceID:           namespace.ID,
+		RunID:                 claimed.Run.ID,
+		MessageID:             claimed.Message.ID,
+		AgentID:               agentRecord.ID,
+		StepIndex:             1,
+		StepType:              "tool",
+		Thought:               "read config",
+		ActionName:            "read_file",
+		ActionToolKind:        "function",
+		ActionInput:           `{"file_path":"config.yaml"}`,
+		ActionOutput:          "1|name: demo\n2|enabled: true\n",
+		ActionOutputTruncated: true,
+		UsageCachedTokens:     3,
+		CWDBefore:             agentRecord.RootPath,
+		CWDAfter:              agentRecord.RootPath,
+		StartedAt:             startedAt,
+		FinishedAt:            finishedAt,
+		Duration:              finishedAt.Sub(startedAt),
+		Status:                "ok",
 	}); err != nil {
 		t.Fatalf("RecordStep() error = %v", err)
 	}
@@ -131,6 +135,24 @@ func TestStoreListReaders(t *testing.T) {
 	}
 	if len(steps) != 1 || steps[0].StepIndex != 1 {
 		t.Fatalf("ListStepsByRun() = %#v, want one step", steps)
+	}
+	if steps[0].StepType != "tool" {
+		t.Fatalf("ListStepsByRun()[0].StepType = %q, want %q", steps[0].StepType, "tool")
+	}
+	if steps[0].ActionName != "read_file" {
+		t.Fatalf("ListStepsByRun()[0].ActionName = %q, want %q", steps[0].ActionName, "read_file")
+	}
+	if steps[0].ActionToolKind != "function" {
+		t.Fatalf("ListStepsByRun()[0].ActionToolKind = %q, want %q", steps[0].ActionToolKind, "function")
+	}
+	if steps[0].ActionInput != `{"file_path":"config.yaml"}` {
+		t.Fatalf("ListStepsByRun()[0].ActionInput = %q, want config input", steps[0].ActionInput)
+	}
+	if !strings.Contains(steps[0].ActionOutput, "enabled: true") {
+		t.Fatalf("ListStepsByRun()[0].ActionOutput = %q, want tool output", steps[0].ActionOutput)
+	}
+	if !steps[0].ActionOutputTruncated {
+		t.Fatal("ListStepsByRun()[0].ActionOutputTruncated = false, want true")
 	}
 }
 

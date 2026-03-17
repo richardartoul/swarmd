@@ -290,6 +290,9 @@ func (s *FS) absFrom(dir, path string) (string, error) {
 // ResolvePath resolves a sandbox-visible path against dir using any filesystem-specific
 // path restrictions the configured filesystem exposes.
 func ResolvePath(fsys interp.RunnerFileSystem, dir, path string) (string, error) {
+	if interp.IsDevNullPath(path) {
+		return path, nil
+	}
 	if resolver, ok := fsys.(pathResolver); ok {
 		return resolver.ResolvePath(dir, path)
 	}

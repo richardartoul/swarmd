@@ -165,6 +165,7 @@ func renderStepDetail(step cpstore.StepRecord) string {
 	writeKeyValue(&out, "message", step.MessageID)
 	writeKeyValue(&out, "agent", step.AgentID)
 	writeKeyValue(&out, "step_index", fmt.Sprintf("%d", step.StepIndex))
+	writeKeyValue(&out, "type", stepTypeLabel(step))
 	writeKeyValue(&out, "status", step.Status)
 	writeKeyValue(&out, "duration", formatDuration(step.Duration))
 	writeKeyValue(&out, "exit_status", fmt.Sprintf("%d", step.ExitStatus))
@@ -173,6 +174,13 @@ func renderStepDetail(step cpstore.StepRecord) string {
 	writeKeyValue(&out, "cwd_before", step.CWDBefore)
 	writeKeyValue(&out, "cwd_after", step.CWDAfter)
 	writeBlock(&out, "thought", step.Thought)
+	if hasStructuredStepAction(step) {
+		writeKeyValue(&out, "action_name", step.ActionName)
+		writeKeyValue(&out, "action_tool_kind", step.ActionToolKind)
+		writeBlock(&out, "action_input", step.ActionInput)
+		writeBlock(&out, "action_output", step.ActionOutput)
+		writeKeyValue(&out, "action_output_truncated", fmt.Sprintf("%t", step.ActionOutputTruncated))
+	}
 	writeBlock(&out, "shell", step.Shell)
 	writeBlock(&out, "stdout", step.Stdout)
 	writeBlock(&out, "stderr", step.Stderr)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -169,6 +170,73 @@ func TestRenderScheduleDetailIncludesDecodedPayload(t *testing.T) {
 	}
 	if !strings.Contains(output, "Schedule") {
 		t.Fatalf("renderScheduleDetail() output = %q, want Schedule header", output)
+	}
+}
+
+func TestRenderStepDetailIncludesToolActionFields(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, time.March, 17, 12, 0, 0, 0, time.UTC)
+	step := cpstore.StepRecord{
+		NamespaceID:           "namespace-demo",
+		RunID:                 "run-demo",
+		MessageID:             "message-demo",
+		AgentID:               "agent-demo",
+		StepIndex:             2,
+		StepType:              "tool",
+		Thought:               "inspect the config file",
+		ActionName:            "read_file",
+		ActionToolKind:        "function",
+		ActionInput:           `{"file_path":"config.yaml"}`,
+		ActionOutput:          "1|name: demo\n2|enabled: true\n",
+		ActionOutputTruncated: true,
+		StartedAt:             startedAt,
+		FinishedAt:            startedAt.Add(10 * time.Millisecond),
+		Duration:              10 * time.Millisecond,
+		Status:                "ok",
+	}
+
+	output := renderStepDetail(step)
+	for _, want := range []string{
+		"type: tool",
+		"action_name: read_file",
+		"action_tool_kind: function",
+		"action_input:",
+		`{"file_path":"config.yaml"}`,
+		"action_output:",
+		"1|name: demo",
+		"action_output_truncated: true",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("renderStepDetail() output = %q, want %q", output, want)
+		}
+	}
+}
+
+func TestRenderStepListFallsBackToToolActionWhenShellEmpty(t *testing.T) {
+	t.Parallel()
+
+	var out bytes.Buffer
+	renderStepList(&out, []cpstore.StepRecord{{
+		StepIndex:   1,
+		StepType:    "tool",
+		Status:      "ok",
+		Duration:    25 * time.Millisecond,
+		ActionName:  "read_file",
+		ActionInput: `{"file_path":"config.yaml"}`,
+	}})
+
+	output := out.String()
+	for _, want := range []string{
+		"TYPE",
+		"ACTION",
+		"tool",
+		"read_file",
+		"config.yaml",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("renderStepList() output = %q, want %q", output, want)
+		}
 	}
 }
 

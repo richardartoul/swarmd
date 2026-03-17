@@ -202,16 +202,23 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 	if _, err := s.db.ExecContext(
 		ctx,
 		`INSERT INTO steps (
-			namespace_id, run_id, step_index, message_id, agent_id, thought, shell, usage_cached_tokens, cwd_before, cwd_after,
-			stdout, stderr, stdout_truncated, stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			namespace_id, run_id, step_index, step_type, message_id, agent_id, thought, shell, action_name, action_tool_kind, action_input,
+			action_output, action_output_truncated, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
+			stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		step.NamespaceID,
 		step.RunID,
 		step.StepIndex,
+		step.StepType,
 		step.MessageID,
 		step.AgentID,
 		step.Thought,
 		step.Shell,
+		step.ActionName,
+		step.ActionToolKind,
+		step.ActionInput,
+		step.ActionOutput,
+		boolInt(step.ActionOutputTruncated),
 		step.UsageCachedTokens,
 		step.CWDBefore,
 		step.CWDAfter,

@@ -193,6 +193,26 @@ func TestMemFSDefaultExecFailsFastWithoutHostPath(t *testing.T) {
 	}
 }
 
+func TestMemFSSupportsDevNullRedirections(t *testing.T) {
+	t.Parallel()
+
+	fsys, err := memfs.New("/workspace")
+	if err != nil {
+		t.Fatalf("memfs.New() error = %v", err)
+	}
+
+	stdout, stderr, err := runInterpScript(t, fsys, "/workspace", "echo hi >/dev/null; read line </dev/null || :; echo ok")
+	if err != nil {
+		t.Fatalf("Run() error = %v, stderr=%q", err, stderr)
+	}
+	if stdout != "ok\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "ok\n")
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+}
+
 func TestMemFSProcessSubstitutionWithInProcessCommands(t *testing.T) {
 	t.Parallel()
 

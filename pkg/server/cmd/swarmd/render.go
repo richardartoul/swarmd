@@ -326,6 +326,7 @@ func renderRunShow(w io.Writer, data runShowData) {
 	fmt.Fprintln(w, "steps:")
 	for _, step := range data.Steps {
 		fmt.Fprintf(w, "step %d\n", step.StepIndex)
+		writeIndentedKeyValue(w, "type", stepTypeLabel(step))
 		writeIndentedKeyValue(w, "status", step.Status)
 		writeIndentedKeyValue(w, "duration", formatDuration(step.Duration))
 		writeIndentedKeyValue(w, "exit_status", fmt.Sprintf("%d", step.ExitStatus))
@@ -334,6 +335,13 @@ func renderRunShow(w io.Writer, data runShowData) {
 		writeIndentedKeyValue(w, "cwd_before", displayEmpty(step.CWDBefore))
 		writeIndentedKeyValue(w, "cwd_after", displayEmpty(step.CWDAfter))
 		writeIndentedBlock(w, "thought", step.Thought)
+		if hasStructuredStepAction(step) {
+			writeIndentedKeyValue(w, "action_name", step.ActionName)
+			writeIndentedKeyValue(w, "action_tool_kind", step.ActionToolKind)
+			writeIndentedBlock(w, "action_input", step.ActionInput)
+			writeIndentedBlock(w, "action_output", step.ActionOutput)
+			writeIndentedKeyValue(w, "action_output_truncated", fmt.Sprintf("%t", step.ActionOutputTruncated))
+		}
 		writeIndentedBlock(w, "shell", step.Shell)
 		writeIndentedBlock(w, "stdout", step.Stdout)
 		writeIndentedBlock(w, "stderr", step.Stderr)
@@ -349,16 +357,17 @@ func renderStepList(w io.Writer, steps []cpstore.StepRecord) {
 		return
 	}
 	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "STEP\tSTATUS\tDURATION\tEXIT\tSHELL")
+	fmt.Fprintln(tw, "STEP\tTYPE\tSTATUS\tDURATION\tEXIT\tACTION")
 	for _, step := range steps {
 		fmt.Fprintf(
 			tw,
-			"%d\t%s\t%s\t%d\t%s\n",
+			"%d\t%s\t%s\t%s\t%d\t%s\n",
 			step.StepIndex,
+			stepTypeLabel(step),
 			step.Status,
 			formatDuration(step.Duration),
 			step.ExitStatus,
-			summarizeText(step.Shell, 72),
+			summarizeStepAction(step, 72),
 		)
 	}
 	_ = tw.Flush()
@@ -462,6 +471,44 @@ func summarizeText(value string, max int) string {
 		return value[:max-3] + "..."
 	}
 	return value
+}
+
+func summarizeStepAction(step cpstore.StepRecord, max int) string {
+	if strings.TrimSpace(step.Shell) != "" {
+		return summarizeText(step.Shell, max)
+	}
+	parts := make([]string, 0, 2)
+	if name := strings.TrimSpace(step.ActionName); name != "" {
+		parts = append(parts, name)
+	}
+	if input := strings.Join(strings.Fields(strings.TrimSpace(step.ActionInput)), " "); input != "" {
+		parts = append(parts, input)
+	}
+	return summarizeText(strings.Join(parts, " "), max)
+}
+
+func stepTypeLabel(step cpstore.StepRecord) string {
+	if value := strings.TrimSpace(step.StepType); value != "" {
+		return value
+	}
+	switch {
+	case hasStructuredStepAction(step):
+		return "tool"
+	case strings.TrimSpace(step.Shell) != "":
+		return "shell"
+	default:
+		return "-"
+	}
+}
+
+func hasStructuredStepAction(step cpstore.StepRecord) bool {
+	if strings.TrimSpace(step.ActionInput) != "" ||
+		strings.TrimSpace(step.ActionOutput) != "" ||
+		strings.TrimSpace(step.ActionToolKind) != "" ||
+		step.ActionOutputTruncated {
+		return true
+	}
+	return strings.TrimSpace(step.Shell) == "" && strings.TrimSpace(step.ActionName) != ""
 }
 
 func displayEmpty(value string) string {

@@ -282,17 +282,18 @@ func loadStepItems(ctx context.Context, store *cpstore.Store, query tuiPageQuery
 	items := make([]list.Item, 0, len(steps))
 	for _, step := range steps {
 		desc := fmt.Sprintf(
-			"%s | duration=%s | exit=%d | %s",
+			"%s | %s | duration=%s | exit=%d | %s",
+			stepTypeLabel(step),
 			step.Status,
 			formatDuration(step.Duration),
 			step.ExitStatus,
-			summarizeText(step.Shell, 48),
+			summarizeStepAction(step, 48),
 		)
 		items = append(items, tuiItem{
 			kind:        tuiItemStep,
 			title:       fmt.Sprintf("step %d", step.StepIndex),
 			desc:        desc,
-			filter:      strings.Join([]string{step.RunID, step.MessageID, step.AgentID, step.Thought, step.Shell, desc}, " "),
+			filter:      strings.Join([]string{step.RunID, step.MessageID, step.AgentID, step.StepType, step.Thought, step.Shell, step.ActionName, step.ActionInput, desc}, " "),
 			namespaceID: step.NamespaceID,
 			agentID:     step.AgentID,
 			messageID:   step.MessageID,

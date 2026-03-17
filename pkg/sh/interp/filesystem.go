@@ -269,6 +269,9 @@ func fsTempDir(fsys RunnerFileSystem) string {
 // ResolvePath resolves path relative to dir using any filesystem-specific
 // rules before falling back to lexical host-style resolution.
 func ResolvePath(fsys RunnerFileSystem, dir, path string) (string, error) {
+	if IsDevNullPath(path) {
+		return path, nil
+	}
 	if fsys2, ok := fsys.(ResolvePathFileSystem); ok {
 		return fsys2.ResolvePath(dir, path)
 	}

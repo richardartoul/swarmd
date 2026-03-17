@@ -193,6 +193,14 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 		version: 6,
 		sql:     renameServerMetadataKeysSQL,
 	},
+	{
+		version: 7,
+		apply:   applyStepActionColumnsMigration,
+	},
+	{
+		version: 8,
+		apply:   applyStepTypeColumnMigration,
+	},
 }
 
 const legacyNamespaceRenameSQL = `
@@ -482,4 +490,54 @@ func tableExists(ctx context.Context, tx *sql.Tx, tableName string) (bool, error
 		return false, fmt.Errorf("check table %q: %w", tableName, err)
 	}
 	return count > 0, nil
+}
+
+func applyStepActionColumnsMigration(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "steps")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{name: "action_name", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "action_tool_kind", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "action_input", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "action_output", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "action_output_truncated", definition: "INTEGER NOT NULL DEFAULT 0"},
+	} {
+		if err := addColumnIfMissing(ctx, tx, "steps", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyStepTypeColumnMigration(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "steps")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "steps", "step_type", "TEXT NOT NULL DEFAULT ''")
+}
+
+func addColumnIfMissing(ctx context.Context, tx *sql.Tx, tableName, columnName, definition string) error {
+	exists, err := tableColumnExists(ctx, tx, tableName, columnName)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, tableName, columnName, definition)); err != nil {
+		return fmt.Errorf("add column %q to %q: %w", columnName, tableName, err)
+	}
+	return nil
 }

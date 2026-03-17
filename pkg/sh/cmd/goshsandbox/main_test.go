@@ -94,6 +94,7 @@ func TestSandboxSupportsDevNullPaths(t *testing.T) {
 	err = run(r, strings.NewReader("echo hi >/dev/null; cat </dev/null; cat /dev/null; echo ok"), "")
 	qt.Assert(t, qt.IsNil(err))
 	qt.Assert(t, qt.Equals(stdout.String(), "ok\n"))
+	qt.Assert(t, qt.Equals(stderr.String(), ""))
 
 	_, statErr := os.Stat(filepath.Join(root, "dev", "null"))
 	qt.Assert(t, qt.Equals(os.IsNotExist(statErr), true))

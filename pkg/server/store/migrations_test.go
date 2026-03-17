@@ -64,3 +64,70 @@ func TestMigrateRenamesServerMetadataKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestMigrateAddsStepActionColumns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "migration-steps.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create schema_migrations error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (6)`); err != nil {
+		t.Fatalf("insert schema version error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE steps (
+	namespace_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	step_index INTEGER NOT NULL,
+	message_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	thought TEXT NOT NULL,
+	shell TEXT NOT NULL,
+	usage_cached_tokens INTEGER NOT NULL,
+	cwd_before TEXT NOT NULL,
+	cwd_after TEXT NOT NULL,
+	stdout TEXT NOT NULL,
+	stderr TEXT NOT NULL,
+	stdout_truncated INTEGER NOT NULL,
+	stderr_truncated INTEGER NOT NULL,
+	started_at_ms INTEGER NOT NULL,
+	finished_at_ms INTEGER NOT NULL,
+	duration_millis INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	exit_status INTEGER NOT NULL,
+	error TEXT NOT NULL
+)`); err != nil {
+		t.Fatalf("create steps error = %v", err)
+	}
+
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	for _, column := range []string{
+		"step_type",
+		"action_name",
+		"action_tool_kind",
+		"action_input",
+		"action_output",
+		"action_output_truncated",
+	} {
+		exists, err := tableColumnExists(ctx, store.DB(), "steps", column)
+		if err != nil {
+			t.Fatalf("tableColumnExists(%q) error = %v", column, err)
+		}
+		if !exists {
+			t.Fatalf("steps table missing migrated column %q", column)
+		}
+	}
+}

@@ -159,6 +159,90 @@ func TestRuntimeManagerIncludesManagedCustomTools(t *testing.T) {
 	}
 }
 
+func TestRuntimeManagerPersistsToolStepActionDetails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-tool-step-actions")
+	root := filepath.Join(t.TempDir(), "worker")
+	registerRuntimeTestCustomTool()
+	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
+		Tools: []agent.ConfiguredTool{{
+			ID: runtimeTestCustomToolName,
+		}},
+	})
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{
+						Thought: "use the custom skill",
+						Tool: &agent.ToolAction{
+							Name:  runtimeTestCustomToolName,
+							Kind:  agent.ToolKindFunction,
+							Input: `{}`,
+						},
+					},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-tool-step-actions",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	_, step := latestRunStepByPrompt(t, ctx, s, namespace.ID, "start")
+	if step.StepType != "tool" {
+		t.Fatalf("step.StepType = %q, want %q", step.StepType, "tool")
+	}
+	if step.ActionName != runtimeTestCustomToolName {
+		t.Fatalf("step.ActionName = %q, want %q", step.ActionName, runtimeTestCustomToolName)
+	}
+	if step.ActionToolKind != string(agent.ToolKindFunction) {
+		t.Fatalf("step.ActionToolKind = %q, want %q", step.ActionToolKind, agent.ToolKindFunction)
+	}
+	if step.ActionInput != `{}` {
+		t.Fatalf("step.ActionInput = %q, want %q", step.ActionInput, `{}`)
+	}
+	if step.ActionOutput != "ok" {
+		t.Fatalf("step.ActionOutput = %q, want %q", step.ActionOutput, "ok")
+	}
+	if step.Shell != "" {
+		t.Fatalf("step.Shell = %q, want empty shell for pure tool step", step.Shell)
+	}
+}
+
 func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 	t.Parallel()
 
