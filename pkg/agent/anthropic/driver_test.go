@@ -23,6 +23,24 @@ func TestNewRequiresAPIKeyAndModel(t *testing.T) {
 	}
 }
 
+func TestNewParsesReasoningLevelFromModelSuffix(t *testing.T) {
+	t.Parallel()
+
+	driver, err := New(Config{
+		APIKey: "test-key",
+		Model:  "claude-sonnet-4-6-high",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if driver.model != "claude-sonnet-4-6" {
+		t.Fatalf("driver.model = %q, want %q", driver.model, "claude-sonnet-4-6")
+	}
+	if driver.reasoning != "high" {
+		t.Fatalf("driver.reasoning = %q, want %q", driver.reasoning, "high")
+	}
+}
+
 func TestNewRejectsAgentOwnedPromptSettings(t *testing.T) {
 	t.Parallel()
 
@@ -93,6 +111,53 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	}
 	if got := snapshot[0].Headers.Get("anthropic-version"); got != anthropicVersion {
 		t.Fatalf("anthropic-version header = %q, want %q", got, anthropicVersion)
+	}
+}
+
+func TestDriverNextSendsAdaptiveThinkingFromModelSuffix(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "done",
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "claude-sonnet-4-6-medium",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
+	}
+	if snapshot[0].Request.Model != "claude-sonnet-4-6" {
+		t.Fatalf("request model = %q, want %q", snapshot[0].Request.Model, "claude-sonnet-4-6")
+	}
+	if snapshot[0].Request.Thinking == nil || snapshot[0].Request.Thinking.Type != "adaptive" {
+		t.Fatalf("request thinking = %#v, want adaptive thinking", snapshot[0].Request.Thinking)
+	}
+	if snapshot[0].Request.OutputConfig == nil || snapshot[0].Request.OutputConfig.Effort != "medium" {
+		t.Fatalf("request output_config = %#v, want medium effort", snapshot[0].Request.OutputConfig)
 	}
 }
 

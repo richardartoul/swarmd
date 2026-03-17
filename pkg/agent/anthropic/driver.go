@@ -48,22 +48,33 @@ type Driver struct {
 	apiKey    string
 	baseURL   string
 	model     string
+	reasoning string
 	client    *http.Client
 	maxTokens int
 }
 
 type messagesRequest struct {
-	Model      string               `json:"model"`
-	MaxTokens  int                  `json:"max_tokens"`
-	System     string               `json:"system,omitempty"`
-	Messages   []anthropicMessage   `json:"messages"`
-	Tools      []anthropicTool      `json:"tools,omitempty"`
-	ToolChoice *anthropicToolChoice `json:"tool_choice,omitempty"`
+	Model        string                 `json:"model"`
+	MaxTokens    int                    `json:"max_tokens"`
+	System       string                 `json:"system,omitempty"`
+	Messages     []anthropicMessage     `json:"messages"`
+	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
+	Tools        []anthropicTool        `json:"tools,omitempty"`
+	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
 }
 
 type anthropicMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+type anthropicThinking struct {
+	Type string `json:"type"`
+}
+
+type anthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 type anthropicTool struct {
@@ -121,6 +132,7 @@ func New(cfg Config) (*Driver, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
+	model, reasoning := parseModelAndReasoningLevel(cfg.Model)
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Minute}
@@ -128,7 +140,8 @@ func New(cfg Config) (*Driver, error) {
 	return &Driver{
 		apiKey:    cfg.APIKey,
 		baseURL:   baseURL,
-		model:     strings.TrimSpace(cfg.Model),
+		model:     model,
+		reasoning: reasoning,
 		client:    client,
 		maxTokens: DefaultMaxTokens,
 	}, nil
@@ -151,6 +164,10 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 		Model:     d.model,
 		MaxTokens: d.maxTokens,
 		Messages:  make([]anthropicMessage, 0, len(req.Messages)),
+	}
+	if d.reasoning != "" {
+		payload.Thinking = &anthropicThinking{Type: "adaptive"}
+		payload.OutputConfig = &anthropicOutputConfig{Effort: d.reasoning}
 	}
 	var systemParts []string
 	for _, message := range req.Messages {
@@ -420,4 +437,23 @@ func parseFinishValue(content string) any {
 		return value
 	}
 	return content
+}
+
+func parseModelAndReasoningLevel(model string) (string, string) {
+	model = strings.TrimSpace(model)
+	lastDash := strings.LastIndex(model, "-")
+	if lastDash <= 0 || lastDash == len(model)-1 {
+		return model, ""
+	}
+	base := strings.TrimSpace(model[:lastDash])
+	level := strings.TrimSpace(model[lastDash+1:])
+	if base == "" {
+		return model, ""
+	}
+	switch level {
+	case "low", "medium", "high", "max":
+		return base, level
+	default:
+		return model, ""
+	}
 }
