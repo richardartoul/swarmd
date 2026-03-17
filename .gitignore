@@ -1,5 +1,7 @@
 *.a
 *.zip
+.DS_Store
+server-config/
 
 # Don't store any of this in the master branch.
 suppressions/
