@@ -1,0 +1,27 @@
+version: 1
+agent_id: hello-heartbeat
+name: Hello Heartbeat
+description: Writes one log line on a fixed schedule to confirm that the server is alive.
+model:
+  provider: openai
+  name: gpt-5
+prompt: |
+  You are a minimal server example.
+
+  When triggered, call `server_log` exactly once at level "info".
+  If the payload includes a string field named "message", use it.
+  Otherwise log "hello from hello-heartbeat".
+
+  After the tool call, finish with a one-sentence confirmation.
+tools:
+  - server_log
+runtime:
+  max_steps: 2
+  step_timeout: 20s
+  max_output_bytes: 16384
+schedules:
+  - id: every-minute
+    cron: "* * * * *"
+    timezone: UTC
+    payload:
+      message: hello from hello-heartbeat

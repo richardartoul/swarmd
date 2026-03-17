@@ -1,0 +1,1107 @@
+package agent_test
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/richardartoul/swarmd/pkg/agent"
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
+	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
+)
+
+func TestHandleTriggerKeepsStateWithinTrigger(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	resolvedRoot := resolveRoot(t, root)
+	a := newAgent(t, agent.Config{
+		Root: root,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`foo=hello; mkdir work; cd work; printf '%s' "$foo" > note.txt`),
+				shell(`cat note.txt; printf '\n'; pwd`),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "trigger-1"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("len(result.Steps) = %d, want 2", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusOK {
+		t.Fatalf("step 1 status = %q, want %q", result.Steps[0].Status, agent.StepStatusOK)
+	}
+	if result.Steps[1].Status != agent.StepStatusOK {
+		t.Fatalf("step 2 status = %q, want %q", result.Steps[1].Status, agent.StepStatusOK)
+	}
+
+	want := "hello\n" + filepath.Join(resolvedRoot, "work")
+	got := strings.TrimSpace(result.Steps[1].Stdout)
+	if got != want {
+		t.Fatalf("step 2 stdout = %q, want %q", got, want)
+	}
+}
+
+func TestHandleTriggerResetsBetweenTriggersByDefault(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	resolvedRoot := resolveRoot(t, root)
+	a := newAgent(t, agent.Config{
+		Root: root,
+		Driver: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+			switch req.Trigger.ID {
+			case "one":
+				if req.Step == 1 {
+					return shell("mkdir sub; cd sub; pwd"), nil
+				}
+				if req.Step == 2 {
+					return finish(nil), nil
+				}
+			case "two":
+				if req.Step == 1 {
+					return shell("pwd"), nil
+				}
+				if req.Step == 2 {
+					return finish(nil), nil
+				}
+			}
+			return agent.Decision{}, fmt.Errorf("unexpected request: trigger=%q step=%d", req.Trigger.ID, req.Step)
+		}),
+	})
+
+	first, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "one"})
+	if err != nil {
+		t.Fatalf("first HandleTrigger() error = %v", err)
+	}
+	second, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "two"})
+	if err != nil {
+		t.Fatalf("second HandleTrigger() error = %v", err)
+	}
+
+	if strings.TrimSpace(first.Steps[0].Stdout) != filepath.Join(resolvedRoot, "sub") {
+		t.Fatalf("first pwd = %q, want %q", strings.TrimSpace(first.Steps[0].Stdout), filepath.Join(resolvedRoot, "sub"))
+	}
+	if strings.TrimSpace(second.Steps[0].Stdout) != resolvedRoot {
+		t.Fatalf("second pwd = %q, want %q", strings.TrimSpace(second.Steps[0].Stdout), resolvedRoot)
+	}
+}
+
+func TestHandleTriggerPreservesStateBetweenTriggersWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	resolvedRoot := resolveRoot(t, root)
+	a := newAgent(t, agent.Config{
+		Root:                         root,
+		PreserveStateBetweenTriggers: true,
+		Driver: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+			switch req.Trigger.ID {
+			case "one":
+				if req.Step == 1 {
+					return shell("mkdir sub; cd sub; pwd"), nil
+				}
+				if req.Step == 2 {
+					return finish(nil), nil
+				}
+			case "two":
+				if req.Step == 1 {
+					return shell("pwd"), nil
+				}
+				if req.Step == 2 {
+					return finish(nil), nil
+				}
+			}
+			return agent.Decision{}, fmt.Errorf("unexpected request: trigger=%q step=%d", req.Trigger.ID, req.Step)
+		}),
+	})
+
+	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "one"}); err != nil {
+		t.Fatalf("first HandleTrigger() error = %v", err)
+	}
+	second, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "two"})
+	if err != nil {
+		t.Fatalf("second HandleTrigger() error = %v", err)
+	}
+
+	if strings.TrimSpace(second.Steps[0].Stdout) != filepath.Join(resolvedRoot, "sub") {
+		t.Fatalf("second pwd = %q, want %q", strings.TrimSpace(second.Steps[0].Stdout), filepath.Join(resolvedRoot, "sub"))
+	}
+}
+
+func TestHandleTriggerIncludesSandboxRootInDriverRequest(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	resolvedRoot := resolveRoot(t, root)
+	var seen agent.Request
+	a := newAgent(t, agent.Config{
+		Root: root,
+		Driver: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+			seen = req
+			return finish("done"), nil
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "root-guidance"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if got := seen.SandboxRoot; got != resolvedRoot {
+		t.Fatalf("request.SandboxRoot = %q, want %q", got, resolvedRoot)
+	}
+	if got := seen.CWD; got != resolvedRoot {
+		t.Fatalf("request.CWD = %q, want %q", got, resolvedRoot)
+	}
+	if len(seen.Messages) == 0 {
+		t.Fatal("request.Messages = empty, want current-state message")
+	}
+	last := seen.Messages[len(seen.Messages)-1].Content
+	if !strings.Contains(last, "Sandbox root: "+resolvedRoot) {
+		t.Fatalf("current-state message = %q, want sandbox root line", last)
+	}
+	if !strings.Contains(last, "Paths outside the sandbox root are inaccessible.") {
+		t.Fatalf("current-state message = %q, want sandbox boundary guidance", last)
+	}
+}
+
+func TestHandleTriggerUsesInjectedFileSystem(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := osWriteFile(filepath.Join(root, "mounted.txt"), []byte("injected\n")); err != nil {
+		t.Fatal(err)
+	}
+	fsys := &recordingSandboxFS{root: root}
+	a := newAgent(t, agent.Config{
+		FileSystem: fsys,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("cat mounted.txt"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "injected-fs"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if got := result.Steps[0].Stdout; got != "injected\n" {
+		t.Fatalf("step stdout = %q, want %q", got, "injected\n")
+	}
+	if fsys.openCount == 0 {
+		t.Fatal("injected filesystem Open() was never called")
+	}
+}
+
+func TestHandleTriggerTurnsParseErrorsIntoObservations(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("if then"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "parse"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if got := result.Steps[0].Status; got != agent.StepStatusParseError {
+		t.Fatalf("step status = %q, want %q", got, agent.StepStatusParseError)
+	}
+}
+
+func TestHandleTriggerTurnsExitStatusesIntoObservations(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("false"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "false"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	step := result.Steps[0]
+	if step.Status != agent.StepStatusExitStatus {
+		t.Fatalf("step status = %q, want %q", step.Status, agent.StepStatusExitStatus)
+	}
+	if step.ExitStatus != 1 {
+		t.Fatalf("step exit status = %d, want 1", step.ExitStatus)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+}
+
+func TestHandleTriggerRejectsDisallowedShellConstructs(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("echo hi &"),
+				shell("exec true"),
+				shell("exit 0"),
+				shell(`sh -c 'echo hi &'`),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "policy"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	for i, step := range result.Steps {
+		if step.Status != agent.StepStatusPolicyError {
+			t.Fatalf("step %d status = %q, want %q", i+1, step.Status, agent.StepStatusPolicyError)
+		}
+	}
+}
+
+func TestHandleTriggerRejectsPlainGrepAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`printf 'hello\n' | grep hello`),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "plain-grep-policy"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusExitStatus {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusExitStatus)
+	}
+	if result.Steps[0].ExitStatus != 2 {
+		t.Fatalf("step exit status = %d, want 2", result.Steps[0].ExitStatus)
+	}
+	if !strings.Contains(result.Steps[0].Stderr, "plain grep without -E/-F is not allowed") {
+		t.Fatalf("step stderr = %q, want explicit grep mode rejection", result.Steps[0].Stderr)
+	}
+}
+
+func TestHandleTriggerAllowsExplicitGrepMode(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`printf 'hello\n' | grep -F hello`),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "explicit-grep-mode"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusOK {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusOK)
+	}
+	if strings.TrimSpace(result.Steps[0].Stdout) != "hello" {
+		t.Fatalf("step stdout = %q, want %q", result.Steps[0].Stdout, "hello")
+	}
+}
+
+func TestHandleTriggerAllowsDynamicGrepModeAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`mode=-F; printf 'hello\n' | grep "$mode" hello`),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "non-literal-grep"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusOK {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusOK)
+	}
+	if strings.TrimSpace(result.Steps[0].Stdout) != "hello" {
+		t.Fatalf("step stdout = %q, want %q", result.Steps[0].Stdout, "hello")
+	}
+}
+
+func TestHandleTriggerBlocksDynamicNestedShAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`cmd='echo hi &'; sh -c "$cmd"`),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "dynamic-nested-sh"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusExitStatus {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusExitStatus)
+	}
+	if !strings.Contains(result.Steps[0].Stderr, "sh: background jobs are not allowed in agent shell steps") {
+		t.Fatalf("step stderr = %q, want nested sh rejection", result.Steps[0].Stderr)
+	}
+}
+
+func TestHandleTriggerBlocksDynamicExitAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("cmd=exit; $cmd 0"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "dynamic-exit"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	step := result.Steps[0]
+	if step.Status != agent.StepStatusExitStatus {
+		t.Fatalf("step status = %q, want %q", step.Status, agent.StepStatusExitStatus)
+	}
+	if !strings.Contains(step.Stderr, "exit: disabled in agent shell steps") {
+		t.Fatalf("step stderr = %q, want dynamic exit rejection", step.Stderr)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+}
+
+func TestHandleTriggerBlocksWrappedControlBuiltinsAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("xargs exit 0"),
+				shell("xargs exec true"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "wrapped-control-builtins"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 2 {
+		t.Fatalf("len(result.Steps) = %d, want 2", len(result.Steps))
+	}
+
+	if result.Steps[0].Status != agent.StepStatusExitStatus {
+		t.Fatalf("step 1 status = %q, want %q", result.Steps[0].Status, agent.StepStatusExitStatus)
+	}
+	if !strings.Contains(result.Steps[0].Stderr, "exit: disabled in agent shell steps") {
+		t.Fatalf("step 1 stderr = %q, want wrapped exit rejection", result.Steps[0].Stderr)
+	}
+
+	if result.Steps[1].Status != agent.StepStatusExitStatus {
+		t.Fatalf("step 2 status = %q, want %q", result.Steps[1].Status, agent.StepStatusExitStatus)
+	}
+	if !strings.Contains(result.Steps[1].Stderr, "exec: disabled in agent shell steps") {
+		t.Fatalf("step 2 stderr = %q, want wrapped exec rejection", result.Steps[1].Stderr)
+	}
+}
+
+func TestHandleTriggerBlocksCommandExitAtRuntime(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("command exit 0"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "command-exit"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusExitStatus {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusExitStatus)
+	}
+	if !strings.Contains(result.Steps[0].Stderr, "exit: disabled in agent shell steps") {
+		t.Fatalf("step stderr = %q, want command exit rejection", result.Steps[0].Stderr)
+	}
+}
+
+func TestHandleTriggerEnforcesOutputLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := osWriteFile(filepath.Join(root, "big.txt"), bytes.Repeat([]byte("a"), 512)); err != nil {
+		t.Fatal(err)
+	}
+
+	a := newAgent(t, agent.Config{
+		Root:           root,
+		MaxOutputBytes: 64,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("cat big.txt"),
+				finish(nil),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "big-output"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	step := result.Steps[0]
+	if !step.StdoutTruncated {
+		t.Fatalf("step.StdoutTruncated = false, want true")
+	}
+	if len(step.Stdout) != 64 {
+		t.Fatalf("len(step.Stdout) = %d, want 64", len(step.Stdout))
+	}
+}
+
+func TestHandleTriggerCallsOnStep(t *testing.T) {
+	t.Parallel()
+
+	var got []agent.Step
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				{Thought: "look around", Shell: &agent.ShellAction{Source: "pwd"}},
+				finish("done"),
+			},
+		},
+		OnStep: agent.StepHandlerFunc(func(ctx context.Context, trigger agent.Trigger, step agent.Step) error {
+			got = append(got, step)
+			return nil
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "with-step-hook"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1", len(got))
+	}
+	if got[0].Thought != "look around" {
+		t.Fatalf("got[0].Thought = %q, want %q", got[0].Thought, "look around")
+	}
+	if got[0].Shell != "pwd" {
+		t.Fatalf("got[0].Shell = %q, want %q", got[0].Shell, "pwd")
+	}
+}
+
+func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:         t.TempDir(),
+		Driver:       driver,
+		SystemPrompt: "test prompt",
+	})
+
+	_, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-1",
+		Kind:    "repl.prompt",
+		Payload: "list files",
+		Metadata: map[string]any{
+			"source": "test",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(driver.requests) != 1 {
+		t.Fatalf("len(driver.requests) = %d, want 1", len(driver.requests))
+	}
+	req := driver.requests[0]
+	if req.Step != 1 {
+		t.Fatalf("req.Step = %d, want 1", req.Step)
+	}
+	if len(req.Messages) != 5 {
+		t.Fatalf("len(req.Messages) = %d, want 5", len(req.Messages))
+	}
+	if req.Messages[0].Role != agent.MessageRoleSystem || req.Messages[0].Content != "test prompt" {
+		t.Fatalf("req.Messages[0] = %#v, want system prompt", req.Messages[0])
+	}
+	if req.Messages[1].Role != agent.MessageRoleSystem || !strings.Contains(req.Messages[1].Content, "Available tools for this turn") {
+		t.Fatalf("req.Messages[1] = %#v, want tool availability system message", req.Messages[1])
+	}
+	if !strings.Contains(req.Messages[1].Content, "run_shell") {
+		t.Fatalf("req.Messages[1] = %#v, want run_shell tool in availability message", req.Messages[1])
+	}
+	if req.Messages[2].Role != agent.MessageRoleSystem || !strings.Contains(req.Messages[2].Content, "Focused tool details for this turn:") {
+		t.Fatalf("req.Messages[2] = %#v, want focused tool detail system message", req.Messages[2])
+	}
+	if req.Messages[3].Role != agent.MessageRoleUser {
+		t.Fatalf("req.Messages[3].Role = %q, want %q", req.Messages[3].Role, agent.MessageRoleUser)
+	}
+	if !strings.Contains(req.Messages[3].Content, "Trigger context") {
+		t.Fatalf("trigger context = %q, want heading", req.Messages[3].Content)
+	}
+	if !strings.Contains(req.Messages[3].Content, `"source": "test"`) {
+		t.Fatalf("trigger context = %q, want rendered metadata", req.Messages[3].Content)
+	}
+	if !strings.Contains(req.Messages[3].Content, "User prompt:\nlist files") {
+		t.Fatalf("trigger context = %q, want rendered prompt", req.Messages[3].Content)
+	}
+	if req.Messages[4].Role != agent.MessageRoleUser {
+		t.Fatalf("req.Messages[4].Role = %q, want %q", req.Messages[4].Role, agent.MessageRoleUser)
+	}
+	if !strings.Contains(req.Messages[4].Content, "Current step number: 1") {
+		t.Fatalf("current state = %q, want step number", req.Messages[4].Content)
+	}
+	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this trigger.") {
+		t.Fatalf("current state = %q, want empty-step note", req.Messages[4].Content)
+	}
+}
+
+func TestHandleTriggerAppendsPriorStepsAsConversationMessages(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			shell("pwd"),
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:         t.TempDir(),
+		Driver:       driver,
+		SystemPrompt: "test prompt",
+	})
+
+	_, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-1",
+		Kind:    "repl.prompt",
+		Payload: "where am i",
+	})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+	second := driver.requests[1]
+	if len(second.Messages) != 6 {
+		t.Fatalf("len(second.Messages) = %d, want 6", len(second.Messages))
+	}
+	if second.Messages[2].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[2].Content, "Trigger context") {
+		t.Fatalf("second.Messages[2] = %#v, want trigger context", second.Messages[2])
+	}
+	if second.Messages[3].Role != agent.MessageRoleAssistant {
+		t.Fatalf("second.Messages[3].Role = %q, want %q", second.Messages[3].Role, agent.MessageRoleAssistant)
+	}
+	if !strings.Contains(second.Messages[3].Content, `"type":"function_call"`) {
+		t.Fatalf("assistant message = %q, want prior function call decision", second.Messages[3].Content)
+	}
+	if !strings.Contains(second.Messages[3].Content, `"name":"run_shell"`) {
+		t.Fatalf("assistant message = %q, want run_shell tool replay", second.Messages[3].Content)
+	}
+	if !strings.Contains(second.Messages[3].Content, `"call_id":"step_1"`) {
+		t.Fatalf("assistant message = %q, want call id replay", second.Messages[3].Content)
+	}
+	if !strings.Contains(second.Messages[3].Content, `\"command\":\"pwd\"`) {
+		t.Fatalf("assistant message = %q, want prior shell command encoded in tool input", second.Messages[3].Content)
+	}
+	if second.Messages[4].Role != agent.MessageRoleUser {
+		t.Fatalf("second.Messages[4].Role = %q, want %q", second.Messages[4].Role, agent.MessageRoleUser)
+	}
+	if !strings.Contains(second.Messages[4].Content, `"type":"function_call_output"`) {
+		t.Fatalf("observation message = %q, want tool output envelope", second.Messages[4].Content)
+	}
+	if !strings.Contains(second.Messages[4].Content, "Status: ok") {
+		t.Fatalf("observation message = %q, want step status", second.Messages[4].Content)
+	}
+	if second.Messages[5].Role != agent.MessageRoleUser {
+		t.Fatalf("second.Messages[5].Role = %q, want %q", second.Messages[5].Role, agent.MessageRoleUser)
+	}
+	if !strings.Contains(second.Messages[5].Content, "Current step number: 2") {
+		t.Fatalf("current state = %q, want updated step number", second.Messages[5].Content)
+	}
+}
+
+func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:          t.TempDir(),
+		Driver:        driver,
+		NetworkDialer: interp.OSNetworkDialer{},
+	})
+
+	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-1",
+		Kind:    "repl.prompt",
+		Payload: "fetch a URL",
+	}); err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(driver.requests) != 1 {
+		t.Fatalf("len(driver.requests) = %d, want 1", len(driver.requests))
+	}
+	if len(driver.requests[0].Messages) == 0 {
+		t.Fatal("driver request had no messages")
+	}
+	var systemPrompts []string
+	for _, message := range driver.requests[0].Messages {
+		if message.Role == agent.MessageRoleSystem {
+			systemPrompts = append(systemPrompts, message.Content)
+		}
+	}
+	combinedPrompts := strings.Join(systemPrompts, "\n")
+	if !strings.Contains(combinedPrompts, "Network-capable tools may be available through the interpreter-owned dialer") {
+		t.Fatalf("combined system prompts = %q, want network-enabled instructions", combinedPrompts)
+	}
+	if !strings.Contains(combinedPrompts, "web_search") || !strings.Contains(combinedPrompts, "http_request") || !strings.Contains(combinedPrompts, "read_web_page") {
+		t.Fatalf("combined system prompts = %q, want network tool guidance", combinedPrompts)
+	}
+	if !strings.Contains(combinedPrompts, "jq") || !strings.Contains(combinedPrompts, "awk") || !strings.Contains(combinedPrompts, "grep") || !strings.Contains(combinedPrompts, "sed") || !strings.Contains(combinedPrompts, "sort") || !strings.Contains(combinedPrompts, "cut") || !strings.Contains(combinedPrompts, "tr") || !strings.Contains(combinedPrompts, "uniq") {
+		t.Fatalf("combined system prompts = %q, want updated coreutils guidance", combinedPrompts)
+	}
+}
+
+func TestHandleTriggerSupportsCustomSandboxCommandsInNestedSh(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		CustomCommands: []sandbox.CustomCommand{{
+			Info: sandbox.CommandInfo{
+				Name:        "trace",
+				Usage:       "trace <message...>",
+				Description: "write a trace line to stdout",
+			},
+			Run: func(ctx context.Context, args []string) error {
+				hc := interp.HandlerCtx(ctx)
+				_, _ = fmt.Fprintln(hc.Stdout, strings.Join(args, " "))
+				return nil
+			},
+		}},
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell(`trace outer; sh -c 'trace inner'`),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "custom-sandbox-command"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusOK {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusOK)
+	}
+	if got := strings.TrimSpace(result.Steps[0].Stdout); got != "outer\ninner" {
+		t.Fatalf("step stdout = %q, want %q", got, "outer\ninner")
+	}
+}
+
+func TestHandleTriggerCanUseInjectedNetworkDialer(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "hello")
+	}))
+	defer server.Close()
+
+	a := newAgent(t, agent.Config{
+		Root:          t.TempDir(),
+		NetworkDialer: interp.OSNetworkDialer{},
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("curl " + server.URL),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "curl"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Status != agent.StepStatusOK {
+		t.Fatalf("step status = %q, want %q", result.Steps[0].Status, agent.StepStatusOK)
+	}
+	if strings.TrimSpace(result.Steps[0].Stdout) != "hello" {
+		t.Fatalf("step stdout = %q, want %q", result.Steps[0].Stdout, "hello")
+	}
+}
+
+func TestHandleTriggerPreservesConversationInDriverMessages(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			finish("created the file"),
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:                 t.TempDir(),
+		Driver:               driver,
+		SystemPrompt:         "test prompt",
+		PreserveConversation: true,
+	})
+
+	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-1",
+		Kind:    "repl.prompt",
+		Payload: "create a note",
+	}); err != nil {
+		t.Fatalf("first HandleTrigger() error = %v", err)
+	}
+	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-2",
+		Kind:    "repl.prompt",
+		Payload: "show it to me",
+	}); err != nil {
+		t.Fatalf("second HandleTrigger() error = %v", err)
+	}
+
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+	second := driver.requests[1]
+	if len(second.Messages) != 5 {
+		t.Fatalf("len(second.Messages) = %d, want 5", len(second.Messages))
+	}
+	if second.Messages[2].Role != agent.MessageRoleSystem {
+		t.Fatalf("second.Messages[2].Role = %q, want %q", second.Messages[2].Role, agent.MessageRoleSystem)
+	}
+	if !strings.Contains(second.Messages[2].Content, "Conversation history across previous triggers") {
+		t.Fatalf("history message = %q, want heading", second.Messages[2].Content)
+	}
+	if !strings.Contains(second.Messages[2].Content, "create a note") {
+		t.Fatalf("history message = %q, want prior prompt", second.Messages[2].Content)
+	}
+	if !strings.Contains(second.Messages[2].Content, "created the file") {
+		t.Fatalf("history message = %q, want prior result", second.Messages[2].Content)
+	}
+	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Trigger context") {
+		t.Fatalf("second.Messages[3] = %#v, want trigger context", second.Messages[3])
+	}
+	if second.Messages[4].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[4].Content, "Current step number: 1") {
+		t.Fatalf("second.Messages[4] = %#v, want current state", second.Messages[4])
+	}
+}
+
+func TestHandleTriggerAccumulatesDriverUsage(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				withCachedTokens(shell("pwd"), 128),
+				withCachedTokens(finish("done"), 64),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "usage"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Usage.CachedTokens != 192 {
+		t.Fatalf("result.Usage.CachedTokens = %d, want %d", result.Usage.CachedTokens, 192)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("len(result.Steps) = %d, want 1", len(result.Steps))
+	}
+	if result.Steps[0].Usage.CachedTokens != 128 {
+		t.Fatalf("result.Steps[0].Usage.CachedTokens = %d, want %d", result.Steps[0].Usage.CachedTokens, 128)
+	}
+}
+
+func TestHandleTriggerEnforcesStepTimeout(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root:        t.TempDir(),
+		StepTimeout: 20 * time.Millisecond,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				shell("while true; do :; done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "timeout"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v, want nil for per-trigger timeout", err)
+	}
+	if result.Status != agent.ResultStatusFatalError {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFatalError)
+	}
+	if got := result.Steps[0].Status; got != agent.StepStatusFatalError {
+		t.Fatalf("step status = %q, want %q", got, agent.StepStatusFatalError)
+	}
+	if !strings.Contains(result.Error, context.DeadlineExceeded.Error()) {
+		t.Fatalf("result.Error = %q, want timeout", result.Error)
+	}
+}
+
+func TestServeProcessesQueuedTriggersSequentially(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	triggerCh := make(chan agent.Trigger, 2)
+	resultsCh := make(chan agent.Result, 2)
+
+	a := newAgent(t, agent.Config{
+		Root:  root,
+		Queue: channelQueue{triggers: triggerCh},
+		Driver: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+			if req.Step == 1 {
+				return shell(fmt.Sprintf("echo %s", req.Trigger.ID)), nil
+			}
+			if req.Step == 2 {
+				return finish(req.Trigger.ID), nil
+			}
+			return agent.Decision{}, fmt.Errorf("unexpected step %d", req.Step)
+		}),
+		OnResult: agent.ResultHandlerFunc(func(ctx context.Context, result agent.Result) error {
+			resultsCh <- result
+			return nil
+		}),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- a.Serve(ctx)
+	}()
+
+	triggerCh <- agent.Trigger{ID: "one"}
+	triggerCh <- agent.Trigger{ID: "two"}
+
+	first := <-resultsCh
+	second := <-resultsCh
+	cancel()
+
+	err := <-errCh
+	if err == nil || err != context.Canceled {
+		t.Fatalf("Serve() error = %v, want %v", err, context.Canceled)
+	}
+	if first.Trigger.ID != "one" || second.Trigger.ID != "two" {
+		t.Fatalf("result order = [%q %q], want [one two]", first.Trigger.ID, second.Trigger.ID)
+	}
+	if strings.TrimSpace(first.Steps[0].Stdout) != "one" {
+		t.Fatalf("first stdout = %q, want %q", strings.TrimSpace(first.Steps[0].Stdout), "one")
+	}
+	if strings.TrimSpace(second.Steps[0].Stdout) != "two" {
+		t.Fatalf("second stdout = %q, want %q", strings.TrimSpace(second.Steps[0].Stdout), "two")
+	}
+}
+
+type scriptedDriver struct {
+	decisions []agent.Decision
+	index     int
+}
+
+func (d *scriptedDriver) Next(context.Context, agent.Request) (agent.Decision, error) {
+	if d.index >= len(d.decisions) {
+		return agent.Decision{}, fmt.Errorf("unexpected extra decision request")
+	}
+	decision := d.decisions[d.index]
+	d.index++
+	return decision, nil
+}
+
+type recordingDriver struct {
+	decisions []agent.Decision
+	requests  []agent.Request
+	index     int
+}
+
+func (d *recordingDriver) Next(_ context.Context, req agent.Request) (agent.Decision, error) {
+	copied := req
+	copied.Messages = append([]agent.Message(nil), req.Messages...)
+	copied.Steps = append([]agent.Step(nil), req.Steps...)
+	d.requests = append(d.requests, copied)
+	if d.index >= len(d.decisions) {
+		return agent.Decision{}, fmt.Errorf("unexpected extra decision request")
+	}
+	decision := d.decisions[d.index]
+	d.index++
+	return decision, nil
+}
+
+type channelQueue struct {
+	triggers <-chan agent.Trigger
+}
+
+type recordingSandboxFS struct {
+	interp.OSFileSystem
+	root      string
+	openCount int
+}
+
+func (fsys *recordingSandboxFS) Getwd() (string, error) {
+	return fsys.root, nil
+}
+
+func (fsys *recordingSandboxFS) Open(name string) (fs.File, error) {
+	fsys.openCount++
+	return fsys.OSFileSystem.Open(name)
+}
+
+func (q channelQueue) Next(ctx context.Context) (agent.Trigger, error) {
+	select {
+	case <-ctx.Done():
+		return agent.Trigger{}, ctx.Err()
+	case trigger, ok := <-q.triggers:
+		if !ok {
+			return agent.Trigger{}, io.EOF
+		}
+		return trigger, nil
+	}
+}
+
+func newAgent(t *testing.T, cfg agent.Config) *agent.Agent {
+	t.Helper()
+
+	a, err := agent.New(cfg)
+	if err != nil {
+		t.Fatalf("agent.New() error = %v", err)
+	}
+	return a
+}
+
+func shell(src string) agent.Decision {
+	return agent.Decision{Shell: &agent.ShellAction{Source: src}}
+}
+
+func finish(value any) agent.Decision {
+	return agent.Decision{Finish: &agent.FinishAction{Value: value}}
+}
+
+func withCachedTokens(decision agent.Decision, cachedTokens int) agent.Decision {
+	decision.Usage.CachedTokens = cachedTokens
+	return decision
+}
+
+func osWriteFile(path string, data []byte) error {
+	return os.WriteFile(path, data, 0o644)
+}
+
+func resolveRoot(t *testing.T, path string) string {
+	t.Helper()
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks(%q) error = %v", path, err)
+	}
+	return resolved
+}

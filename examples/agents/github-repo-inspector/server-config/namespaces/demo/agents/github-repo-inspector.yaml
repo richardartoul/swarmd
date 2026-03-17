@@ -1,0 +1,41 @@
+version: 1
+agent_id: github-repo-inspector
+name: GitHub Repo Inspector
+description: Fetches GitHub repository metadata with the built-in HTTP tool surface and writes a short summary.
+model:
+  provider: openai
+  name: gpt-5
+prompt: |
+  Use `http_request` to GET `https://api.github.com/repos/richardartoul/swarmd`.
+
+  Summarize the repository description, default branch, visibility, primary language, and stargazer count if those fields are present.
+  Write the summary to `reports/latest-summary.md`.
+  Keep the result concise and avoid browsing unrelated endpoints unless you need them to answer the request.
+root_path: ../sandbox
+http:
+  headers:
+    - name: Accept
+      value: application/vnd.github+json
+      domains:
+        - glob: api.github.com
+    - name: X-GitHub-Api-Version
+      value: "2022-11-28"
+      domains:
+        - glob: api.github.com
+    - name: User-Agent
+      value: swarmd-example-github-repo-inspector
+      domains:
+        - glob: api.github.com
+network:
+  reachable_hosts:
+    - glob: "api.github.com"
+runtime:
+  max_steps: 6
+  step_timeout: 45s
+  max_output_bytes: 32768
+  retry_delay: 30s
+  max_attempts: 3
+schedules:
+  - id: every-minute
+    cron: "* * * * *"
+    timezone: UTC

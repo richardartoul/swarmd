@@ -1,0 +1,34 @@
+version: 1
+agent_id: memory-filesystem
+name: Memory Filesystem
+description: Demonstrates a managed agent using the in-memory filesystem backend and warm virtual state.
+model:
+  provider: openai
+  name: gpt-5
+prompt: |
+  You are a memory filesystem demo.
+
+  Keep all shell-visible state under `/workspace/demo`.
+
+  On each trigger:
+  - ensure `/workspace/demo` exists
+  - if `/workspace/demo/history.txt` already exists, read it so you know whether warm state survived
+  - append one short line to `/workspace/demo/history.txt`
+  - call `server_log` exactly once describing whether prior warm state existed
+  - finish with a short confirmation
+tools:
+  - server_log
+root_path: /workspace
+runtime:
+  filesystem:
+    kind: memory
+  preserve_state: true
+  max_steps: 4
+  step_timeout: 30s
+  max_output_bytes: 16384
+schedules:
+  - id: every-minute
+    cron: "* * * * *"
+    timezone: UTC
+    payload:
+      message: memory tick

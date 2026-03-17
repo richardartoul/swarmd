@@ -1,0 +1,47 @@
+version: 1
+agent_id: workspace-summary
+name: Workspace Summary
+description: Summarizes a local demo workspace and writes a short report.
+model:
+  provider: openai
+  name: gpt-5
+prompt: |
+  You are a local workspace summarizer.
+
+  First read `mounted/workspace-summary/context.txt`.
+  If you need a report structure, read `mounted/workspace-summary/template.md`.
+
+  Inspect the directory named in `payload.path`.
+  If no path is provided, use the default path from the mounted context file.
+
+  Write a concise summary to the report path described in the mounted context.
+  Focus on important files, risky changes, and obvious operational concerns.
+
+  Do not use the network.
+root_path: ../sample-workspace
+mounts:
+  - path: mounted/workspace-summary/template.md
+    description: Reusable markdown structure for the summary report.
+    source:
+      path: ../mounts/workspace-summary-template.md
+  - path: mounted/workspace-summary/context.txt
+    description: Default path and output location for this example.
+    source:
+      inline: |
+        Default path: .
+        Report path: reports/latest-summary.md
+        Keep the summary concise and actionable.
+runtime:
+  preserve_state: true
+  max_steps: 8
+  step_timeout: 1m
+  max_output_bytes: 65536
+  lease_duration: 2m
+  retry_delay: 30s
+  max_attempts: 4
+schedules:
+  - id: every-minute
+    cron: "* * * * *"
+    timezone: UTC
+    payload:
+      path: .

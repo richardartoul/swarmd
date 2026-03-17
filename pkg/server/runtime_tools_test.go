@@ -1,0 +1,647 @@
+package server
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/richardartoul/swarmd/pkg/agent"
+	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
+)
+
+func TestRuntimeManagerServerLogToolWritesToRuntimeLogs(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-server-log")
+	createServerWorkerWithCommands(t, ctx, s, namespace.ID, "worker", filepath.Join(t.TempDir(), "worker"), []string{"server_log"})
+
+	var logStdout, logStderr bytes.Buffer
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{
+						Thought: "write server log",
+						Tool: &agent.ToolAction{
+							Name:  "server_log",
+							Kind:  agent.ToolKindFunction,
+							Input: `{"level":"info","message":"hello from worker"}`,
+						},
+					},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		Logger:       NewRuntimeLogger(&logStdout, &logStderr),
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-server-log",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	if got := logStdout.String(); !strings.Contains(got, "agent_log> "+namespace.ID+"/worker") {
+		t.Fatalf("log stdout = %q, want agent log line", got)
+	}
+	if got := logStdout.String(); !strings.Contains(got, `level=info`) {
+		t.Fatalf("log stdout = %q, want server_log level", got)
+	}
+	if got := logStdout.String(); !strings.Contains(got, `hello from worker`) {
+		t.Fatalf("log stdout = %q, want server_log message", got)
+	}
+}
+
+func TestRuntimeManagerIncludesManagedCustomTools(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-managed-tools")
+	root := filepath.Join(t.TempDir(), "worker")
+	registerRuntimeTestCustomTool()
+	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
+		Tools: []agent.ConfiguredTool{{
+			ID: runtimeTestCustomToolName,
+		}},
+	})
+
+	var (
+		toolsMu sync.Mutex
+		tools   []agent.ToolDefinition
+	)
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return agent.Decision{Finish: &agent.FinishAction{Value: "ok"}}, nil
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-managed-tools",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		toolsMu.Lock()
+		defer toolsMu.Unlock()
+		return len(tools) > 0, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if len(captured) == 0 {
+		t.Fatal("len(req.Tools) = 0, want built-in tools plus the custom tool")
+	}
+	if !hasToolNamed(captured, agent.ToolNameReadFile) {
+		t.Fatalf("req.Tools = %#v, want built-in %q to remain available", captured, agent.ToolNameReadFile)
+	}
+	if !hasToolNamed(captured, runtimeTestCustomToolName) {
+		t.Fatalf("req.Tools = %#v, want custom tool %q", captured, runtimeTestCustomToolName)
+	}
+}
+
+func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-server-tools")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  3,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{
+					Glob: "*",
+				}},
+			},
+			Tools: []agent.ConfiguredTool{
+				{ID: "server_log"},
+				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	var (
+		toolsMu sync.Mutex
+		tools   []agent.ToolDefinition
+	)
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return agent.Decision{Finish: &agent.FinishAction{Value: "ok"}}, nil
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-server-tools",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		toolsMu.Lock()
+		defer toolsMu.Unlock()
+		return len(tools) > 0, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if !hasToolNamed(captured, "server_log") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "server_log")
+	}
+	if !hasToolNamed(captured, "slack_post") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_post")
+	}
+	if !hasToolNamed(captured, "slack_replies") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")
+	}
+}
+
+func TestRuntimeManagerExecutesDatadogReadTool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-datadog-tool")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{
+					Glob: "*",
+				}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "datadog_read",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/incidents" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/api/v2/incidents")
+		}
+		if got := r.URL.Query().Get("page[size]"); got != "5" {
+			t.Fatalf("page[size] = %q, want %q", got, "5")
+		}
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id":   "inc-1",
+				"type": "incidents",
+				"attributes": map[string]any{
+					"title": "API outage",
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			if record.NamespaceID != namespace.ID || record.ID != "worker" {
+				return nil, fmt.Errorf("unexpected worker %s/%s", record.NamespaceID, record.ID)
+			}
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "datadog_read",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"list_incidents","page_size":5}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "DD_API_KEY":
+				return "api-key"
+			case "DD_APP_KEY":
+				return "app-key"
+			case "DD_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-datadog-tool",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		return requests == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	requestsMu.Lock()
+	got := requests
+	requestsMu.Unlock()
+	if got != 1 {
+		t.Fatalf("request count = %d, want 1", got)
+	}
+}
+
+func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-slack-blocked")
+	root := filepath.Join(t.TempDir(), "worker")
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+		toolsMu    sync.Mutex
+		tools      []agent.ToolDefinition
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	defer server.Close()
+
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{
+					Glob: "example.com",
+				}},
+			},
+			Tools: []agent.ConfiguredTool{
+				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			if record.NamespaceID != namespace.ID || record.ID != "worker" {
+				return nil, fmt.Errorf("unexpected worker %s/%s", record.NamespaceID, record.ID)
+			}
+			driver := &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "slack_post",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"text":"hello from test"}`,
+					}},
+					{Tool: &agent.ToolAction{
+						Name:  "slack_replies",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"thread_ts":"1700.000001"}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}
+			return agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return driver.Next(ctx, req)
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "SLACK_USER_TOKEN":
+				return "slack-token"
+			case "SLACK_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-slack-blocked",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	requestsMu.Lock()
+	gotRequests := requests
+	requestsMu.Unlock()
+	if gotRequests != 0 {
+		t.Fatalf("request count = %d, want 0 for blocked Slack host", gotRequests)
+	}
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if !hasToolNamed(captured, "slack_post") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_post")
+	}
+	if !hasToolNamed(captured, "slack_replies") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")
+	}
+}
+
+func TestRuntimeManagerBlocksDatadogReadToolWhenHostDisallowed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-datadog-blocked")
+	root := filepath.Join(t.TempDir(), "worker")
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+		toolsMu    sync.Mutex
+		tools      []agent.ToolDefinition
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}})
+	}))
+	defer server.Close()
+
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{
+					Glob: "example.com",
+				}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "datadog_read",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			if record.NamespaceID != namespace.ID || record.ID != "worker" {
+				return nil, fmt.Errorf("unexpected worker %s/%s", record.NamespaceID, record.ID)
+			}
+			driver := &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "datadog_read",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"list_incidents","page_size":5}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}
+			return agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return driver.Next(ctx, req)
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "DD_API_KEY":
+				return "api-key"
+			case "DD_APP_KEY":
+				return "app-key"
+			case "DD_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-datadog-blocked",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	requestsMu.Lock()
+	gotRequests := requests
+	requestsMu.Unlock()
+	if gotRequests != 0 {
+		t.Fatalf("request count = %d, want 0 for blocked Datadog host", gotRequests)
+	}
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if !hasToolNamed(captured, "datadog_read") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "datadog_read")
+	}
+}
+
+func hasToolNamed(tools []agent.ToolDefinition, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
