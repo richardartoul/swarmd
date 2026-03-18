@@ -23,6 +23,10 @@ const (
 	DatadogAppKeyEnvVar = "DD_APP_KEY"
 	DatadogSiteEnvVar   = "DD_SITE"
 
+	DatadogLogsStorageTierIndexes        = "indexes"
+	DatadogLogsStorageTierOnlineArchives = "online-archives"
+	DatadogLogsStorageTierFlex           = "flex"
+
 	datadogBaseURLEnvVar = "DD_BASE_URL"
 )
 
@@ -40,6 +44,7 @@ type DatadogReadRequest struct {
 	MonitorID   int64
 	DashboardID string
 	Query       string
+	StorageTier string
 	From        time.Time
 	To          time.Time
 	Page        int64

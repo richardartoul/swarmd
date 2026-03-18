@@ -223,6 +223,7 @@ Tool notes:
 - `slack_post`, `slack_replies`, and `datadog_read` all require `network.reachable_hosts`
 - `datadog_read` is a curated read-only tool, not a generic Datadog API proxy
 - `query_metrics` and `search_logs` require a `query` argument
+- `search_logs` also accepts optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
 
 Rules:
 

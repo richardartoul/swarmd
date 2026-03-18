@@ -292,6 +292,13 @@ func (c *DatadogClient) searchLogs(ctx context.Context, req DatadogReadRequest) 
 		WithFilterFrom(req.From).
 		WithFilterTo(req.To).
 		WithPageLimit(int32(req.PageSize))
+	if strings.TrimSpace(req.StorageTier) != "" {
+		storageTier, err := datadogV2.NewLogsStorageTierFromValue(strings.TrimSpace(req.StorageTier))
+		if err != nil {
+			return DatadogReadResult{}, fmt.Errorf("search logs: %w", err)
+		}
+		params.WithFilterStorageTier(*storageTier)
+	}
 	if strings.TrimSpace(req.PageCursor) != "" {
 		params.WithPageCursor(strings.TrimSpace(req.PageCursor))
 	}

@@ -35,6 +35,7 @@ type input struct {
 	MonitorID   *int64 `json:"monitor_id,omitempty"`
 	DashboardID string `json:"dashboard_id,omitempty"`
 	Query       string `json:"query,omitempty"`
+	StorageTier string `json:"storage_tier,omitempty"`
 	From        string `json:"from,omitempty"`
 	To          string `json:"to,omitempty"`
 	Page        *int64 `json:"page,omitempty"`
@@ -90,6 +91,12 @@ func (plugin) Definition() toolscore.ToolDefinition {
 				"query": toolscommon.StringSchema(
 					`Required for "query_metrics" and "search_logs". Optional name filter for "list_monitors".`,
 				),
+				"storage_tier": toolscommon.StringEnumSchema(
+					`Optional storage tier for "search_logs". Use "indexes", "online-archives", or "flex".`,
+					DatadogLogsStorageTierIndexes,
+					DatadogLogsStorageTierOnlineArchives,
+					DatadogLogsStorageTierFlex,
+				),
 				"from": toolscommon.StringSchema(
 					`Optional RFC3339 timestamp or Unix seconds. Used by "query_metrics", "search_logs", and "list_events". Defaults to one hour before "to".`,
 				),
@@ -116,6 +123,7 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"list_incidents","page_size":10}`,
 			`{"action":"query_metrics","query":"avg:system.cpu.user{*}","from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z"}`,
 			`{"action":"search_logs","query":"service:api status:error","from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z","page_size":20}`,
+			`{"action":"search_logs","query":"service:api status:error","storage_tier":"flex","from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z","page_size":20}`,
 		},
 		OutputNotes:     "Returns bounded, normalized JSON for the requested Datadog resource type.",
 		SafetyTags:      []string{"network", "read_only"},
@@ -195,6 +203,7 @@ func normalizeReadRequest(input input, now time.Time) (DatadogReadRequest, error
 		IncidentID:  strings.TrimSpace(input.IncidentID),
 		DashboardID: strings.TrimSpace(input.DashboardID),
 		Query:       strings.TrimSpace(input.Query),
+		StorageTier: strings.TrimSpace(input.StorageTier),
 		PageCursor:  strings.TrimSpace(input.PageCursor),
 	}
 	if input.MonitorID != nil {
@@ -292,7 +301,7 @@ func normalizeReadRequest(input input, now time.Time) (DatadogReadRequest, error
 		req.To = to
 		return req, nil
 	case DatadogReadActionSearchLogs:
-		if err := rejectUnexpectedFields(action, input, "query", "from", "to", "page_size", "page_cursor"); err != nil {
+		if err := rejectUnexpectedFields(action, input, "query", "storage_tier", "from", "to", "page_size", "page_cursor"); err != nil {
 			return DatadogReadRequest{}, err
 		}
 		if req.Query == "" {
@@ -302,11 +311,16 @@ func normalizeReadRequest(input input, now time.Time) (DatadogReadRequest, error
 		if err != nil {
 			return DatadogReadRequest{}, err
 		}
+		storageTier, err := normalizeLogsStorageTier(req.StorageTier)
+		if err != nil {
+			return DatadogReadRequest{}, err
+		}
 		from, to, err := resolveTimeWindow(input.From, input.To, now)
 		if err != nil {
 			return DatadogReadRequest{}, err
 		}
 		req.PageSize = size
+		req.StorageTier = storageTier
 		req.From = from
 		req.To = to
 		return req, nil
@@ -339,6 +353,7 @@ func rejectUnexpectedFields(action string, input input, allowed ...string) error
 		"monitor_id":   input.MonitorID != nil,
 		"dashboard_id": strings.TrimSpace(input.DashboardID) != "",
 		"query":        strings.TrimSpace(input.Query) != "",
+		"storage_tier": strings.TrimSpace(input.StorageTier) != "",
 		"from":         strings.TrimSpace(input.From) != "",
 		"to":           strings.TrimSpace(input.To) != "",
 		"page":         input.Page != nil,
@@ -374,6 +389,23 @@ func normalizePageSize(pageSize int) (int, error) {
 		return datadogMaxPageSize, nil
 	}
 	return pageSize, nil
+}
+
+func normalizeLogsStorageTier(raw string) (string, error) {
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch value {
+	case "":
+		return "", nil
+	case DatadogLogsStorageTierIndexes, DatadogLogsStorageTierOnlineArchives, DatadogLogsStorageTierFlex:
+		return value, nil
+	default:
+		return "", fmt.Errorf(
+			"storage_tier must be one of %q, %q, or %q",
+			DatadogLogsStorageTierIndexes,
+			DatadogLogsStorageTierOnlineArchives,
+			DatadogLogsStorageTierFlex,
+		)
+	}
 }
 
 func resolveTimeWindow(fromRaw, toRaw string, now time.Time) (time.Time, time.Time, error) {

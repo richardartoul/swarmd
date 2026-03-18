@@ -137,6 +137,9 @@ func TestDatadogClientSearchLogsNormalizesWarningsAndCursor(t *testing.T) {
 		if got := r.URL.Query().Get("filter[query]"); got != "service:api status:error" {
 			t.Fatalf("filter[query] = %q, want query", got)
 		}
+		if got := r.URL.Query().Get("filter[storage_tier]"); got != DatadogLogsStorageTierFlex {
+			t.Fatalf("filter[storage_tier] = %q, want %q", got, DatadogLogsStorageTierFlex)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]any{{
 				"id":   "log-1",
@@ -168,11 +171,12 @@ func TestDatadogClientSearchLogsNormalizesWarningsAndCursor(t *testing.T) {
 
 	client := newTestDatadogClient(t, server)
 	result, err := client.ExecuteRead(context.Background(), DatadogReadRequest{
-		Action:   DatadogReadActionSearchLogs,
-		Query:    "service:api status:error",
-		From:     time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
-		To:       time.Date(2026, 3, 15, 1, 0, 0, 0, time.UTC),
-		PageSize: 10,
+		Action:      DatadogReadActionSearchLogs,
+		Query:       "service:api status:error",
+		StorageTier: DatadogLogsStorageTierFlex,
+		From:        time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 3, 15, 1, 0, 0, 0, time.UTC),
+		PageSize:    10,
 	})
 	if err != nil {
 		t.Fatalf("ExecuteRead(search logs) error = %v", err)

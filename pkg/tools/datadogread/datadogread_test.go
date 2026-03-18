@@ -64,6 +64,41 @@ func TestNormalizeDatadogReadRequestDefaultsTimeWindow(t *testing.T) {
 	if got := req.From; !got.Equal(now.Add(-DefaultLookback)) {
 		t.Fatalf("req.From = %s, want %s", got, now.Add(-DefaultLookback))
 	}
+	if got := req.StorageTier; got != "" {
+		t.Fatalf("req.StorageTier = %q, want empty", got)
+	}
+}
+
+func TestNormalizeDatadogReadRequestAcceptsStorageTier(t *testing.T) {
+	t.Parallel()
+
+	req, err := NormalizeReadRequest(Input{
+		Action:      DatadogReadActionSearchLogs,
+		Query:       "service:api",
+		StorageTier: " FLEX ",
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("NormalizeReadRequest() error = %v", err)
+	}
+	if got := req.StorageTier; got != DatadogLogsStorageTierFlex {
+		t.Fatalf("req.StorageTier = %q, want %q", got, DatadogLogsStorageTierFlex)
+	}
+}
+
+func TestNormalizeDatadogReadRequestRejectsInvalidStorageTier(t *testing.T) {
+	t.Parallel()
+
+	_, err := NormalizeReadRequest(Input{
+		Action:      DatadogReadActionSearchLogs,
+		Query:       "service:api",
+		StorageTier: "cold",
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("NormalizeReadRequest() error = nil, want invalid storage_tier error")
+	}
+	if !strings.Contains(err.Error(), "storage_tier") {
+		t.Fatalf("NormalizeReadRequest() error = %v, want storage_tier error", err)
+	}
 }
 
 func TestDatadogReadToolRejectsUnexpectedArguments(t *testing.T) {
