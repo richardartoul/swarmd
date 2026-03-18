@@ -100,10 +100,10 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	if len(snapshot[0].Request.Messages) != 2 {
 		t.Fatalf("len(request messages) = %d, want 2", len(snapshot[0].Request.Messages))
 	}
-	if snapshot[0].Request.Messages[0].Role != agent.MessageRoleUser || snapshot[0].Request.Messages[0].Content != "say done" {
+	if snapshot[0].Request.Messages[0].Role != agent.MessageRoleUser || mustAnthropicStringContent(t, snapshot[0].Request.Messages[0].Content) != "say done" {
 		t.Fatalf("first request message = %#v, want user message", snapshot[0].Request.Messages[0])
 	}
-	if snapshot[0].Request.Messages[1].Role != agent.MessageRoleAssistant || snapshot[0].Request.Messages[1].Content != "previous step" {
+	if snapshot[0].Request.Messages[1].Role != agent.MessageRoleAssistant || mustAnthropicStringContent(t, snapshot[0].Request.Messages[1].Content) != "previous step" {
 		t.Fatalf("second request message = %#v, want assistant message", snapshot[0].Request.Messages[1])
 	}
 	if got := snapshot[0].Headers.Get("x-api-key"); got != "test-key" {
@@ -265,6 +265,159 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	}
 	if patchProperty["description"] != `Structured patch text. Provide the full patch body including "*** Begin Patch" and "*** End Patch".` {
 		t.Fatalf("patch property description = %#v, want explicit patch wrapper guidance", patchProperty["description"])
+	}
+}
+
+func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			Thought:        "inspect the file first",
+			ActionName:     agent.ToolNameReadFile,
+			ActionToolKind: agent.ToolKindFunction,
+			ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+			ActionOutput:   "demo content",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	if payload.System != "test prompt" {
+		t.Fatalf("payload.System = %q, want %q", payload.System, "test prompt")
+	}
+	if len(payload.Messages) != 4 {
+		t.Fatalf("len(payload.Messages) = %d, want 4", len(payload.Messages))
+	}
+	if payload.Messages[0].Role != agent.MessageRoleUser || mustAnthropicStringContent(t, payload.Messages[0].Content) != "trigger context" {
+		t.Fatalf("payload.Messages[0] = %#v, want trigger context", payload.Messages[0])
+	}
+	assistantBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	if len(assistantBlocks) != 2 {
+		t.Fatalf("len(assistantBlocks) = %d, want 2", len(assistantBlocks))
+	}
+	if assistantBlocks[0]["type"] != "text" || assistantBlocks[0]["text"] != "inspect the file first" {
+		t.Fatalf("assistantBlocks[0] = %#v, want text thought block", assistantBlocks[0])
+	}
+	if assistantBlocks[1]["type"] != "tool_use" || assistantBlocks[1]["id"] != "step_1" || assistantBlocks[1]["name"] != agent.ToolNameReadFile {
+		t.Fatalf("assistantBlocks[1] = %#v, want tool_use block", assistantBlocks[1])
+	}
+	input, ok := assistantBlocks[1]["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistantBlocks[1][input] = %#v, want object", assistantBlocks[1]["input"])
+	}
+	if input["file_path"] != "/tmp/demo.txt" {
+		t.Fatalf("tool_use input = %#v, want file_path", input)
+	}
+	userBlocks := mustAnthropicBlocks(t, payload.Messages[2].Content)
+	if len(userBlocks) != 1 {
+		t.Fatalf("len(userBlocks) = %d, want 1", len(userBlocks))
+	}
+	if userBlocks[0]["type"] != "tool_result" || userBlocks[0]["tool_use_id"] != "step_1" {
+		t.Fatalf("userBlocks[0] = %#v, want tool_result block", userBlocks[0])
+	}
+	if !strings.Contains(userBlocks[0]["content"].(string), "demo content") {
+		t.Fatalf("tool_result content = %#v, want observation output", userBlocks[0]["content"])
+	}
+	if mustAnthropicStringContent(t, payload.Messages[3].Content) != "Current execution state\nCurrent step number: 2" {
+		t.Fatalf("payload.Messages[3].Content = %#v, want current-state footer", payload.Messages[3].Content)
+	}
+}
+
+func TestBuildMessagesRequestReplaysCustomToolWrapperField(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			ActionName:     agent.ToolNameApplyPatch,
+			ActionToolKind: agent.ToolKindCustom,
+			ActionInput:    "*** Begin Patch\n*** End Patch",
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:         agent.ToolNameApplyPatch,
+			Kind:         agent.ToolKindCustom,
+			CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	assistantBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	if len(assistantBlocks) != 1 {
+		t.Fatalf("len(assistantBlocks) = %d, want 1", len(assistantBlocks))
+	}
+	input, ok := assistantBlocks[0]["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistantBlocks[0][input] = %#v, want object", assistantBlocks[0]["input"])
+	}
+	if input["patch"] != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("custom tool input = %#v, want patch wrapper", input)
+	}
+}
+
+func TestBuildMessagesRequestReplaysRunShellToolUse(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:      1,
+			Type:       agent.StepTypeShell,
+			ActionName: agent.ToolNameRunShell,
+			Shell:      "pwd",
+			Status:     agent.StepStatusOK,
+			CWDAfter:   "/workspace",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameRunShell,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	assistantBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	if len(assistantBlocks) != 1 {
+		t.Fatalf("len(assistantBlocks) = %d, want 1", len(assistantBlocks))
+	}
+	if assistantBlocks[0]["type"] != "tool_use" || assistantBlocks[0]["name"] != agent.ToolNameRunShell {
+		t.Fatalf("assistantBlocks[0] = %#v, want run_shell tool_use", assistantBlocks[0])
+	}
+	input, ok := assistantBlocks[0]["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("assistantBlocks[0][input] = %#v, want object", assistantBlocks[0]["input"])
+	}
+	if input["command"] != "pwd" {
+		t.Fatalf("run_shell input = %#v, want normalized command", input)
 	}
 }
 
@@ -649,4 +802,28 @@ func newTestDriver(t *testing.T, baseURL string) *Driver {
 		t.Fatalf("New() error = %v", err)
 	}
 	return driver
+}
+
+func mustAnthropicStringContent(t *testing.T, content any) string {
+	t.Helper()
+
+	value, ok := content.(string)
+	if !ok {
+		t.Fatalf("content = %#v, want string", content)
+	}
+	return value
+}
+
+func mustAnthropicBlocks(t *testing.T, content any) []map[string]any {
+	t.Helper()
+
+	data, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("json.Marshal(content): %v", err)
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal(data, &blocks); err != nil {
+		t.Fatalf("json.Unmarshal(blocks): %v", err)
+	}
+	return blocks
 }

@@ -670,7 +670,7 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	}
 }
 
-func TestHandleTriggerAppendsPriorStepsAsConversationMessages(t *testing.T) {
+func TestHandleTriggerCarriesPriorStepsWithoutConversationReplayMessages(t *testing.T) {
 	t.Parallel()
 
 	driver := &recordingDriver{
@@ -697,41 +697,34 @@ func TestHandleTriggerAppendsPriorStepsAsConversationMessages(t *testing.T) {
 		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
 	}
 	second := driver.requests[1]
-	if len(second.Messages) != 6 {
-		t.Fatalf("len(second.Messages) = %d, want 6", len(second.Messages))
+	if len(second.Messages) != 4 {
+		t.Fatalf("len(second.Messages) = %d, want 4", len(second.Messages))
 	}
 	if second.Messages[2].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[2].Content, "Trigger context") {
 		t.Fatalf("second.Messages[2] = %#v, want trigger context", second.Messages[2])
 	}
-	if second.Messages[3].Role != agent.MessageRoleAssistant {
-		t.Fatalf("second.Messages[3].Role = %q, want %q", second.Messages[3].Role, agent.MessageRoleAssistant)
+	for idx, message := range second.Messages {
+		if strings.Contains(message.Content, `"type":"function_call"`) || strings.Contains(message.Content, `"type":"custom_tool_call"`) {
+			t.Fatalf("second.Messages[%d].Content = %q, want no serialized prior tool calls", idx, message.Content)
+		}
+		if strings.Contains(message.Content, `"type":"function_call_output"`) || strings.Contains(message.Content, `"type":"custom_tool_call_output"`) {
+			t.Fatalf("second.Messages[%d].Content = %q, want no serialized prior tool outputs", idx, message.Content)
+		}
 	}
-	if !strings.Contains(second.Messages[3].Content, `"type":"function_call"`) {
-		t.Fatalf("assistant message = %q, want prior function call decision", second.Messages[3].Content)
+	if len(second.Steps) != 1 {
+		t.Fatalf("len(second.Steps) = %d, want 1 prior step", len(second.Steps))
 	}
-	if !strings.Contains(second.Messages[3].Content, `"name":"run_shell"`) {
-		t.Fatalf("assistant message = %q, want run_shell tool replay", second.Messages[3].Content)
+	if second.Steps[0].ActionName != agent.ToolNameRunShell {
+		t.Fatalf("second.Steps[0].ActionName = %q, want %q", second.Steps[0].ActionName, agent.ToolNameRunShell)
 	}
-	if !strings.Contains(second.Messages[3].Content, `"call_id":"step_1"`) {
-		t.Fatalf("assistant message = %q, want call id replay", second.Messages[3].Content)
+	if second.Steps[0].Shell != "pwd" {
+		t.Fatalf("second.Steps[0].Shell = %q, want %q", second.Steps[0].Shell, "pwd")
 	}
-	if !strings.Contains(second.Messages[3].Content, `\"command\":\"pwd\"`) {
-		t.Fatalf("assistant message = %q, want prior shell command encoded in tool input", second.Messages[3].Content)
+	if second.Messages[3].Role != agent.MessageRoleUser {
+		t.Fatalf("second.Messages[3].Role = %q, want %q", second.Messages[3].Role, agent.MessageRoleUser)
 	}
-	if second.Messages[4].Role != agent.MessageRoleUser {
-		t.Fatalf("second.Messages[4].Role = %q, want %q", second.Messages[4].Role, agent.MessageRoleUser)
-	}
-	if !strings.Contains(second.Messages[4].Content, `"type":"function_call_output"`) {
-		t.Fatalf("observation message = %q, want tool output envelope", second.Messages[4].Content)
-	}
-	if !strings.Contains(second.Messages[4].Content, "Status: ok") {
-		t.Fatalf("observation message = %q, want step status", second.Messages[4].Content)
-	}
-	if second.Messages[5].Role != agent.MessageRoleUser {
-		t.Fatalf("second.Messages[5].Role = %q, want %q", second.Messages[5].Role, agent.MessageRoleUser)
-	}
-	if !strings.Contains(second.Messages[5].Content, "Current step number: 2") {
-		t.Fatalf("current state = %q, want updated step number", second.Messages[5].Content)
+	if !strings.Contains(second.Messages[3].Content, "Current step number: 2") {
+		t.Fatalf("current state = %q, want updated step number", second.Messages[3].Content)
 	}
 }
 

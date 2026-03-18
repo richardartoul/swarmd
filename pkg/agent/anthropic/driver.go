@@ -66,7 +66,7 @@ type messagesRequest struct {
 
 type anthropicMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
 }
 
 type anthropicThinking struct {
@@ -75,6 +75,24 @@ type anthropicThinking struct {
 
 type anthropicOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+type anthropicRequestTextBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type anthropicRequestToolUseBlock struct {
+	Type  string         `json:"type"`
+	ID    string         `json:"id"`
+	Name  string         `json:"name"`
+	Input map[string]any `json:"input"`
+}
+
+type anthropicRequestToolResultBlock struct {
+	Type      string `json:"type"`
+	ToolUseID string `json:"tool_use_id"`
+	Content   string `json:"content"`
 }
 
 type anthropicTool struct {
@@ -198,31 +216,17 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 	payload := messagesRequest{
 		Model:     d.model,
 		MaxTokens: d.maxTokens,
-		Messages:  make([]anthropicMessage, 0, len(req.Messages)),
 	}
 	if d.reasoning != "" {
 		payload.Thinking = &anthropicThinking{Type: "adaptive"}
 		payload.OutputConfig = &anthropicOutputConfig{Effort: d.reasoning}
 	}
-	var systemParts []string
-	for _, message := range req.Messages {
-		switch message.Role {
-		case agent.MessageRoleSystem:
-			if strings.TrimSpace(message.Content) != "" {
-				systemParts = append(systemParts, message.Content)
-			}
-		case agent.MessageRoleUser, agent.MessageRoleAssistant:
-			payload.Messages = append(payload.Messages, anthropicMessage{
-				Role:    message.Role,
-				Content: message.Content,
-			})
-		default:
-			return messagesRequest{}, fmt.Errorf("unsupported anthropic message role %q", message.Role)
-		}
+	system, messages, err := buildAnthropicMessages(req)
+	if err != nil {
+		return messagesRequest{}, err
 	}
-	if len(systemParts) > 0 {
-		payload.System = strings.Join(systemParts, "\n\n")
-	}
+	payload.System = system
+	payload.Messages = messages
 	if len(payload.Messages) == 0 {
 		return messagesRequest{}, fmt.Errorf("anthropic request must include at least one non-system message")
 	}
@@ -234,6 +238,122 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 		}
 	}
 	return payload, nil
+}
+
+func buildAnthropicMessages(req agent.Request) (string, []anthropicMessage, error) {
+	if len(req.Messages) == 0 {
+		return "", nil, nil
+	}
+
+	var systemParts []string
+	prefix, footer := splitAnthropicRequestMessages(req.Messages)
+	messages := make([]anthropicMessage, 0, len(req.Messages)+len(req.Steps)*2)
+	appendPrepared := func(message agent.Message) error {
+		switch message.Role {
+		case agent.MessageRoleSystem:
+			if strings.TrimSpace(message.Content) != "" {
+				systemParts = append(systemParts, message.Content)
+			}
+		case agent.MessageRoleUser, agent.MessageRoleAssistant:
+			messages = append(messages, anthropicMessage{
+				Role:    message.Role,
+				Content: message.Content,
+			})
+		default:
+			return fmt.Errorf("unsupported anthropic message role %q", message.Role)
+		}
+		return nil
+	}
+
+	for _, message := range prefix {
+		if err := appendPrepared(message); err != nil {
+			return "", nil, err
+		}
+	}
+
+	for _, replay := range agent.BuildStepReplays(req.Steps) {
+		replayMessages, err := buildAnthropicReplayMessages(replay, req.Tools)
+		if err != nil {
+			return "", nil, err
+		}
+		messages = append(messages, replayMessages...)
+	}
+
+	if err := appendPrepared(footer); err != nil {
+		return "", nil, err
+	}
+	return strings.Join(systemParts, "\n\n"), messages, nil
+}
+
+func splitAnthropicRequestMessages(messages []agent.Message) ([]agent.Message, agent.Message) {
+	if len(messages) == 0 {
+		return nil, agent.Message{}
+	}
+	return messages[:len(messages)-1], messages[len(messages)-1]
+}
+
+func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.ToolDefinition) ([]anthropicMessage, error) {
+	def, ok := allowedToolDefinition(allowedTools, replay.ToolName)
+	if !ok {
+		def = agent.ToolDefinition{
+			Name: replay.ToolName,
+			Kind: replay.ToolKind,
+		}
+	}
+	input, err := anthropicReplayToolInput(replay, def)
+	if err != nil {
+		return nil, err
+	}
+
+	assistantContent := make([]any, 0, 2)
+	if replay.Thought != "" {
+		assistantContent = append(assistantContent, anthropicRequestTextBlock{
+			Type: "text",
+			Text: replay.Thought,
+		})
+	}
+	assistantContent = append(assistantContent, anthropicRequestToolUseBlock{
+		Type:  "tool_use",
+		ID:    replay.CallID,
+		Name:  def.Name,
+		Input: input,
+	})
+
+	return []anthropicMessage{
+		{
+			Role:    agent.MessageRoleAssistant,
+			Content: assistantContent,
+		},
+		{
+			Role: agent.MessageRoleUser,
+			Content: []any{anthropicRequestToolResultBlock{
+				Type:      "tool_result",
+				ToolUseID: replay.CallID,
+				Content:   replay.Output,
+			}},
+		},
+	}, nil
+}
+
+func anthropicReplayToolInput(replay agent.StepReplay, def agent.ToolDefinition) (map[string]any, error) {
+	if replay.ToolKind == agent.ToolKindCustom {
+		return map[string]any{
+			anthropicCustomToolInputField(def): replay.Input,
+		}, nil
+	}
+	raw := strings.TrimSpace(replay.Input)
+	if raw == "" {
+		return map[string]any{}, nil
+	}
+	var payload any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("could not decode replay input for tool %q: %w", replay.ToolName, err)
+	}
+	object, ok := payload.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("replay input for tool %q must decode to an object", replay.ToolName)
+	}
+	return object, nil
 }
 
 func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedTools []agent.ToolDefinition) (agent.Decision, error) {

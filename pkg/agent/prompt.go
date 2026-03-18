@@ -206,18 +206,6 @@ func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps 
 		Role:    MessageRoleUser,
 		Content: formatTriggerContext(prompt, req.Trigger),
 	})
-	for _, step := range req.Steps {
-		req.Messages = append(req.Messages,
-			Message{
-				Role:    MessageRoleAssistant,
-				Content: formatStepDecision(step),
-			},
-			Message{
-				Role:    MessageRoleUser,
-				Content: formatStepObservation(step),
-			},
-		)
-	}
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
 		Content: formatCurrentState(req),
@@ -326,94 +314,6 @@ func formatCurrentState(req Request) string {
 	b.WriteString("When finishing, prefer {\"type\":\"finish\",\"thought\":\"...\",\"result\":...} so the runtime can record the final thought separately.\n")
 	b.WriteString("Never emit multiple tool calls in a single response.\n")
 	return b.String()
-}
-
-func formatStepDecision(step Step) string {
-	name := strings.TrimSpace(step.ActionName)
-	if name != "" {
-		input := strings.TrimSpace(step.ActionInput)
-		if input == "" && step.Shell != "" {
-			input = mustCompactJSON(map[string]any{"command": step.Shell})
-		}
-		callID := stepCallID(step)
-		if step.ActionToolKind == ToolKindCustom {
-			type priorCustomToolCall struct {
-				Type    string `json:"type"`
-				Name    string `json:"name"`
-				Input   string `json:"input"`
-				CallID  string `json:"call_id"`
-				Thought string `json:"thought,omitempty"`
-			}
-			data, err := json.Marshal(priorCustomToolCall{
-				Type:    "custom_tool_call",
-				Name:    name,
-				Input:   input,
-				CallID:  callID,
-				Thought: step.Thought,
-			})
-			if err == nil {
-				return string(data)
-			}
-		}
-		type priorFunctionCall struct {
-			Type      string `json:"type"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-			CallID    string `json:"call_id"`
-			Thought   string `json:"thought,omitempty"`
-		}
-		data, err := json.Marshal(priorFunctionCall{
-			Type:      "function_call",
-			Name:      name,
-			Arguments: defaultJSONString(input),
-			CallID:    callID,
-			Thought:   step.Thought,
-		})
-		if err == nil {
-			return string(data)
-		}
-	}
-
-	type priorShellDecision struct {
-		Type    string `json:"type"`
-		Thought string `json:"thought"`
-		Shell   string `json:"shell"`
-	}
-
-	data, err := json.Marshal(priorShellDecision{
-		Type:    "shell",
-		Thought: step.Thought,
-		Shell:   step.Shell,
-	})
-	if err != nil {
-		return fmt.Sprintf(`{"type":"shell","thought":%q,"shell":%q}`, step.Thought, step.Shell)
-	}
-	return string(data)
-}
-
-func formatStepObservation(step Step) string {
-	summary := formatStepObservationSummary(step)
-	if step.ActionName == "" {
-		return summary
-	}
-	type toolCallOutput struct {
-		Type   string `json:"type"`
-		CallID string `json:"call_id"`
-		Output string `json:"output"`
-	}
-	outputType := "function_call_output"
-	if step.ActionToolKind == ToolKindCustom {
-		outputType = "custom_tool_call_output"
-	}
-	data, err := json.Marshal(toolCallOutput{
-		Type:   outputType,
-		CallID: stepCallID(step),
-		Output: summary,
-	})
-	if err != nil {
-		return summary
-	}
-	return string(data)
 }
 
 func formatValue(value any) string {
@@ -581,51 +481,4 @@ func indentLines(text, prefix string) string {
 		lines[idx] = prefix + line
 	}
 	return strings.Join(lines, "\n")
-}
-
-func stepCallID(step Step) string {
-	return fmt.Sprintf("step_%d", step.Index)
-}
-
-func defaultJSONString(input string) string {
-	input = strings.TrimSpace(input)
-	if input == "" {
-		return "{}"
-	}
-	return input
-}
-
-func formatStepObservationSummary(step Step) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Observation for step %d\n", step.Index)
-	if step.ActionName != "" {
-		fmt.Fprintf(&b, "Action: %s\n", step.ActionName)
-	}
-	fmt.Fprintf(&b, "Status: %s\n", step.Status)
-	if step.ExitStatus != 0 {
-		fmt.Fprintf(&b, "Exit status: %d\n", step.ExitStatus)
-	}
-	if step.Error != "" {
-		fmt.Fprintf(&b, "Error: %s\n", step.Error)
-	}
-	fmt.Fprintf(&b, "Working directory after step: %s\n", step.CWDAfter)
-	if step.ActionOutput != "" {
-		fmt.Fprintf(&b, "Output:\n%s\n", step.ActionOutput)
-	}
-	if step.ActionOutputTruncated {
-		b.WriteString("Output was truncated.\n")
-	}
-	if step.Stdout != "" {
-		fmt.Fprintf(&b, "Stdout:\n%s\n", step.Stdout)
-	}
-	if step.StdoutTruncated {
-		b.WriteString("Stdout was truncated.\n")
-	}
-	if step.Stderr != "" {
-		fmt.Fprintf(&b, "Stderr:\n%s\n", step.Stderr)
-	}
-	if step.StderrTruncated {
-		b.WriteString("Stderr was truncated.\n")
-	}
-	return b.String()
 }

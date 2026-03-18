@@ -251,6 +251,187 @@ func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 	}
 }
 
+func TestBuildOpenAIRequestMessagesReplaysRunShellBeforeCurrentState(t *testing.T) {
+	t.Parallel()
+
+	messages := buildOpenAIRequestMessages(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:      1,
+			Type:       agent.StepTypeShell,
+			Thought:    "check the current directory",
+			ActionName: agent.ToolNameRunShell,
+			Shell:      "pwd",
+			Status:     agent.StepStatusOK,
+			CWDAfter:   "/workspace",
+			Stdout:     "/workspace\n",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameRunShell,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}, "additionalProperties": false},
+		}},
+	}, openAIAdapterCapabilities{})
+
+	if len(messages) != 5 {
+		t.Fatalf("len(messages) = %d, want 5", len(messages))
+	}
+	if messages[2].Role != agent.MessageRoleAssistant {
+		t.Fatalf("messages[2].Role = %q, want assistant", messages[2].Role)
+	}
+	if messages[2].Content != "check the current directory" {
+		t.Fatalf("messages[2].Content = %q, want replay thought", messages[2].Content)
+	}
+	if len(messages[2].ToolCalls) != 1 {
+		t.Fatalf("len(messages[2].ToolCalls) = %d, want 1", len(messages[2].ToolCalls))
+	}
+	if messages[2].ToolCalls[0].ID != "step_1" {
+		t.Fatalf("messages[2].ToolCalls[0].ID = %q, want %q", messages[2].ToolCalls[0].ID, "step_1")
+	}
+	if messages[2].ToolCalls[0].Function.Name != agent.ToolNameRunShell {
+		t.Fatalf("messages[2].ToolCalls[0].Function.Name = %q, want %q", messages[2].ToolCalls[0].Function.Name, agent.ToolNameRunShell)
+	}
+	if messages[2].ToolCalls[0].Function.Arguments != `{"command":"pwd"}` {
+		t.Fatalf("messages[2].ToolCalls[0].Function.Arguments = %q, want normalized run_shell input", messages[2].ToolCalls[0].Function.Arguments)
+	}
+	if messages[3].Role != "tool" || messages[3].ToolCallID != "step_1" {
+		t.Fatalf("messages[3] = %#v, want tool output message for step_1", messages[3])
+	}
+	if !strings.Contains(messages[3].Content, "Status: ok") {
+		t.Fatalf("messages[3].Content = %q, want observation summary", messages[3].Content)
+	}
+	if messages[4].Content != "Current execution state\nCurrent step number: 2" {
+		t.Fatalf("messages[4].Content = %q, want current-state footer last", messages[4].Content)
+	}
+}
+
+func TestBuildOpenAIRequestMessagesWrapsCustomReplayForFunctionFallback(t *testing.T) {
+	t.Parallel()
+
+	messages := buildOpenAIRequestMessages(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			Thought:        "patch it",
+			ActionName:     agent.ToolNameApplyPatch,
+			ActionToolKind: agent.ToolKindCustom,
+			ActionInput:    "*** Begin Patch\n*** End Patch",
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:         agent.ToolNameApplyPatch,
+			Kind:         agent.ToolKindCustom,
+			CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+			Interop: agent.ToolInterop{
+				OpenAIPreferredKind: agent.ToolBoundaryKindCustom,
+				OpenAIFallbackKind:  agent.ToolBoundaryKindFunction,
+			},
+		}},
+	}, openAIAdapterCapabilities{})
+
+	if len(messages) != 5 {
+		t.Fatalf("len(messages) = %d, want 5", len(messages))
+	}
+	if len(messages[2].ToolCalls) != 1 {
+		t.Fatalf("len(messages[2].ToolCalls) = %d, want 1", len(messages[2].ToolCalls))
+	}
+	if messages[2].ToolCalls[0].Function.Name != agent.ToolNameApplyPatch {
+		t.Fatalf("messages[2].ToolCalls[0].Function.Name = %q, want %q", messages[2].ToolCalls[0].Function.Name, agent.ToolNameApplyPatch)
+	}
+	if messages[2].ToolCalls[0].Function.Arguments != compactJSON(map[string]any{"patch": "*** Begin Patch\n*** End Patch"}) {
+		t.Fatalf("messages[2].ToolCalls[0].Function.Arguments = %q, want wrapped patch arguments", messages[2].ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
+	t.Parallel()
+
+	input := buildResponsesInput(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{
+			{
+				Index:          1,
+				Thought:        "inspect the file first",
+				ActionName:     agent.ToolNameReadFile,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   "demo content",
+			},
+			{
+				Index:          2,
+				ActionName:     agent.ToolNameApplyPatch,
+				ActionToolKind: agent.ToolKindCustom,
+				ActionInput:    "*** Begin Patch\n*** End Patch",
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+			},
+		},
+		Tools: []agent.ToolDefinition{
+			{
+				Name:        agent.ToolNameReadFile,
+				Kind:        agent.ToolKindFunction,
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+				Description: "Reads a file.",
+			},
+			{
+				Name:         agent.ToolNameApplyPatch,
+				Kind:         agent.ToolKindCustom,
+				CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+				Interop: agent.ToolInterop{
+					OpenAIPreferredKind: agent.ToolBoundaryKindCustom,
+					OpenAIFallbackKind:  agent.ToolBoundaryKindFunction,
+				},
+			},
+		},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+
+	if len(input) != 8 {
+		t.Fatalf("len(input) = %d, want 8", len(input))
+	}
+	if input[2].Role != agent.MessageRoleAssistant || input[2].Content != "inspect the file first" {
+		t.Fatalf("input[2] = %#v, want assistant thought message", input[2])
+	}
+	if input[3].Type != "function_call" || input[3].CallID != "step_1" || input[3].Name != agent.ToolNameReadFile {
+		t.Fatalf("input[3] = %#v, want function_call replay", input[3])
+	}
+	if input[3].Arguments != `{"file_path":"/tmp/demo.txt"}` {
+		t.Fatalf("input[3].Arguments = %q, want replayed function arguments", input[3].Arguments)
+	}
+	if input[4].Type != "function_call_output" || input[4].CallID != "step_1" {
+		t.Fatalf("input[4] = %#v, want function_call_output replay", input[4])
+	}
+	if !strings.Contains(input[4].Output, "demo content") {
+		t.Fatalf("input[4].Output = %q, want observation output", input[4].Output)
+	}
+	if input[5].Type != "custom_tool_call" || input[5].CallID != "step_2" || input[5].Name != agent.ToolNameApplyPatch {
+		t.Fatalf("input[5] = %#v, want custom_tool_call replay", input[5])
+	}
+	if input[5].Input != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("input[5].Input = %q, want raw custom tool input", input[5].Input)
+	}
+	if input[6].Type != "custom_tool_call_output" || input[6].CallID != "step_2" {
+		t.Fatalf("input[6] = %#v, want custom_tool_call_output replay", input[6])
+	}
+	if input[7].Content != "Current execution state\nCurrent step number: 2" {
+		t.Fatalf("input[7].Content = %q, want current-state footer last", input[7].Content)
+	}
+}
+
 func TestDriverNextForwardsPromptCacheSettings(t *testing.T) {
 	t.Parallel()
 
@@ -713,7 +894,7 @@ func TestRequestMarshalingIncludesExplicitFalseParallelToolCalls(t *testing.T) {
 
 	responsesBody, err := json.Marshal(responsesRequest{
 		Model:             "gpt-test",
-		Input:             []chatMessage{{Role: agent.MessageRoleUser, Content: "hi"}},
+		Input:             []responsesInputItem{{Role: agent.MessageRoleUser, Content: "hi"}},
 		ToolChoice:        "auto",
 		ParallelToolCalls: boolPtr(false),
 	})

@@ -63,8 +63,10 @@ type chatCompletionRequest struct {
 }
 
 type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string                   `json:"role"`
+	Content    string                   `json:"content,omitempty"`
+	ToolCalls  []chatCompletionToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string                   `json:"tool_call_id,omitempty"`
 }
 
 type chatCompletionTool struct {
@@ -113,18 +115,29 @@ type chatCompletionResponse struct {
 }
 
 type responsesRequest struct {
-	Model                string              `json:"model"`
-	Reasoning            *responsesReasoning `json:"reasoning,omitempty"`
-	Input                []chatMessage       `json:"input"`
-	Tools                []responsesTool     `json:"tools,omitempty"`
-	ToolChoice           string              `json:"tool_choice,omitempty"`
-	ParallelToolCalls    *bool               `json:"parallel_tool_calls,omitempty"`
-	PromptCacheKey       string              `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string              `json:"prompt_cache_retention,omitempty"`
+	Model                string               `json:"model"`
+	Reasoning            *responsesReasoning  `json:"reasoning,omitempty"`
+	Input                []responsesInputItem `json:"input"`
+	Tools                []responsesTool      `json:"tools,omitempty"`
+	ToolChoice           string               `json:"tool_choice,omitempty"`
+	ParallelToolCalls    *bool                `json:"parallel_tool_calls,omitempty"`
+	PromptCacheKey       string               `json:"prompt_cache_key,omitempty"`
+	PromptCacheRetention string               `json:"prompt_cache_retention,omitempty"`
 }
 
 type responsesReasoning struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+type responsesInputItem struct {
+	Type      string `json:"type,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Input     string `json:"input,omitempty"`
+	Output    string `json:"output,omitempty"`
 }
 
 type responsesTool struct {
@@ -278,15 +291,9 @@ func (d *Driver) nextChatCompletions(ctx context.Context, req agent.Request, cap
 	requestBody := chatCompletionRequest{
 		Model:                d.model,
 		ReasoningEffort:      d.reasoningEffort,
-		Messages:             make([]chatMessage, 0, len(req.Messages)),
+		Messages:             buildOpenAIRequestMessages(req, caps),
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: d.promptCacheRetention,
-	}
-	for _, message := range req.Messages {
-		requestBody.Messages = append(requestBody.Messages, chatMessage{
-			Role:    message.Role,
-			Content: message.Content,
-		})
 	}
 	if len(req.Tools) > 0 {
 		requestBody.Tools = buildChatCompletionTools(req.Tools, caps)
@@ -304,7 +311,7 @@ func (d *Driver) nextChatCompletions(ctx context.Context, req agent.Request, cap
 func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	requestBody := responsesRequest{
 		Model:                d.model,
-		Input:                make([]chatMessage, 0, len(req.Messages)),
+		Input:                buildResponsesInput(req, caps),
 		ToolChoice:           "auto",
 		ParallelToolCalls:    boolPtr(false),
 		PromptCacheKey:       d.promptCacheKey,
@@ -312,12 +319,6 @@ func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps open
 	}
 	if d.reasoningEffort != "" {
 		requestBody.Reasoning = &responsesReasoning{Effort: d.reasoningEffort}
-	}
-	for _, message := range req.Messages {
-		requestBody.Input = append(requestBody.Input, chatMessage{
-			Role:    message.Role,
-			Content: message.Content,
-		})
 	}
 	if len(req.Tools) > 0 {
 		requestBody.Tools = buildResponsesTools(req.Tools, caps)
@@ -875,6 +876,182 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 		result = append(result, responseTool)
 	}
 	return result
+}
+
+func buildOpenAIRequestMessages(req agent.Request, caps openAIAdapterCapabilities) []chatMessage {
+	if len(req.Messages) == 0 {
+		return nil
+	}
+	prefix, footer := splitRequestMessages(req.Messages)
+	replays := agent.BuildStepReplays(req.Steps)
+	messages := make([]chatMessage, 0, len(req.Messages)+len(replays)*2)
+	for _, message := range prefix {
+		messages = append(messages, chatMessage{
+			Role:    message.Role,
+			Content: message.Content,
+		})
+	}
+	adapters := openAIToolAdaptersByInternalName(req.Tools, caps)
+	for _, replay := range replays {
+		adapter, ok := adapters[replay.ToolName]
+		messages = append(messages, buildOpenAIReplayMessages(replay, adapter, ok)...)
+	}
+	messages = append(messages, chatMessage{
+		Role:    footer.Role,
+		Content: footer.Content,
+	})
+	return messages
+}
+
+func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities) []responsesInputItem {
+	if len(req.Messages) == 0 {
+		return nil
+	}
+	prefix, footer := splitRequestMessages(req.Messages)
+	replays := agent.BuildStepReplays(req.Steps)
+	input := make([]responsesInputItem, 0, len(req.Messages)+len(replays)*3)
+	for _, message := range prefix {
+		input = append(input, responsesInputItem{
+			Role:    message.Role,
+			Content: message.Content,
+		})
+	}
+	adapters := openAIToolAdaptersByInternalName(req.Tools, caps)
+	for _, replay := range replays {
+		adapter, ok := adapters[replay.ToolName]
+		input = append(input, buildResponsesReplayItems(replay, adapter, ok)...)
+	}
+	input = append(input, responsesInputItem{
+		Role:    footer.Role,
+		Content: footer.Content,
+	})
+	return input
+}
+
+func splitRequestMessages(messages []agent.Message) ([]agent.Message, agent.Message) {
+	if len(messages) == 0 {
+		return nil, agent.Message{}
+	}
+	return messages[:len(messages)-1], messages[len(messages)-1]
+}
+
+func buildOpenAIReplayMessages(replay agent.StepReplay, adapter openAIToolAdapter, ok bool) []chatMessage {
+	name, arguments := openAIReplayCallNameAndArguments(replay, adapter, ok)
+	message := chatMessage{
+		Role:    agent.MessageRoleAssistant,
+		Content: replay.Thought,
+		ToolCalls: []chatCompletionToolCall{{
+			ID:   replay.CallID,
+			Type: "function",
+			Function: chatCompletionFunctionCall{
+				Name:      name,
+				Arguments: arguments,
+			},
+		}},
+	}
+	return []chatMessage{
+		message,
+		{
+			Role:       "tool",
+			Content:    replay.Output,
+			ToolCallID: replay.CallID,
+		},
+	}
+}
+
+func buildResponsesReplayItems(replay agent.StepReplay, adapter openAIToolAdapter, ok bool) []responsesInputItem {
+	items := make([]responsesInputItem, 0, 3)
+	if replay.Thought != "" {
+		items = append(items, responsesInputItem{
+			Role:    agent.MessageRoleAssistant,
+			Content: replay.Thought,
+		})
+	}
+	name, arguments := openAIReplayCallNameAndArguments(replay, adapter, ok)
+	boundaryKind := openAIReplayBoundaryKind(replay, adapter, ok)
+	switch boundaryKind {
+	case agent.ToolBoundaryKindCustom:
+		items = append(items,
+			responsesInputItem{
+				Type:   "custom_tool_call",
+				CallID: replay.CallID,
+				Name:   name,
+				Input:  replay.Input,
+			},
+			responsesInputItem{
+				Type:   "custom_tool_call_output",
+				CallID: replay.CallID,
+				Output: replay.Output,
+			},
+		)
+	default:
+		items = append(items,
+			responsesInputItem{
+				Type:      "function_call",
+				CallID:    replay.CallID,
+				Name:      name,
+				Arguments: arguments,
+			},
+			responsesInputItem{
+				Type:   "function_call_output",
+				CallID: replay.CallID,
+				Output: replay.Output,
+			},
+		)
+	}
+	return items
+}
+
+func openAIReplayCallNameAndArguments(replay agent.StepReplay, adapter openAIToolAdapter, ok bool) (string, string) {
+	name := replay.ToolName
+	tool := agent.ToolDefinition{
+		Name: replay.ToolName,
+		Kind: replay.ToolKind,
+	}
+	if ok {
+		name = adapter.ExposedName
+		tool = adapter.Tool
+	}
+	if replay.ToolKind == agent.ToolKindCustom && openAIReplayBoundaryKind(replay, adapter, ok) != agent.ToolBoundaryKindCustom {
+		return name, openAICustomToolArguments(tool, replay.Input)
+	}
+	arguments := strings.TrimSpace(replay.Input)
+	if arguments == "" && replay.ToolKind != agent.ToolKindCustom {
+		arguments = "{}"
+	}
+	return name, arguments
+}
+
+func openAIReplayBoundaryKind(_ agent.StepReplay, adapter openAIToolAdapter, ok bool) agent.ToolBoundaryKind {
+	if ok && adapter.BoundaryKind != "" {
+		return adapter.BoundaryKind
+	}
+	return agent.ToolBoundaryKindFunction
+}
+
+func openAIToolAdaptersByInternalName(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) map[string]openAIToolAdapter {
+	if len(tools) == 0 {
+		return nil
+	}
+	adapters := buildOpenAIToolAdapters(tools, caps)
+	byName := make(map[string]openAIToolAdapter, len(adapters))
+	for _, adapter := range adapters {
+		byName[adapter.InternalName] = adapter
+	}
+	return byName
+}
+
+func openAICustomToolArguments(tool agent.ToolDefinition, input string) string {
+	return compactJSON(map[string]any{
+		openAICustomToolInputField(tool): input,
+	})
+}
+
+func openAICustomToolInputField(tool agent.ToolDefinition) string {
+	if tool.Name == agent.ToolNameApplyPatch {
+		return "patch"
+	}
+	return "input"
 }
 
 func buildOpenAIToolAdapters(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) []openAIToolAdapter {
