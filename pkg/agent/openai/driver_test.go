@@ -75,8 +75,8 @@ func TestNewRejectsInvalidPromptCacheRetention(t *testing.T) {
 func TestDriverNextParsesShellDecision(t *testing.T) {
 	t.Parallel()
 
-	server, requests := newTestServer(t, []testServerResponse{
-		{Content: `{"type":"shell","thought":"inspect","shell":"ls"}`},
+	server, requests := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"type":"shell","thought":"inspect","shell":"ls"}`},
 	})
 	defer server.Close()
 
@@ -107,25 +107,31 @@ func TestDriverNextParsesShellDecision(t *testing.T) {
 	if got.Model != "gpt-test" {
 		t.Fatalf("request model = %q, want %q", got.Model, "gpt-test")
 	}
-	if got.ReasoningEffort != "" {
-		t.Fatalf("request reasoning effort = %q, want empty", got.ReasoningEffort)
+	if got.Reasoning != nil {
+		t.Fatalf("request reasoning = %#v, want nil", got.Reasoning)
 	}
-	if len(got.Messages) != 2 {
-		t.Fatalf("len(request messages) = %d, want 2", len(got.Messages))
+	if got.ToolChoice != "" {
+		t.Fatalf("request tool_choice = %q, want empty without tools", got.ToolChoice)
 	}
-	if got.Messages[0].Role != agent.MessageRoleSystem || got.Messages[0].Content != "test prompt" {
-		t.Fatalf("first request message = %#v, want system prompt", got.Messages[0])
+	if got.ParallelToolCalls != nil {
+		t.Fatalf("request parallel_tool_calls = %#v, want nil without tools", got.ParallelToolCalls)
 	}
-	if got.Messages[1].Role != agent.MessageRoleUser || got.Messages[1].Content != "list the current directory" {
-		t.Fatalf("second request message = %#v, want user prompt", got.Messages[1])
+	if len(got.Input) != 2 {
+		t.Fatalf("len(request input) = %d, want 2", len(got.Input))
+	}
+	if got.Input[0].Role != agent.MessageRoleSystem || got.Input[0].Content != "test prompt" {
+		t.Fatalf("first request input = %#v, want system prompt", got.Input[0])
+	}
+	if got.Input[1].Role != agent.MessageRoleUser || got.Input[1].Content != "list the current directory" {
+		t.Fatalf("second request input = %#v, want user prompt", got.Input[1])
 	}
 }
 
 func TestDriverNextSendsReasoningEffortFromModelSuffix(t *testing.T) {
 	t.Parallel()
 
-	server, requests := newTestServer(t, []testServerResponse{
-		{Content: `{"type":"shell","thought":"inspect","shell":"ls"}`},
+	server, requests := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"type":"shell","thought":"inspect","shell":"ls"}`},
 	})
 	defer server.Close()
 
@@ -154,17 +160,20 @@ func TestDriverNextSendsReasoningEffortFromModelSuffix(t *testing.T) {
 	if snapshot[0].Model != "gpt-5.4" {
 		t.Fatalf("request model = %q, want %q", snapshot[0].Model, "gpt-5.4")
 	}
-	if snapshot[0].ReasoningEffort != "none" {
-		t.Fatalf("request reasoning effort = %q, want %q", snapshot[0].ReasoningEffort, "none")
+	if snapshot[0].Reasoning == nil {
+		t.Fatal("request reasoning = nil, want none effort object")
+	}
+	if snapshot[0].Reasoning.Effort != "none" {
+		t.Fatalf("request reasoning effort = %q, want %q", snapshot[0].Reasoning.Effort, "none")
 	}
 }
 
 func TestDriverNextCapturesCachedTokens(t *testing.T) {
 	t.Parallel()
 
-	server, _ := newTestServer(t, []testServerResponse{
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
 		{
-			Content:      `{"type":"shell","thought":"inspect","shell":"ls"}`,
+			OutputText:   `{"type":"shell","thought":"inspect","shell":"ls"}`,
 			CachedTokens: 1536,
 		},
 	})
@@ -187,9 +196,9 @@ func TestDriverNextCapturesCachedTokens(t *testing.T) {
 func TestDriverNextIgnoresTrailingJSONObjects(t *testing.T) {
 	t.Parallel()
 
-	server, _ := newTestServer(t, []testServerResponse{
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
 		{
-			Content: "{\"type\":\"shell\",\"thought\":\"inspect\",\"shell\":\"ls -la\"}\n" +
+			OutputText: "{\"type\":\"shell\",\"thought\":\"inspect\",\"shell\":\"ls -la\"}\n" +
 				"{\"type\":\"finish\",\"thought\":\"done\",\"result\":\"ignored\"}",
 		},
 	})
@@ -215,8 +224,8 @@ func TestDriverNextIgnoresTrailingJSONObjects(t *testing.T) {
 func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 	t.Parallel()
 
-	server, requests := newTestServer(t, []testServerResponse{
-		{Content: `{"type":"shell","thought":"follow up","shell":"cat note.txt"}`},
+	server, requests := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"type":"shell","thought":"follow up","shell":"cat note.txt"}`},
 	})
 	defer server.Close()
 
@@ -237,38 +246,17 @@ func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
 	}
 	got := snapshot[0]
-	if len(got.Messages) != 3 {
-		t.Fatalf("len(request messages) = %d, want 3", len(got.Messages))
+	if len(got.Input) != 3 {
+		t.Fatalf("len(request input) = %d, want 3", len(got.Input))
 	}
-	if got.Messages[0].Role != agent.MessageRoleSystem || got.Messages[0].Content != "test prompt" {
-		t.Fatalf("first request message = %#v, want system prompt", got.Messages[0])
+	if got.Input[0].Role != agent.MessageRoleSystem || got.Input[0].Content != "test prompt" {
+		t.Fatalf("first request input = %#v, want system prompt", got.Input[0])
 	}
-	if got.Messages[1].Role != agent.MessageRoleSystem || got.Messages[1].Content != "Conversation history across previous triggers:\n..." {
-		t.Fatalf("second request message = %#v, want history", got.Messages[1])
+	if got.Input[1].Role != agent.MessageRoleSystem || got.Input[1].Content != "Conversation history across previous triggers:\n..." {
+		t.Fatalf("second request input = %#v, want history", got.Input[1])
 	}
-	if got.Messages[2].Role != agent.MessageRoleUser || got.Messages[2].Content != "show it to me" {
-		t.Fatalf("third request message = %#v, want user message", got.Messages[2])
-	}
-}
-
-func TestNextChatCompletionsRejectsToolBearingRequests(t *testing.T) {
-	t.Parallel()
-
-	driver := newTestDriver(t, "http://example.invalid")
-	_, err := driver.nextChatCompletions(context.Background(), agent.Request{
-		Messages: []agent.Message{
-			{Role: agent.MessageRoleUser, Content: "list files"},
-		},
-		Tools: []agent.ToolDefinition{{
-			Name: agent.ToolNameRunShell,
-			Kind: agent.ToolKindFunction,
-		}},
-	}, openAIAdapterCapabilities{})
-	if err == nil {
-		t.Fatal("nextChatCompletions() error = nil, want tool-bearing request rejection")
-	}
-	if !strings.Contains(err.Error(), "does not support tool-bearing requests") {
-		t.Fatalf("nextChatCompletions() error = %v, want tool-bearing request rejection", err)
+	if got.Input[2].Role != agent.MessageRoleUser || got.Input[2].Content != "show it to me" {
+		t.Fatalf("third request input = %#v, want user message", got.Input[2])
 	}
 }
 
@@ -355,8 +343,8 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 func TestDriverNextForwardsPromptCacheSettings(t *testing.T) {
 	t.Parallel()
 
-	server, requests := newTestServer(t, []testServerResponse{
-		{Content: `{"type":"shell","thought":"inspect","shell":"ls"}`},
+	server, requests := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"type":"shell","thought":"inspect","shell":"ls"}`},
 	})
 	defer server.Close()
 
@@ -438,20 +426,9 @@ func TestDriverNextForwardsResponsesPromptCacheSettings(t *testing.T) {
 	}
 }
 
-type requestLog struct {
-	mu       sync.Mutex
-	requests []chatCompletionRequest
-}
-
 type responsesRequestLog struct {
 	mu       sync.Mutex
 	requests []responsesRequest
-}
-
-type testServerResponse struct {
-	Content      string
-	ToolCalls    []chatCompletionToolCall
-	CachedTokens int
 }
 
 type responsesTestServerResponse struct {
@@ -460,25 +437,10 @@ type responsesTestServerResponse struct {
 	CachedTokens int
 }
 
-func (l *requestLog) append(req chatCompletionRequest) {
-	l.mu.Lock()
-	l.requests = append(l.requests, req)
-	l.mu.Unlock()
-}
-
 func (l *responsesRequestLog) append(req responsesRequest) {
 	l.mu.Lock()
 	l.requests = append(l.requests, req)
 	l.mu.Unlock()
-}
-
-func (l *requestLog) snapshot() []chatCompletionRequest {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	out := make([]chatCompletionRequest, len(l.requests))
-	copy(out, l.requests)
-	return out
 }
 
 func (l *responsesRequestLog) snapshot() []responsesRequest {
@@ -488,50 +450,6 @@ func (l *responsesRequestLog) snapshot() []responsesRequest {
 	out := make([]responsesRequest, len(l.requests))
 	copy(out, l.requests)
 	return out
-}
-
-func newTestServer(t *testing.T, responses []testServerResponse) (*httptest.Server, *requestLog) {
-	t.Helper()
-
-	var (
-		mu    sync.Mutex
-		index int
-	)
-	log := &requestLog{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/chat/completions" {
-			http.Error(w, "unexpected path", http.StatusNotFound)
-			return
-		}
-
-		var req chatCompletionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatalf("decode request: %v", err)
-		}
-		log.append(req)
-
-		mu.Lock()
-		defer mu.Unlock()
-		if index >= len(responses) {
-			t.Fatalf("received more requests than responses")
-		}
-		response := responses[index]
-		index++
-		_ = json.NewEncoder(w).Encode(chatCompletionResponse{
-			Choices: []chatCompletionChoice{
-				{Message: chatCompletionMessage{
-					Content:   response.Content,
-					ToolCalls: response.ToolCalls,
-				}},
-			},
-			Usage: chatCompletionUsage{
-				PromptTokensDetails: chatPromptTokensDetails{
-					CachedTokens: response.CachedTokens,
-				},
-			},
-		})
-	}))
-	return server, log
 }
 
 func newResponsesTestServer(t *testing.T, responses []responsesTestServerResponse) (*httptest.Server, *responsesRequestLog) {
@@ -657,33 +575,6 @@ func TestDriverNextSendsToolsAndParsesToolCalls(t *testing.T) {
 	}
 }
 
-func TestParseChoiceDecisionPreservesAssistantTextForToolCalls(t *testing.T) {
-	t.Parallel()
-
-	decision, err := parseChoiceDecision(chatCompletionMessage{
-		Content: "inspect the config before reading it",
-		ToolCalls: []chatCompletionToolCall{{
-			Type: "function",
-			Function: chatCompletionFunctionCall{
-				Name:      agent.ToolNameReadFile,
-				Arguments: `{"file_path":"/tmp/demo.txt"}`,
-			},
-		}},
-	}, []agent.ToolDefinition{{
-		Name: agent.ToolNameReadFile,
-		Kind: agent.ToolKindFunction,
-	}}, openAIAdapterCapabilities{})
-	if err != nil {
-		t.Fatalf("parseChoiceDecision() error = %v", err)
-	}
-	if decision.Thought != "inspect the config before reading it" {
-		t.Fatalf("decision.Thought = %q, want assistant text thought", decision.Thought)
-	}
-	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
-		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
-	}
-}
-
 func TestParseResponsesDecisionPreservesAssistantTextForToolCalls(t *testing.T) {
 	t.Parallel()
 
@@ -799,19 +690,6 @@ func TestDriverNextCapturesCachedTokensFromResponsesUsage(t *testing.T) {
 func TestRequestMarshalingIncludesExplicitFalseParallelToolCalls(t *testing.T) {
 	t.Parallel()
 
-	chatBody, err := json.Marshal(chatCompletionRequest{
-		Model:             "gpt-test",
-		Messages:          []chatMessage{{Role: agent.MessageRoleUser, Content: "hi"}},
-		ToolChoice:        "auto",
-		ParallelToolCalls: boolPtr(false),
-	})
-	if err != nil {
-		t.Fatalf("marshal chatCompletionRequest: %v", err)
-	}
-	if !strings.Contains(string(chatBody), `"parallel_tool_calls":false`) {
-		t.Fatalf("chat request JSON = %s, want explicit parallel_tool_calls false", string(chatBody))
-	}
-
 	responsesBody, err := json.Marshal(responsesRequest{
 		Model:             "gpt-test",
 		Input:             []responsesInputItem{{Role: agent.MessageRoleUser, Content: "hi"}},
@@ -894,8 +772,8 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 func TestDriverNextTreatsPlainAssistantTextAsFinish(t *testing.T) {
 	t.Parallel()
 
-	server, _ := newTestServer(t, []testServerResponse{
-		{Content: "done"},
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: "done"},
 	})
 	defer server.Close()
 

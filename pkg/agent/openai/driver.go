@@ -40,7 +40,7 @@ type Config struct {
 	PreserveConversation bool
 }
 
-// Driver implements [agent.Driver] using the OpenAI chat completions API.
+// Driver implements [agent.Driver] using the OpenAI Responses API.
 type Driver struct {
 	apiKey               string
 	baseURL              string
@@ -49,67 +49,6 @@ type Driver struct {
 	client               *http.Client
 	promptCacheKey       string
 	promptCacheRetention string
-}
-
-type chatCompletionRequest struct {
-	Model                string               `json:"model"`
-	ReasoningEffort      string               `json:"reasoning_effort,omitempty"`
-	Messages             []chatMessage        `json:"messages"`
-	Tools                []chatCompletionTool `json:"tools,omitempty"`
-	ToolChoice           string               `json:"tool_choice,omitempty"`
-	ParallelToolCalls    *bool                `json:"parallel_tool_calls,omitempty"`
-	PromptCacheKey       string               `json:"prompt_cache_key,omitempty"`
-	PromptCacheRetention string               `json:"prompt_cache_retention,omitempty"`
-}
-
-type chatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type chatCompletionTool struct {
-	Type     string                     `json:"type"`
-	Function chatCompletionFunctionTool `json:"function"`
-}
-
-type chatCompletionFunctionTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	Strict      bool           `json:"strict,omitempty"`
-	Parameters  map[string]any `json:"parameters,omitempty"`
-}
-
-type chatCompletionChoice struct {
-	Message chatCompletionMessage `json:"message"`
-}
-
-type chatCompletionMessage struct {
-	Content   string                   `json:"content"`
-	ToolCalls []chatCompletionToolCall `json:"tool_calls,omitempty"`
-}
-
-type chatCompletionToolCall struct {
-	ID       string                     `json:"id"`
-	Type     string                     `json:"type"`
-	Function chatCompletionFunctionCall `json:"function"`
-}
-
-type chatCompletionFunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-type chatCompletionUsage struct {
-	PromptTokensDetails chatPromptTokensDetails `json:"prompt_tokens_details"`
-}
-
-type chatPromptTokensDetails struct {
-	CachedTokens int `json:"cached_tokens"`
-}
-
-type chatCompletionResponse struct {
-	Choices []chatCompletionChoice `json:"choices"`
-	Usage   chatCompletionUsage    `json:"usage"`
 }
 
 type responsesRequest struct {
@@ -216,6 +155,11 @@ type boundaryLocalShellRun struct {
 	TimeoutMS        int      `json:"timeout_ms"`
 }
 
+type openAIFunctionCall struct {
+	Name      string
+	Arguments string
+}
+
 type openAIAdapterCapabilities struct {
 	SupportsCustomTools     bool
 	SupportsLocalShell      bool
@@ -277,45 +221,13 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 		return agent.Decision{}, fmt.Errorf("openai request must include at least one message")
 	}
 
-	useResponses := d.shouldUseResponsesAPI(req)
-	caps := d.adapterCapabilities(useResponses)
-	if useResponses {
-		return d.nextResponses(ctx, req, caps)
-	}
-	return d.nextChatCompletions(ctx, req, caps)
-}
-
-func (d *Driver) nextChatCompletions(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	if len(req.Tools) > 0 {
-		return agent.Decision{}, fmt.Errorf("openai chat completions path does not support tool-bearing requests; use responses API")
-	}
-	requestBody := chatCompletionRequest{
-		Model:                d.model,
-		ReasoningEffort:      d.reasoningEffort,
-		Messages:             make([]chatMessage, 0, len(req.Messages)),
-		PromptCacheKey:       d.promptCacheKey,
-		PromptCacheRetention: d.promptCacheRetention,
-	}
-	for _, message := range req.Messages {
-		requestBody.Messages = append(requestBody.Messages, chatMessage{
-			Role:    message.Role,
-			Content: message.Content,
-		})
-	}
-
-	decision, err := d.complete(ctx, requestBody, req.Tools, caps)
-	if err != nil {
-		return agent.Decision{}, err
-	}
-	return decision, nil
+	return d.nextResponses(ctx, req, d.adapterCapabilities())
 }
 
 func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	requestBody := responsesRequest{
 		Model:                d.model,
 		Input:                buildResponsesInput(req, caps),
-		ToolChoice:           "auto",
-		ParallelToolCalls:    boolPtr(false),
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: responsesPromptCacheRetention(d.promptCacheRetention),
 	}
@@ -324,57 +236,10 @@ func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps open
 	}
 	if len(req.Tools) > 0 {
 		requestBody.Tools = buildResponsesTools(req.Tools, caps)
+		requestBody.ToolChoice = "auto"
+		requestBody.ParallelToolCalls = boolPtr(false)
 	}
 	return d.completeResponses(ctx, requestBody, req.Tools, caps)
-}
-
-func (d *Driver) complete(ctx context.Context, payload chatCompletionRequest, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return agent.Decision{}, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/chat/completions", &body)
-	if err != nil {
-		return agent.Decision{}, err
-	}
-	req.Header.Set("Authorization", "Bearer "+d.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return agent.Decision{}, err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return agent.Decision{}, err
-	}
-	if resp.StatusCode/100 != 2 {
-		var apiErr apiErrorResponse
-		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Error.Message != "" {
-			return agent.Decision{}, fmt.Errorf("openai api error (%s): %s", resp.Status, apiErr.Error.Message)
-		}
-		return agent.Decision{}, fmt.Errorf("openai api error (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
-	}
-
-	var completion chatCompletionResponse
-	if err := json.Unmarshal(respBody, &completion); err != nil {
-		return agent.Decision{}, err
-	}
-	if len(completion.Choices) == 0 {
-		return agent.Decision{}, fmt.Errorf("openai response contained no choices")
-	}
-
-	decision, err := parseChoiceDecision(completion.Choices[0].Message, allowedTools, caps)
-	if err != nil {
-		return agent.Decision{}, err
-	}
-	decision.Usage = agent.Usage{
-		CachedTokens: completion.Usage.PromptTokensDetails.CachedTokens,
-	}
-	return decision, nil
 }
 
 func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -420,28 +285,6 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 		CachedTokens: response.Usage.InputTokensDetails.CachedTokens,
 	}
 	return decision, nil
-}
-
-func parseChoiceDecision(message chatCompletionMessage, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	thought := strings.TrimSpace(message.Content)
-	if len(message.ToolCalls) > 0 {
-		if len(message.ToolCalls) != 1 {
-			return agent.Decision{}, fmt.Errorf("openai response must include exactly one tool call when calling tools")
-		}
-		decision, err := parseToolCallDecision(message.ToolCalls[0], allowedTools, caps)
-		if err != nil {
-			return agent.Decision{}, err
-		}
-		if thought != "" {
-			decision.Thought = thought
-		}
-		return decision, nil
-	}
-	content := thought
-	if content == "" {
-		return agent.Decision{}, fmt.Errorf("openai response content was empty")
-	}
-	return parseDecision(content, allowedTools, caps)
 }
 
 func parseResponsesDecision(response responsesResponse, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -583,24 +426,21 @@ func parseFinishValue(content string) any {
 	return content
 }
 
-func parseToolCallDecision(call chatCompletionToolCall, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	if call.Type != "function" {
-		return agent.Decision{}, fmt.Errorf("unsupported openai tool call type %q", call.Type)
-	}
-
+func parseToolCallDecision(call openAIFunctionCall, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	adapters := buildOpenAIToolAdapters(allowedTools, caps)
 	allowedByName := make(map[string]openAIToolAdapter, len(adapters))
 	for _, adapter := range adapters {
 		allowedByName[adapter.ExposedName] = adapter
 	}
-	adapter, ok := allowedByName[call.Function.Name]
+	name := strings.TrimSpace(call.Name)
+	adapter, ok := allowedByName[name]
 	if !ok {
-		return agent.Decision{}, fmt.Errorf("openai response called unavailable tool %q", call.Function.Name)
+		return agent.Decision{}, fmt.Errorf("openai response called unavailable tool %q", name)
 	}
 	def := adapter.Tool
 
 	if def.Kind == agent.ToolKindCustom {
-		patch, err := extractCustomToolInput(call.Function.Arguments)
+		patch, err := extractCustomToolInput(call.Arguments)
 		if err != nil {
 			return agent.Decision{}, err
 		}
@@ -613,7 +453,7 @@ func parseToolCallDecision(call chatCompletionToolCall, allowedTools []agent.Too
 		}, nil
 	}
 
-	input := strings.TrimSpace(call.Function.Arguments)
+	input := strings.TrimSpace(call.Arguments)
 	if input == "" {
 		input = "{}"
 	}
@@ -629,12 +469,9 @@ func parseToolCallDecision(call chatCompletionToolCall, allowedTools []agent.Too
 func parseResponsesToolCallDecision(item responsesOutputItem, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	switch item.Type {
 	case "function_call":
-		return parseToolCallDecision(chatCompletionToolCall{
-			Type: "function",
-			Function: chatCompletionFunctionCall{
-				Name:      item.Name,
-				Arguments: item.Arguments,
-			},
+		return parseToolCallDecision(openAIFunctionCall{
+			Name:      item.Name,
+			Arguments: item.Arguments,
 		}, allowedTools, caps)
 	case "custom_tool_call":
 		name := strings.TrimSpace(item.Name)
@@ -675,12 +512,9 @@ func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefiniti
 	}
 	switch strings.TrimSpace(raw.Type) {
 	case "function_call":
-		call := chatCompletionToolCall{
-			Type: "function",
-			Function: chatCompletionFunctionCall{
-				Name:      strings.TrimSpace(raw.Name),
-				Arguments: strings.TrimSpace(raw.Arguments),
-			},
+		call := openAIFunctionCall{
+			Name:      strings.TrimSpace(raw.Name),
+			Arguments: strings.TrimSpace(raw.Arguments),
 		}
 		decision, err := parseToolCallDecision(call, allowedTools, caps)
 		return decision, true, err
@@ -1036,17 +870,10 @@ func allowedToolDefinition(allowedTools []agent.ToolDefinition, name string) (ag
 	return agent.ToolDefinition{}, false
 }
 
-func (d *Driver) shouldUseResponsesAPI(req agent.Request) bool {
-	return len(req.Tools) > 0
-}
-
-func (d *Driver) adapterCapabilities(useResponses bool) openAIAdapterCapabilities {
-	if useResponses {
-		return openAIAdapterCapabilities{
-			SupportsCustomTools: true,
-		}
+func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
+	return openAIAdapterCapabilities{
+		SupportsCustomTools: true,
 	}
-	return openAIAdapterCapabilities{}
 }
 
 func boolPtr(value bool) *bool {
