@@ -190,7 +190,6 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		Queue:                queue,
 		Driver:               driver,
 		SystemPrompt:         systemPrompt,
-		PreserveConversation: false,
 		OnStep:               StepPersister{Store: m.Store, Logger: m.Logger},
 		OnResult: ResultPersister{
 			Store:            m.Store,

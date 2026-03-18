@@ -37,9 +37,8 @@ var (
 	stepTimeout    = flag.Duration("step-timeout", defaultREPLStepTimeout, "timeout for one action step")
 	maxOutputBytes = flag.Int("max-output-bytes", agent.DefaultMaxOutputBytes, "maximum captured bytes per stream per step")
 
-	preserveState   = flag.Bool("preserve-state", true, "preserve shell state between prompts")
-	rememberHistory = flag.Bool("remember-history", true, "include prior prompt/result history in later model requests")
-	verbose         = flag.Bool("verbose", true, "show per-step thought, chosen shell command, and step completion lines")
+	preserveState = flag.Bool("preserve-state", true, "preserve shell state between prompts")
+	verbose       = flag.Bool("verbose", true, "show per-step thought, chosen shell command, and step completion lines")
 )
 
 const (
@@ -70,7 +69,6 @@ type runtimeOptions struct {
 	maxSteps        int
 	stepTimeout     time.Duration
 	maxOutputBytes  int
-	rememberHistory bool
 	preserveState   bool
 	verbose         bool
 }
@@ -144,7 +142,6 @@ func buildRuntimeOptions() (runtimeOptions, error) {
 		maxSteps:        *maxSteps,
 		stepTimeout:     *stepTimeout,
 		maxOutputBytes:  *maxOutputBytes,
-		rememberHistory: *rememberHistory,
 		preserveState:   *preserveState,
 		verbose:         *verbose,
 	}, nil
@@ -185,7 +182,6 @@ func (opts runtimeOptions) agentConfig(
 		MaxSteps:                     opts.maxSteps,
 		StepTimeout:                  opts.stepTimeout,
 		MaxOutputBytes:               opts.maxOutputBytes,
-		PreserveConversation:         opts.rememberHistory,
 		PreserveStateBetweenTriggers: opts.preserveState,
 		SystemPrompt:                 agent.ComposeSystemPrompt(opts.systemPrompt, opts.networkDialer != nil),
 		Stdout:                       stdout,

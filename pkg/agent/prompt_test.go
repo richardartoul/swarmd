@@ -124,20 +124,17 @@ func TestToolAvailabilityPromptIncludesToolsAndRunShellCommands(t *testing.T) {
 		Usage:       "server_log --level <debug|info|warn|error> <message...>",
 		Description: "write a message to the server logs",
 	}})
-	if !strings.Contains(got, "Available tools for this turn:") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want tool heading", got)
+	if !strings.Contains(got, "Runtime-only run_shell guidance:") {
+		t.Fatalf("toolAvailabilityPrompt() = %q, want runtime-only heading", got)
 	}
-	if !strings.Contains(got, "read_file: Reads a local file with bounded output.") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want read_file description", got)
-	}
-	if !strings.Contains(got, "Required arguments: file_path.") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want required arguments", got)
-	}
-	if !strings.Contains(got, "run_shell: Runs one sandboxed shell command when no structured tool fits.") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want run_shell description", got)
+	if strings.Contains(got, "read_file: Reads a local file with bounded output.") {
+		t.Fatalf("toolAvailabilityPrompt() = %q, want native tool catalog omitted", got)
 	}
 	if !strings.Contains(got, "If you use run_shell, the sandbox command surface is:") {
 		t.Fatalf("toolAvailabilityPrompt() = %q, want shell command guidance", got)
+	}
+	if !strings.Contains(got, "Use run_shell only as a sandboxed fallback when no structured tool fits.") {
+		t.Fatalf("toolAvailabilityPrompt() = %q, want explicit fallback reminder", got)
 	}
 	if !strings.Contains(got, "Coreutils:") {
 		t.Fatalf("toolAvailabilityPrompt() = %q, want coreutils list", got)
@@ -180,18 +177,12 @@ func TestToolAvailabilityPromptHidesRunShellSurfaceWhenRunShellUnavailable(t *te
 			Description: "write a message to the server logs",
 		},
 	})
-	if strings.Contains(got, "curl") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want run_shell command list hidden", got)
-	}
-	if strings.Contains(got, "slack <post|replies> [options]") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want custom shell command guidance hidden", got)
-	}
-	if strings.Contains(got, "server_log --level <debug|info|warn|error> <message...>") {
-		t.Fatalf("toolAvailabilityPrompt() = %q, want non-shell custom command guidance hidden", got)
+	if got != "" {
+		t.Fatalf("toolAvailabilityPrompt() = %q, want no run_shell guidance", got)
 	}
 }
 
-func TestToolExpandedGuidancePromptIncludesRelevantDetails(t *testing.T) {
+func TestToolExpandedGuidancePromptSkipsRoutineTurns(t *testing.T) {
 	t.Parallel()
 
 	req := Request{
@@ -201,20 +192,8 @@ func TestToolExpandedGuidancePromptIncludesRelevantDetails(t *testing.T) {
 		},
 	}
 	got := toolExpandedGuidancePrompt("patch the file carefully", req)
-	if !strings.Contains(got, "Focused tool details for this turn:") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want focused detail heading", got)
-	}
-	if !strings.Contains(got, "- apply_patch") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch details", got)
-	}
-	if !strings.Contains(got, "Format: grammar/lark") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want custom format guidance", got)
-	}
-	if strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want routine guidance without full custom format definition", got)
-	}
-	if !strings.Contains(got, "Example 1: *** Begin Patch") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch example", got)
+	if got != "" {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want routine turns to rely on native tool metadata", got)
 	}
 }
 
@@ -235,6 +214,9 @@ func TestToolExpandedGuidancePromptKeepsFullApplyPatchGuidanceOnRetry(t *testing
 	got := toolExpandedGuidancePrompt("try again", req)
 	if !strings.Contains(got, "- apply_patch") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch details", got)
+	}
+	if !strings.Contains(got, "Focused retry guidance for the last failed tool:") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want retry heading", got)
 	}
 	if !strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want full custom format definition on retry", got)
@@ -264,25 +246,26 @@ func TestToolExpandedGuidancePromptExpandsLastFailedTool(t *testing.T) {
 	}
 }
 
-func TestToolExpandedGuidancePromptAvoidsApplyPatchOnGenericEditVerb(t *testing.T) {
+func TestToolExpandedGuidancePromptOmitsUnknownFailedTool(t *testing.T) {
 	t.Parallel()
 
 	req := Request{
 		Tools: []ToolDefinition{
-			builtInToolDefinitions[ToolNameApplyPatch],
 			builtInToolDefinitions[ToolNameReadFile],
 		},
+		Steps: []Step{{
+			Index:      1,
+			ActionName: ToolNameApplyPatch,
+			Status:     StepStatusPolicyError,
+		}},
 	}
-	got := toolExpandedGuidancePrompt("edit the file carefully", req)
-	if strings.Contains(got, "- apply_patch") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want generic edit prompt to avoid apply_patch expansion", got)
-	}
-	if !strings.Contains(got, "- read_file") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want another relevant tool to remain selectable", got)
+	got := toolExpandedGuidancePrompt("try again", req)
+	if got != "" {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want missing tool to suppress retry guidance", got)
 	}
 }
 
-func TestFormatExpandedToolGuidanceLimitsRoutineExamples(t *testing.T) {
+func TestFormatExpandedToolGuidanceIncludesAllRetryExamples(t *testing.T) {
 	t.Parallel()
 
 	tool := ToolDefinition{
@@ -295,28 +278,33 @@ func TestFormatExpandedToolGuidanceLimitsRoutineExamples(t *testing.T) {
 			"second example",
 		},
 	}
-	got := formatExpandedToolGuidance(tool, false)
+	got := formatExpandedToolGuidance(tool)
 	if !strings.Contains(got, "Example 1: first example") {
 		t.Fatalf("formatExpandedToolGuidance() = %q, want first example", got)
 	}
-	if strings.Contains(got, "second example") {
-		t.Fatalf("formatExpandedToolGuidance() = %q, want routine guidance capped to one example", got)
+	if !strings.Contains(got, "Example 2: second example") {
+		t.Fatalf("formatExpandedToolGuidance() = %q, want all retry examples", got)
 	}
 }
 
-func TestFormatCurrentStateForPromptIncludesFocusedToolGuidance(t *testing.T) {
+func TestFormatCurrentStateForPromptIncludesRetryGuidance(t *testing.T) {
 	t.Parallel()
 
 	got := formatCurrentStateForPrompt("patch the file carefully", Request{
 		CWD:  "/workspace",
-		Step: 1,
+		Step: 2,
 		Tools: []ToolDefinition{
 			builtInToolDefinitions[ToolNameApplyPatch],
 			builtInToolDefinitions[ToolNameReadFile],
 		},
+		Steps: []Step{{
+			Index:      1,
+			ActionName: ToolNameApplyPatch,
+			Status:     StepStatusPolicyError,
+		}},
 	})
-	if !strings.Contains(got, "Focused tool details for this turn:") {
-		t.Fatalf("formatCurrentStateForPrompt() = %q, want focused tool detail heading", got)
+	if !strings.Contains(got, "Focused retry guidance for the last failed tool:") {
+		t.Fatalf("formatCurrentStateForPrompt() = %q, want retry tool detail heading", got)
 	}
 	if !strings.Contains(got, "- apply_patch") {
 		t.Fatalf("formatCurrentStateForPrompt() = %q, want apply_patch details", got)
@@ -338,13 +326,17 @@ func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *tes
 		ID:      "trigger-1",
 		Kind:    "user",
 		Payload: "patch the file carefully",
-	}, 1, "/workspace", nil)
+	}, 2, "/workspace", []Step{{
+		Index:      1,
+		ActionName: ToolNameApplyPatch,
+		Status:     StepStatusPolicyError,
+	}})
 	if err != nil {
 		t.Fatalf("buildDriverRequest() error = %v", err)
 	}
 
 	for idx, message := range req.Messages {
-		if message.Role == MessageRoleSystem && strings.Contains(message.Content, "Focused tool details for this turn:") {
+		if message.Role == MessageRoleSystem && strings.Contains(message.Content, "Focused retry guidance for the last failed tool:") {
 			t.Fatalf("req.Messages[%d] = %#v, want focused tool guidance outside system messages", idx, message)
 		}
 	}
@@ -352,7 +344,7 @@ func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *tes
 	if last.Role != MessageRoleUser {
 		t.Fatalf("last message role = %q, want user", last.Role)
 	}
-	if !strings.Contains(last.Content, "Focused tool details for this turn:") {
+	if !strings.Contains(last.Content, "Focused retry guidance for the last failed tool:") {
 		t.Fatalf("last message = %#v, want focused tool guidance in current-state message", last)
 	}
 	if !strings.Contains(last.Content, "- apply_patch") {

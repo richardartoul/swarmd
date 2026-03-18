@@ -638,11 +638,11 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if req.Messages[0].Role != agent.MessageRoleSystem || req.Messages[0].Content != "test prompt" {
 		t.Fatalf("req.Messages[0] = %#v, want system prompt", req.Messages[0])
 	}
-	if req.Messages[1].Role != agent.MessageRoleSystem || !strings.Contains(req.Messages[1].Content, "Available tools for this turn") {
-		t.Fatalf("req.Messages[1] = %#v, want tool availability system message", req.Messages[1])
+	if req.Messages[1].Role != agent.MessageRoleSystem || !strings.Contains(req.Messages[1].Content, "Runtime-only run_shell guidance:") {
+		t.Fatalf("req.Messages[1] = %#v, want runtime-only run_shell system message", req.Messages[1])
 	}
-	if !strings.Contains(req.Messages[1].Content, "run_shell") {
-		t.Fatalf("req.Messages[1] = %#v, want run_shell tool in availability message", req.Messages[1])
+	if !strings.Contains(req.Messages[1].Content, "Use run_shell only as a sandboxed fallback when no structured tool fits.") {
+		t.Fatalf("req.Messages[1] = %#v, want run_shell fallback reminder", req.Messages[1])
 	}
 	if req.Messages[2].Role != agent.MessageRoleUser {
 		t.Fatalf("req.Messages[2].Role = %q, want %q", req.Messages[2].Role, agent.MessageRoleUser)
@@ -665,8 +665,8 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if !strings.Contains(req.Messages[3].Content, "No prior steps have been run for this trigger.") {
 		t.Fatalf("current state = %q, want empty-step note", req.Messages[3].Content)
 	}
-	if !strings.Contains(req.Messages[3].Content, "Focused tool details for this turn:") {
-		t.Fatalf("current state = %q, want focused tool detail guidance in current state", req.Messages[3].Content)
+	if strings.Contains(req.Messages[3].Content, "Focused retry guidance for the last failed tool:") {
+		t.Fatalf("current state = %q, want no retry guidance on first turn", req.Messages[3].Content)
 	}
 }
 
@@ -765,8 +765,8 @@ func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
 	if !strings.Contains(combinedPrompts, "Network-capable tools may be available through the interpreter-owned dialer") {
 		t.Fatalf("combined system prompts = %q, want network-enabled instructions", combinedPrompts)
 	}
-	if !strings.Contains(combinedPrompts, "web_search") || !strings.Contains(combinedPrompts, "http_request") || !strings.Contains(combinedPrompts, "read_web_page") {
-		t.Fatalf("combined system prompts = %q, want network tool guidance", combinedPrompts)
+	if !strings.Contains(combinedPrompts, "Runtime-only run_shell guidance:") {
+		t.Fatalf("combined system prompts = %q, want runtime-only run_shell guidance", combinedPrompts)
 	}
 	if !strings.Contains(combinedPrompts, "jq") || !strings.Contains(combinedPrompts, "awk") || !strings.Contains(combinedPrompts, "grep") || !strings.Contains(combinedPrompts, "sed") || !strings.Contains(combinedPrompts, "sort") || !strings.Contains(combinedPrompts, "cut") || !strings.Contains(combinedPrompts, "tr") || !strings.Contains(combinedPrompts, "uniq") {
 		t.Fatalf("combined system prompts = %q, want updated coreutils guidance", combinedPrompts)
@@ -853,7 +853,7 @@ func TestHandleTriggerCanUseInjectedNetworkDialer(t *testing.T) {
 	}
 }
 
-func TestHandleTriggerPreservesConversationInDriverMessages(t *testing.T) {
+func TestHandleTriggerDoesNotReplayConversationAcrossTriggers(t *testing.T) {
 	t.Parallel()
 
 	driver := &recordingDriver{
@@ -863,10 +863,9 @@ func TestHandleTriggerPreservesConversationInDriverMessages(t *testing.T) {
 		},
 	}
 	a := newAgent(t, agent.Config{
-		Root:                 t.TempDir(),
-		Driver:               driver,
-		SystemPrompt:         "test prompt",
-		PreserveConversation: true,
+		Root:         t.TempDir(),
+		Driver:       driver,
+		SystemPrompt: "test prompt",
 	})
 
 	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
@@ -894,17 +893,20 @@ func TestHandleTriggerPreservesConversationInDriverMessages(t *testing.T) {
 	if second.Messages[2].Role != agent.MessageRoleUser {
 		t.Fatalf("second.Messages[2].Role = %q, want %q", second.Messages[2].Role, agent.MessageRoleUser)
 	}
-	if !strings.Contains(second.Messages[2].Content, "Conversation history across previous triggers") {
-		t.Fatalf("trigger context = %q, want history heading", second.Messages[2].Content)
+	if strings.Contains(second.Messages[2].Content, "Conversation history across previous triggers") {
+		t.Fatalf("trigger context = %q, want no history heading", second.Messages[2].Content)
 	}
-	if !strings.Contains(second.Messages[2].Content, "create a note") {
-		t.Fatalf("trigger context = %q, want prior prompt", second.Messages[2].Content)
+	if strings.Contains(second.Messages[2].Content, "create a note") {
+		t.Fatalf("trigger context = %q, want no prior prompt replay", second.Messages[2].Content)
 	}
-	if !strings.Contains(second.Messages[2].Content, "created the file") {
-		t.Fatalf("trigger context = %q, want prior result", second.Messages[2].Content)
+	if strings.Contains(second.Messages[2].Content, "created the file") {
+		t.Fatalf("trigger context = %q, want no prior result replay", second.Messages[2].Content)
 	}
 	if !strings.Contains(second.Messages[2].Content, "Trigger context") {
 		t.Fatalf("second.Messages[2] = %#v, want trigger context", second.Messages[2])
+	}
+	if !strings.Contains(second.Messages[2].Content, "show it to me") {
+		t.Fatalf("second.Messages[2] = %#v, want current prompt only", second.Messages[2])
 	}
 	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Current step number: 1") {
 		t.Fatalf("second.Messages[3] = %#v, want current state", second.Messages[3])

@@ -40,9 +40,6 @@ type Config struct {
 
 	// Deprecated: configure the prompt on [agent.Config].
 	SystemPrompt string
-
-	// Deprecated: configure history preservation on [agent.Config].
-	PreserveConversation bool
 }
 
 // Driver implements [agent.Driver] using the Anthropic Messages API.
@@ -190,9 +187,6 @@ func New(cfg Config) (*Driver, error) {
 	}
 	if strings.TrimSpace(cfg.SystemPrompt) != "" {
 		return nil, fmt.Errorf("anthropic system prompt is configured on agent.Config, not anthropic.Config")
-	}
-	if cfg.PreserveConversation {
-		return nil, fmt.Errorf("anthropic conversation history is configured on agent.Config, not anthropic.Config")
 	}
 	promptCacheTTL, err := normalizePromptCacheTTL(cfg.PromptCacheTTL)
 	if err != nil {
@@ -760,17 +754,20 @@ func anthropicPromptCacheControl(ttl string) *anthropicCacheControl {
 }
 
 func anthropicToolDescription(tool agent.ToolDefinition) string {
-	description := strings.TrimSpace(tool.Description)
-	if tool.CustomFormat == nil {
-		return description
+	sections := make([]string, 0, 4)
+	if description := strings.TrimSpace(tool.Description); description != "" {
+		sections = append(sections, description)
 	}
 	if format := anthropicToolFormatLabel(tool.CustomFormat); format != "" {
-		if description == "" {
-			return "Input format: " + format + "."
-		}
-		return description + "\n\nInput format: " + format + "."
+		sections = append(sections, "Input format: "+format+".")
 	}
-	return description
+	if notes := strings.TrimSpace(tool.OutputNotes); notes != "" {
+		sections = append(sections, "Output notes: "+notes)
+	}
+	if tags := strings.TrimSpace(strings.Join(tool.SafetyTags, ", ")); tags != "" {
+		sections = append(sections, "Safety tags: "+tags+".")
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func anthropicToolFormatLabel(format *agent.ToolFormat) string {

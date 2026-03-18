@@ -118,10 +118,6 @@ type Config struct {
 	// If empty, [DefaultSystemPrompt] is used.
 	SystemPrompt string
 
-	// PreserveConversation includes prior prompt/result history in later driver
-	// requests for the same [Agent].
-	PreserveConversation bool
-
 	// OnResult is called after [Agent.Serve] handles one trigger.
 	OnResult ResultHandler
 

@@ -10,7 +10,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
@@ -40,7 +39,6 @@ type Agent struct {
 	stepTimeout          time.Duration
 	preserveState        bool
 	systemPrompt         string
-	preserveConversation bool
 	liveStdout           io.Writer
 	liveStderr           io.Writer
 	networkEnabled       bool
@@ -50,9 +48,6 @@ type Agent struct {
 	toolRuntimeData      any
 	webSearchBackend     WebSearchBackend
 	customCommands       []sandbox.CommandInfo
-
-	historyMu sync.Mutex
-	history   []historyEntry
 }
 
 // New constructs an [Agent].
@@ -147,7 +142,6 @@ func New(cfg Config) (*Agent, error) {
 		stepTimeout:          cfg.StepTimeout,
 		preserveState:        cfg.PreserveStateBetweenTriggers,
 		systemPrompt:         systemPrompt,
-		preserveConversation: cfg.PreserveConversation,
 		liveStdout:           cfg.Stdout,
 		liveStderr:           cfg.Stderr,
 		networkEnabled:       networkEnabled,
@@ -208,7 +202,7 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 		}
 
 		stepsSnapshot := cloneSteps(steps)
-		request, prompt, err := a.buildDriverRequest(trigger, stepNum, a.runner.Dir, stepsSnapshot)
+		request, _, err := a.buildDriverRequest(trigger, stepNum, a.runner.Dir, stepsSnapshot)
 		if err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
@@ -235,9 +229,7 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
 			result.Steps = stepsSnapshot
-			finished := a.finishResult(result)
-			a.appendHistory(prompt, finished)
-			return finished, nil
+			return a.finishResult(result), nil
 		}
 
 		var (

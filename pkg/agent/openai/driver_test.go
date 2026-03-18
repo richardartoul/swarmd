@@ -51,13 +51,6 @@ func TestNewRejectsAgentOwnedPromptSettings(t *testing.T) {
 	}); err == nil {
 		t.Fatal("New() error = nil, want system prompt rejection")
 	}
-	if _, err := New(Config{
-		APIKey:               "test-key",
-		Model:                "gpt-test",
-		PreserveConversation: true,
-	}); err == nil {
-		t.Fatal("New() error = nil, want preserve conversation rejection")
-	}
 }
 
 func TestNewRejectsInvalidPromptCacheRetention(t *testing.T) {
@@ -116,14 +109,14 @@ func TestDriverNextParsesShellDecision(t *testing.T) {
 	if got.ParallelToolCalls != nil {
 		t.Fatalf("request parallel_tool_calls = %#v, want nil without tools", got.ParallelToolCalls)
 	}
-	if len(got.Input) != 2 {
-		t.Fatalf("len(request input) = %d, want 2", len(got.Input))
+	if got.Instructions != "test prompt" {
+		t.Fatalf("request instructions = %q, want %q", got.Instructions, "test prompt")
 	}
-	if got.Input[0].Role != agent.MessageRoleSystem || got.Input[0].Content != "test prompt" {
-		t.Fatalf("first request input = %#v, want system prompt", got.Input[0])
+	if len(got.Input) != 1 {
+		t.Fatalf("len(request input) = %d, want 1", len(got.Input))
 	}
-	if got.Input[1].Role != agent.MessageRoleUser || got.Input[1].Content != "list the current directory" {
-		t.Fatalf("second request input = %#v, want user prompt", got.Input[1])
+	if got.Input[0].Role != agent.MessageRoleUser || got.Input[0].Content != "list the current directory" {
+		t.Fatalf("first request input = %#v, want user prompt", got.Input[0])
 	}
 }
 
@@ -225,9 +218,13 @@ func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *
 	if !ok {
 		t.Fatalf("request text.format.schema.properties[type] = %#v, want object", properties["type"])
 	}
-	resultSchema, ok := properties["result"].(map[string]any)
+	shellSchema, ok := properties["shell"].(map[string]any)
 	if !ok {
-		t.Fatalf("request text.format.schema.properties[result] = %#v, want object", properties["result"])
+		t.Fatalf("request text.format.schema.properties[shell] = %#v, want object", properties["shell"])
+	}
+	resultSchema, ok := properties["result_json"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[result_json] = %#v, want object", properties["result_json"])
 	}
 	enumValues, ok := typeSchema["enum"].([]string)
 	if !ok {
@@ -236,8 +233,11 @@ func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *
 	if len(enumValues) != 2 || enumValues[0] != "shell" || enumValues[1] != "finish" {
 		t.Fatalf("request text.format schema enum = %#v, want [shell finish]", enumValues)
 	}
+	if shellSchema["type"] != "string" {
+		t.Fatalf("request text.format.schema.properties[shell][type] = %#v, want %q", shellSchema["type"], "string")
+	}
 	if resultSchema["type"] != "string" {
-		t.Fatalf("request text.format.schema.properties[result][type] = %#v, want %q", resultSchema["type"], "string")
+		t.Fatalf("request text.format.schema.properties[result_json][type] = %#v, want %q", resultSchema["type"], "string")
 	}
 }
 
@@ -269,19 +269,26 @@ func TestBuildResponsesRequestAddsFinishOnlyStructuredTextFormatWhenToolsAvailab
 	if !ok {
 		t.Fatalf("request text.format.schema.required = %#v, want []string", request.Text.Format.Schema["required"])
 	}
-	if len(required) != 3 || required[0] != "type" || required[1] != "thought" || required[2] != "result" {
-		t.Fatalf("request text.format schema required = %#v, want [type thought result]", required)
+	if len(required) != 4 || required[0] != "type" || required[1] != "thought" || required[2] != "shell" || required[3] != "result_json" {
+		t.Fatalf("request text.format schema required = %#v, want [type thought shell result_json]", required)
 	}
 	properties, ok := request.Text.Format.Schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("request text.format.schema.properties = %#v, want object", request.Text.Format.Schema["properties"])
 	}
-	resultSchema, ok := properties["result"].(map[string]any)
+	shellSchema, ok := properties["shell"].(map[string]any)
 	if !ok {
-		t.Fatalf("request text.format.schema.properties[result] = %#v, want object", properties["result"])
+		t.Fatalf("request text.format.schema.properties[shell] = %#v, want object", properties["shell"])
+	}
+	resultSchema, ok := properties["result_json"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[result_json] = %#v, want object", properties["result_json"])
+	}
+	if shellSchema["type"] != "string" {
+		t.Fatalf("request text.format.schema.properties[shell][type] = %#v, want %q", shellSchema["type"], "string")
 	}
 	if resultSchema["type"] != "string" {
-		t.Fatalf("request text.format.schema.properties[result][type] = %#v, want %q", resultSchema["type"], "string")
+		t.Fatalf("request text.format.schema.properties[result_json][type] = %#v, want %q", resultSchema["type"], "string")
 	}
 }
 
@@ -302,7 +309,7 @@ func TestBuildResponsesRequestOmitsStructuredTextFormatOnUnsupportedModel(t *tes
 	}
 }
 
-func TestBuildResponsesRequestOmitsStructuredTextFormatForCustomBaseURL(t *testing.T) {
+func TestBuildResponsesRequestUsesStructuredTextFormatForCustomBaseURL(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{
@@ -314,8 +321,8 @@ func TestBuildResponsesRequestOmitsStructuredTextFormatForCustomBaseURL(t *testi
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
 	}, openAIAdapterCapabilities{})
-	if request.Text != nil {
-		t.Fatalf("request text = %#v, want nil for compatible backend fallback", request.Text)
+	if request.Text == nil || request.Text.Format == nil {
+		t.Fatalf("request text = %#v, want structured output for supported models regardless of base URL", request.Text)
 	}
 }
 
@@ -347,7 +354,7 @@ func TestDriverNextIgnoresTrailingJSONObjects(t *testing.T) {
 	}
 }
 
-func TestDriverNextForwardsPreparedMessages(t *testing.T) {
+func TestDriverNextMovesSystemMessagesIntoInstructions(t *testing.T) {
 	t.Parallel()
 
 	server, requests := newResponsesTestServer(t, []responsesTestServerResponse{
@@ -359,7 +366,7 @@ func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 	_, err := driver.Next(context.Background(), agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
-			{Role: agent.MessageRoleSystem, Content: "Conversation history across previous triggers:\n..."},
+			{Role: agent.MessageRoleSystem, Content: "runtime-only guidance"},
 			{Role: agent.MessageRoleUser, Content: "show it to me"},
 		},
 	})
@@ -372,17 +379,14 @@ func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
 	}
 	got := snapshot[0]
-	if len(got.Input) != 3 {
-		t.Fatalf("len(request input) = %d, want 3", len(got.Input))
+	if got.Instructions != "test prompt\n\nruntime-only guidance" {
+		t.Fatalf("request instructions = %q, want combined system messages", got.Instructions)
 	}
-	if got.Input[0].Role != agent.MessageRoleSystem || got.Input[0].Content != "test prompt" {
-		t.Fatalf("first request input = %#v, want system prompt", got.Input[0])
+	if len(got.Input) != 1 {
+		t.Fatalf("len(request input) = %d, want 1", len(got.Input))
 	}
-	if got.Input[1].Role != agent.MessageRoleSystem || got.Input[1].Content != "Conversation history across previous triggers:\n..." {
-		t.Fatalf("second request input = %#v, want history", got.Input[1])
-	}
-	if got.Input[2].Role != agent.MessageRoleUser || got.Input[2].Content != "show it to me" {
-		t.Fatalf("third request input = %#v, want user message", got.Input[2])
+	if got.Input[0].Role != agent.MessageRoleUser || got.Input[0].Content != "show it to me" {
+		t.Fatalf("first request input = %#v, want user message only", got.Input[0])
 	}
 }
 
@@ -434,35 +438,63 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 		},
 	}, openAIAdapterCapabilities{SupportsCustomTools: true})
 
-	if len(input) != 8 {
-		t.Fatalf("len(input) = %d, want 8", len(input))
+	if len(input) != 7 {
+		t.Fatalf("len(input) = %d, want 7", len(input))
 	}
-	if input[2].Role != agent.MessageRoleAssistant || input[2].Content != "inspect the file first" {
-		t.Fatalf("input[2] = %#v, want assistant thought message", input[2])
+	if input[0].Role != agent.MessageRoleUser || input[0].Content != "trigger context" {
+		t.Fatalf("input[0] = %#v, want trigger context first", input[0])
 	}
-	if input[3].Type != "function_call" || input[3].CallID != "step_1" || input[3].Name != agent.ToolNameReadFile {
-		t.Fatalf("input[3] = %#v, want function_call replay", input[3])
+	if input[1].Role != agent.MessageRoleAssistant || input[1].Content != "inspect the file first" {
+		t.Fatalf("input[1] = %#v, want assistant thought message", input[1])
 	}
-	if input[3].Arguments != `{"file_path":"/tmp/demo.txt"}` {
-		t.Fatalf("input[3].Arguments = %q, want replayed function arguments", input[3].Arguments)
+	if input[2].Type != "function_call" || input[2].CallID != "step_1" || input[2].Name != agent.ToolNameReadFile {
+		t.Fatalf("input[2] = %#v, want function_call replay", input[2])
 	}
-	if input[4].Type != "function_call_output" || input[4].CallID != "step_1" {
-		t.Fatalf("input[4] = %#v, want function_call_output replay", input[4])
+	if input[2].Arguments != `{"file_path":"/tmp/demo.txt"}` {
+		t.Fatalf("input[2].Arguments = %q, want replayed function arguments", input[2].Arguments)
 	}
-	if !strings.Contains(input[4].Output, "demo content") {
-		t.Fatalf("input[4].Output = %q, want observation output", input[4].Output)
+	if input[3].Type != "function_call_output" || input[3].CallID != "step_1" {
+		t.Fatalf("input[3] = %#v, want function_call_output replay", input[3])
 	}
-	if input[5].Type != "custom_tool_call" || input[5].CallID != "step_2" || input[5].Name != agent.ToolNameApplyPatch {
-		t.Fatalf("input[5] = %#v, want custom_tool_call replay", input[5])
+	if !strings.Contains(input[3].Output, "demo content") {
+		t.Fatalf("input[3].Output = %q, want observation output", input[3].Output)
 	}
-	if input[5].Input != "*** Begin Patch\n*** End Patch" {
-		t.Fatalf("input[5].Input = %q, want raw custom tool input", input[5].Input)
+	if input[4].Type != "custom_tool_call" || input[4].CallID != "step_2" || input[4].Name != agent.ToolNameApplyPatch {
+		t.Fatalf("input[4] = %#v, want custom_tool_call replay", input[4])
 	}
-	if input[6].Type != "custom_tool_call_output" || input[6].CallID != "step_2" {
-		t.Fatalf("input[6] = %#v, want custom_tool_call_output replay", input[6])
+	if input[4].Input != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("input[4].Input = %q, want raw custom tool input", input[4].Input)
 	}
-	if input[7].Content != "Current execution state\nCurrent step number: 2" {
-		t.Fatalf("input[7].Content = %q, want current-state footer last", input[7].Content)
+	if input[5].Type != "custom_tool_call_output" || input[5].CallID != "step_2" {
+		t.Fatalf("input[5] = %#v, want custom_tool_call_output replay", input[5])
+	}
+	if input[6].Content != "Current execution state\nCurrent step number: 2" {
+		t.Fatalf("input[6].Content = %q, want current-state footer last", input[6].Content)
+	}
+}
+
+func TestBuildResponsesToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
+	t.Parallel()
+
+	tools := buildResponsesTools([]agent.ToolDefinition{{
+		Name:        agent.ToolNameReadFile,
+		Description: "Reads a file.",
+		Kind:        agent.ToolKindFunction,
+		OutputNotes: "Returns bounded slices with truncation markers when needed.",
+		SafetyTags:  []string{"read_only", "bounded_output"},
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+	}}, openAIAdapterCapabilities{})
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if !strings.Contains(tools[0].Description, "Reads a file.") {
+		t.Fatalf("tool description = %q, want base description", tools[0].Description)
+	}
+	if !strings.Contains(tools[0].Description, "Output notes: Returns bounded slices with truncation markers when needed.") {
+		t.Fatalf("tool description = %q, want output notes", tools[0].Description)
+	}
+	if !strings.Contains(tools[0].Description, "Safety tags: read_only, bounded_output.") {
+		t.Fatalf("tool description = %q, want safety tags", tools[0].Description)
 	}
 }
 
@@ -888,7 +920,7 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	t.Parallel()
 
 	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
-		{OutputText: `{"type":"finish","thought":"all work is complete","result":"\"done\""}`},
+		{OutputText: `{"type":"finish","thought":"all work is complete","shell":"","result_json":"\"done\""}`},
 	})
 	defer server.Close()
 
@@ -921,7 +953,7 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 func TestParseDecisionDecodesStructuredFinishObjectString(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseDecision(`{"type":"finish","thought":"all work is complete","result":"{\"status\":\"done\",\"count\":2}"}`, nil, openAIAdapterCapabilities{})
+	decision, err := parseDecision(`{"type":"finish","thought":"all work is complete","shell":"","result_json":"{\"status\":\"done\",\"count\":2}"}`, nil, openAIAdapterCapabilities{})
 	if err != nil {
 		t.Fatalf("parseDecision() error = %v", err)
 	}

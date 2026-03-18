@@ -35,9 +35,6 @@ type Config struct {
 
 	// Deprecated: configure the prompt on [agent.Config].
 	SystemPrompt string
-
-	// Deprecated: configure history preservation on [agent.Config].
-	PreserveConversation bool
 }
 
 // Driver implements [agent.Driver] using the OpenAI Responses API.
@@ -53,6 +50,7 @@ type Driver struct {
 
 type responsesRequest struct {
 	Model                string               `json:"model"`
+	Instructions         string               `json:"instructions,omitempty"`
 	Reasoning            *responsesReasoning  `json:"reasoning,omitempty"`
 	Input                []responsesInputItem `json:"input"`
 	Text                 *responsesTextConfig `json:"text,omitempty"`
@@ -143,14 +141,15 @@ type apiErrorResponse struct {
 }
 
 type decisionResponse struct {
-	Type    string          `json:"type"`
-	Thought string          `json:"thought"`
-	Shell   string          `json:"shell"`
-	Tool    string          `json:"tool"`
-	Name    string          `json:"name"`
-	Args    json.RawMessage `json:"args"`
-	Input   string          `json:"input"`
-	Result  json.RawMessage `json:"result"`
+	Type       string          `json:"type"`
+	Thought    string          `json:"thought"`
+	Shell      string          `json:"shell"`
+	Tool       string          `json:"tool"`
+	Name       string          `json:"name"`
+	Args       json.RawMessage `json:"args"`
+	Input      string          `json:"input"`
+	Result     json.RawMessage `json:"result"`
+	ResultJSON string          `json:"result_json"`
 }
 
 type boundaryToolCallResponse struct {
@@ -198,9 +197,6 @@ func New(cfg Config) (*Driver, error) {
 	if strings.TrimSpace(cfg.SystemPrompt) != "" {
 		return nil, fmt.Errorf("openai system prompt is configured on agent.Config, not openai.Config")
 	}
-	if cfg.PreserveConversation {
-		return nil, fmt.Errorf("openai conversation history is configured on agent.Config, not openai.Config")
-	}
 	promptCacheRetention := strings.TrimSpace(cfg.PromptCacheRetention)
 	switch promptCacheRetention {
 	case "", "in_memory", "in-memory", "24h":
@@ -246,6 +242,7 @@ func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps open
 func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapabilities) responsesRequest {
 	requestBody := responsesRequest{
 		Model:                d.model,
+		Instructions:         buildResponsesInstructions(req.Messages),
 		Input:                buildResponsesInput(req, caps),
 		Text:                 d.responsesTextConfig(req),
 		PromptCacheKey:       d.promptCacheKey,
@@ -393,10 +390,10 @@ func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (a
 		}
 		decision.Tool = toolAction
 	case "finish":
-			value, err := parseFinishResult(raw.Result)
-			if err != nil {
-				return agent.Decision{}, true, err
-			}
+		value, err := parseLegacyFinishValue(raw)
+		if err != nil {
+			return agent.Decision{}, true, err
+		}
 		decision.Finish = &agent.FinishAction{Value: value}
 	default:
 		return agent.Decision{}, true, fmt.Errorf(`openai response must set "type" to "shell", "tool", or "finish"`)
@@ -476,6 +473,28 @@ func parseFinishResult(raw json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("could not decode finish result: %w", err)
 	}
 	return value, nil
+}
+
+func parseFinishJSONString(encoded string) (any, error) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return nil, fmt.Errorf(`openai response type "finish" must include non-empty "result_json"`)
+	}
+	var value any
+	if err := json.Unmarshal([]byte(encoded), &value); err == nil {
+		return value, nil
+	}
+	return encoded, nil
+}
+
+func parseLegacyFinishValue(raw decisionResponse) (any, error) {
+	if strings.TrimSpace(raw.ResultJSON) != "" {
+		return parseFinishJSONString(raw.ResultJSON)
+	}
+	if len(bytes.TrimSpace(raw.Result)) == 0 {
+		return nil, fmt.Errorf(`openai response type "finish" must include "result_json"`)
+	}
+	return parseFinishResult(raw.Result)
 }
 
 func parseToolCallDecision(call openAIFunctionCall, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -695,7 +714,7 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 		responseTool := responsesTool{
 			Type:        string(adapter.BoundaryKind),
 			Name:        adapter.ExposedName,
-			Description: tool.Description,
+			Description: openAIToolDescription(tool),
 		}
 		switch adapter.BoundaryKind {
 		case agent.ToolBoundaryKindCustom:
@@ -724,6 +743,21 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 	return result
 }
 
+func buildResponsesInstructions(messages []agent.Message) string {
+	parts := make([]string, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != agent.MessageRoleSystem {
+			continue
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, content)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities) []responsesInputItem {
 	if len(req.Messages) == 0 {
 		return nil
@@ -732,6 +766,9 @@ func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities) []re
 	replays := agent.BuildStepReplays(req.Steps)
 	input := make([]responsesInputItem, 0, len(req.Messages)+len(replays)*3)
 	for _, message := range prefix {
+		if message.Role == agent.MessageRoleSystem {
+			continue
+		}
 		input = append(input, responsesInputItem{
 			Role:    message.Role,
 			Content: message.Content,
@@ -742,10 +779,12 @@ func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities) []re
 		adapter, ok := adapters[replay.ToolName]
 		input = append(input, buildResponsesReplayItems(replay, adapter, ok)...)
 	}
-	input = append(input, responsesInputItem{
-		Role:    footer.Role,
-		Content: footer.Content,
-	})
+	if footer.Role != agent.MessageRoleSystem {
+		input = append(input, responsesInputItem{
+			Role:    footer.Role,
+			Content: footer.Content,
+		})
+	}
 	return input
 }
 
@@ -929,7 +968,7 @@ func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
 }
 
 func (d *Driver) responsesTextConfig(req agent.Request) *responsesTextConfig {
-	if !supportsResponsesStructuredTextFormat(d.model, d.baseURL) {
+	if !supportsResponsesStructuredTextFormat(d.model) {
 		return nil
 	}
 	if len(req.Tools) == 0 {
@@ -972,14 +1011,15 @@ func responsesShellOrFinishSchema() map[string]any {
 				"type": "string",
 			},
 			"shell": map[string]any{
-				"type": "string",
-			},
-			"result": map[string]any{
 				"type":        "string",
-				"description": "Final user-facing result for finish responses. When returning non-string values, serialize valid JSON into this string.",
+				"description": `For type="shell", the shell command to execute. For type="finish", return an empty string.`,
+			},
+			"result_json": map[string]any{
+				"type":        "string",
+				"description": `For type="finish", serialize the final user-facing result as valid JSON inside this string. For type="shell", return an empty string.`,
 			},
 		},
-		"required":             []string{"type", "thought"},
+		"required":             []string{"type", "thought", "shell", "result_json"},
 		"additionalProperties": false,
 	}
 }
@@ -995,20 +1035,21 @@ func responsesFinishSchema() map[string]any {
 			"thought": map[string]any{
 				"type": "string",
 			},
-			"result": map[string]any{
+			"shell": map[string]any{
 				"type":        "string",
-				"description": "Final user-facing result. When returning non-string values, serialize valid JSON into this string.",
+				"description": `Return an empty string when finishing without a shell action.`,
+			},
+			"result_json": map[string]any{
+				"type":        "string",
+				"description": "Serialize the final user-facing result as valid JSON inside this string.",
 			},
 		},
-		"required":             []string{"type", "thought", "result"},
+		"required":             []string{"type", "thought", "shell", "result_json"},
 		"additionalProperties": false,
 	}
 }
 
-func supportsResponsesStructuredTextFormat(model, baseURL string) bool {
-	if strings.TrimRight(strings.TrimSpace(baseURL), "/") != DefaultBaseURL {
-		return false
-	}
+func supportsResponsesStructuredTextFormat(model string) bool {
 	model = strings.TrimSpace(model)
 	switch {
 	case strings.HasPrefix(model, "gpt-5"),
@@ -1030,6 +1071,20 @@ func supportsResponsesStructuredTextFormat(model, baseURL string) bool {
 	default:
 		return false
 	}
+}
+
+func openAIToolDescription(tool agent.ToolDefinition) string {
+	sections := make([]string, 0, 3)
+	if description := strings.TrimSpace(tool.Description); description != "" {
+		sections = append(sections, description)
+	}
+	if notes := strings.TrimSpace(tool.OutputNotes); notes != "" {
+		sections = append(sections, "Output notes: "+notes)
+	}
+	if tags := strings.TrimSpace(strings.Join(tool.SafetyTags, ", ")); tags != "" {
+		sections = append(sections, "Safety tags: "+tags+".")
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func boolPtr(value bool) *bool {

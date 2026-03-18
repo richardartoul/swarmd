@@ -88,7 +88,6 @@ func TestRuntimeOptionsAgentConfigEnablesFullCapabilities(t *testing.T) {
 		networkDialer:   interp.OSNetworkDialer{},
 		maxSteps:        agent.DefaultMaxSteps,
 		maxOutputBytes:  agent.DefaultMaxOutputBytes,
-		rememberHistory: true,
 		preserveState:   true,
 	}
 
@@ -117,7 +116,6 @@ func TestRuntimeOptionsAgentConfigAppendsSystemPromptFileInstructions(t *testing
 		systemPrompt:    "Prioritize deep debugging over speed.",
 		maxSteps:        agent.DefaultMaxSteps,
 		maxOutputBytes:  agent.DefaultMaxOutputBytes,
-		rememberHistory: true,
 		preserveState:   true,
 	}
 

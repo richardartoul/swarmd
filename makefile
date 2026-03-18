@@ -1,7 +1,7 @@
 .PHONY: agentrepl agentrepl-memory server tui
 
 agentrepl:
-	SWARMD_DEBUG_PROMPT=true go run ./pkg/agent/cmd/agentrepl -root . -prompt "Explore the internet for interesting facts then summarize them for me."
+	go run ./pkg/agent/cmd/agentrepl -root .
 
 agentrepl-memory:
 	go run ./pkg/agent/cmd/agentrepl -memfs -root /workspace

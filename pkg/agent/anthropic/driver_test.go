@@ -51,13 +51,6 @@ func TestNewRejectsAgentOwnedPromptSettings(t *testing.T) {
 	}); err == nil {
 		t.Fatal("New() error = nil, want system prompt rejection")
 	}
-	if _, err := New(Config{
-		APIKey:               "test-key",
-		Model:                "claude-sonnet-4-6",
-		PreserveConversation: true,
-	}); err == nil {
-		t.Fatal("New() error = nil, want preserve conversation rejection")
-	}
 }
 
 func TestNewRejectsInvalidPromptCacheTTL(t *testing.T) {
@@ -430,6 +423,34 @@ func TestBuildAnthropicToolsCapsInputExamplesByToolKind(t *testing.T) {
 	}
 	if len(tools[1].InputExamples) != 1 {
 		t.Fatalf("len(apply_patch input_examples) = %d, want 1", len(tools[1].InputExamples))
+	}
+}
+
+func TestBuildAnthropicToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
+	t.Parallel()
+
+	tools := buildAnthropicTools([]agent.ToolDefinition{{
+		Name:         agent.ToolNameApplyPatch,
+		Description:  "Apply a structured patch.",
+		Kind:         agent.ToolKindCustom,
+		CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+		OutputNotes:  "Returns a patch application summary.",
+		SafetyTags:   []string{"mutating", "filesystem_write"},
+	}}, "")
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if !strings.Contains(tools[0].Description, "Apply a structured patch.") {
+		t.Fatalf("tool description = %q, want base description", tools[0].Description)
+	}
+	if !strings.Contains(tools[0].Description, "Input format: grammar/lark.") {
+		t.Fatalf("tool description = %q, want input format label", tools[0].Description)
+	}
+	if !strings.Contains(tools[0].Description, "Output notes: Returns a patch application summary.") {
+		t.Fatalf("tool description = %q, want output notes", tools[0].Description)
+	}
+	if !strings.Contains(tools[0].Description, "Safety tags: mutating, filesystem_write.") {
+		t.Fatalf("tool description = %q, want safety tags", tools[0].Description)
 	}
 }
 
