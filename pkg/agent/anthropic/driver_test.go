@@ -195,7 +195,9 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 				Name:         agent.ToolNameApplyPatch,
 				Description:  "Apply a structured patch to local files.",
 				Kind:         agent.ToolKindCustom,
+				Strict:       true,
 				CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+				Examples:     []string{"*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch"},
 			},
 		},
 	})
@@ -238,8 +240,17 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if !strings.Contains(snapshot[0].Request.Tools[1].Description, "Input format: grammar/lark.") {
 		t.Fatalf("patch tool description = %q, want custom format guidance", snapshot[0].Request.Tools[1].Description)
 	}
-	if !strings.Contains(snapshot[0].Request.Tools[1].Description, "Input definition:\nstart: PATCH\nPATCH: /.+/s") {
-		t.Fatalf("patch tool description = %q, want custom format definition", snapshot[0].Request.Tools[1].Description)
+	if strings.Contains(snapshot[0].Request.Tools[1].Description, "Input definition:") {
+		t.Fatalf("patch tool description = %q, want custom format definition omitted from always-on description", snapshot[0].Request.Tools[1].Description)
+	}
+	if !snapshot[0].Request.Tools[1].Strict {
+		t.Fatal("patch tool strict = false, want true")
+	}
+	if len(snapshot[0].Request.Tools[1].InputExamples) != 1 {
+		t.Fatalf("len(patch tool input_examples) = %d, want 1", len(snapshot[0].Request.Tools[1].InputExamples))
+	}
+	if got := snapshot[0].Request.Tools[1].InputExamples[0]["patch"]; got != "*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch" {
+		t.Fatalf("patch tool input_examples[0][patch] = %#v, want wrapped patch example", got)
 	}
 	properties, ok := patchSchema["properties"].(map[string]any)
 	if !ok {
@@ -306,6 +317,99 @@ func TestParseToolUseDecisionExtractsCustomInput(t *testing.T) {
 	}
 	if decision.Tool == nil || decision.Tool.Kind != agent.ToolKindCustom {
 		t.Fatalf("decision.Tool = %#v, want custom apply_patch tool", decision.Tool)
+	}
+}
+
+func TestParseDecisionAcceptsFunctionCallJSON(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"function_call","name":"read_file","arguments":"{\"file_path\":\"/tmp/demo.txt\"}","call_id":"call_1"}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+	if decision.Tool.Input != `{"file_path":"/tmp/demo.txt"}` {
+		t.Fatalf("decision.Tool.Input = %q, want read_file arguments", decision.Tool.Input)
+	}
+}
+
+func TestParseDecisionAcceptsCustomToolCallJSON(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** End Patch","call_id":"call_2"}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameApplyPatch,
+		Kind: agent.ToolKindCustom,
+	}})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Tool == nil || decision.Tool.Kind != agent.ToolKindCustom {
+		t.Fatalf("decision.Tool = %#v, want custom apply_patch tool", decision.Tool)
+	}
+}
+
+func TestParseDecisionAcceptsLocalShellCallJSON(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameRunShell,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameRunShell {
+		t.Fatalf("decision.Tool = %#v, want run_shell", decision.Tool)
+	}
+	if !strings.Contains(decision.Tool.Input, `"command":"ls -la"`) {
+		t.Fatalf("decision.Tool.Input = %q, want shell command payload", decision.Tool.Input)
+	}
+	if !strings.Contains(decision.Tool.Input, `"workdir":"/workspace"`) {
+		t.Fatalf("decision.Tool.Input = %q, want working directory payload", decision.Tool.Input)
+	}
+}
+
+func TestParseDecisionAcceptsLegacyToolJSON(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"tool","name":"apply_patch","args":{"patch":"*** Begin Patch\n*** End Patch"},"thought":"patch it"}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameApplyPatch,
+		Kind: agent.ToolKindCustom,
+	}})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Thought != "patch it" {
+		t.Fatalf("decision.Thought = %q, want %q", decision.Thought, "patch it")
+	}
+	if decision.Tool == nil || decision.Tool.Input != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("decision.Tool = %#v, want unwrapped custom tool input", decision.Tool)
+	}
+}
+
+func TestParseMessageDecisionAcceptsTextualFunctionCallFallback(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseMessageDecision(messagesResponse{
+		Content: []anthropicContentBlock{{
+			Type: "text",
+			Text: `{"type":"function_call","name":"read_file","arguments":"{\"file_path\":\"/tmp/demo.txt\"}","call_id":"call_1"}`,
+		}},
+		StopReason: "end_turn",
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseMessageDecision() error = %v", err)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file fallback", decision.Tool)
 	}
 }
 

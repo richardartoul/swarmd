@@ -772,7 +772,7 @@ func buildChatCompletionTools(tools []agent.ToolDefinition, caps openAIAdapterCa
 			Function: chatCompletionFunctionTool{
 				Name:        adapter.ExposedName,
 				Description: tool.Description,
-				Strict:      false,
+				Strict:      tool.Strict,
 				Parameters:  parameters,
 			},
 		})
@@ -803,7 +803,7 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 			}
 		default:
 			responseTool.Type = string(agent.ToolBoundaryKindFunction)
-			responseTool.Strict = false
+			responseTool.Strict = tool.Strict
 			responseTool.Parameters = tool.Parameters
 			if len(responseTool.Parameters) == 0 {
 				responseTool.Parameters = map[string]any{

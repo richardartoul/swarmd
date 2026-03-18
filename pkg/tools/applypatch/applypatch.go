@@ -81,6 +81,7 @@ func (plugin) Definition() toolscore.ToolDefinition {
 		Name:        toolName,
 		Description: "Apply a structured patch to local files.",
 		Kind:        toolscore.ToolKindCustom,
+		Strict:      true,
 		CustomFormat: &toolscore.ToolFormat{
 			Type:       "grammar",
 			Syntax:     "lark",

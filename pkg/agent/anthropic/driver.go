@@ -78,9 +78,11 @@ type anthropicOutputConfig struct {
 }
 
 type anthropicTool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name          string           `json:"name"`
+	Description   string           `json:"description,omitempty"`
+	Strict        bool             `json:"strict,omitempty"`
+	InputSchema   map[string]any   `json:"input_schema"`
+	InputExamples []map[string]any `json:"input_examples,omitempty"`
 }
 
 type anthropicToolChoice struct {
@@ -118,6 +120,33 @@ type structuredFinishResponse struct {
 	Type    string          `json:"type"`
 	Thought string          `json:"thought"`
 	Result  json.RawMessage `json:"result"`
+}
+
+type decisionResponse struct {
+	Type    string          `json:"type"`
+	Thought string          `json:"thought"`
+	Shell   string          `json:"shell"`
+	Tool    string          `json:"tool"`
+	Name    string          `json:"name"`
+	Args    json.RawMessage `json:"args"`
+	Input   string          `json:"input"`
+	Result  json.RawMessage `json:"result"`
+}
+
+type boundaryToolCallResponse struct {
+	Type      string                 `json:"type"`
+	Name      string                 `json:"name"`
+	Arguments string                 `json:"arguments"`
+	Input     string                 `json:"input"`
+	CallID    string                 `json:"call_id"`
+	Action    *boundaryLocalShellRun `json:"action"`
+}
+
+type boundaryLocalShellRun struct {
+	Type             string   `json:"type"`
+	Command          []string `json:"command"`
+	WorkingDirectory string   `json:"working_directory"`
+	TimeoutMS        int      `json:"timeout_ms"`
 }
 
 // New constructs an Anthropic-backed driver.
@@ -274,19 +303,196 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 		}
 		return decision, nil
 	}
-	if decision, ok, err := parseStructuredFinishDecision(text); ok || err != nil {
-		return decision, err
-	}
 	if text != "" {
-		return agent.Decision{
-			Finish: &agent.FinishAction{Value: parseFinishValue(text)},
-		}, nil
+		return parseDecision(text, allowedTools)
 	}
 	stopReason := strings.TrimSpace(response.StopReason)
 	if stopReason == "" {
 		return agent.Decision{}, fmt.Errorf("anthropic response content was empty")
 	}
 	return agent.Decision{}, fmt.Errorf("anthropic response with stop_reason %q did not include text or tool use", stopReason)
+}
+
+func parseDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
+	content = unwrapCodeFence(strings.TrimSpace(content))
+	if content == "" {
+		return agent.Decision{}, fmt.Errorf("anthropic response content was empty")
+	}
+	if decision, ok, err := parseBoundaryToolDecision(content, allowedTools); ok || err != nil {
+		return decision, err
+	}
+	if decision, ok, err := parseLegacyDecision(content, allowedTools); ok || err != nil {
+		return decision, err
+	}
+	if decision, ok, err := parseStructuredFinishDecision(content); ok || err != nil {
+		return decision, err
+	}
+	return agent.Decision{
+		Finish: &agent.FinishAction{Value: parseFinishValue(content)},
+	}, nil
+}
+
+func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
+	var raw decisionResponse
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := decoder.Decode(&raw); err != nil {
+		return agent.Decision{}, false, nil
+	}
+	if strings.TrimSpace(raw.Type) == "" {
+		return agent.Decision{}, false, nil
+	}
+	decision := agent.Decision{
+		Thought: strings.TrimSpace(raw.Thought),
+	}
+	switch strings.TrimSpace(raw.Type) {
+	case "shell":
+		shell := strings.TrimSpace(raw.Shell)
+		if shell == "" {
+			return agent.Decision{}, true, fmt.Errorf(`anthropic response type "shell" must include non-empty "shell"`)
+		}
+		decision.Shell = &agent.ShellAction{Source: shell}
+	case "tool":
+		toolAction, err := parseLegacyToolAction(raw, allowedTools)
+		if err != nil {
+			return agent.Decision{}, true, err
+		}
+		decision.Tool = toolAction
+	case "finish":
+		var value any
+		if len(raw.Result) > 0 && string(raw.Result) != "null" {
+			if err := json.Unmarshal(raw.Result, &value); err != nil {
+				return agent.Decision{}, true, fmt.Errorf("could not decode finish result: %w", err)
+			}
+		}
+		decision.Finish = &agent.FinishAction{Value: value}
+	default:
+		return agent.Decision{}, true, fmt.Errorf(`anthropic response must set "type" to "shell", "tool", or "finish"`)
+	}
+	return decision, true, nil
+}
+
+func parseLegacyToolAction(raw decisionResponse, allowedTools []agent.ToolDefinition) (*agent.ToolAction, error) {
+	name := strings.TrimSpace(raw.Name)
+	if name == "" {
+		name = strings.TrimSpace(raw.Tool)
+	}
+	if name == "" {
+		return nil, fmt.Errorf(`anthropic response type "tool" must include non-empty "name"`)
+	}
+	def, ok := allowedToolDefinition(allowedTools, name)
+	if !ok {
+		return nil, fmt.Errorf("anthropic response called unavailable tool %q", name)
+	}
+	if def.Kind == agent.ToolKindCustom {
+		input, err := extractLegacyCustomToolInput(strings.TrimSpace(raw.Input), raw.Args)
+		if err != nil {
+			return nil, err
+		}
+		return &agent.ToolAction{
+			Name:  def.Name,
+			Kind:  agent.ToolKindCustom,
+			Input: input,
+		}, nil
+	}
+	input := strings.TrimSpace(raw.Input)
+	if len(raw.Args) > 0 && string(raw.Args) != "null" {
+		input = strings.TrimSpace(string(raw.Args))
+	}
+	if input == "" {
+		input = "{}"
+	}
+	return &agent.ToolAction{
+		Name:  def.Name,
+		Kind:  agent.ToolKindFunction,
+		Input: input,
+	}, nil
+}
+
+func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
+	var raw boundaryToolCallResponse
+	decoder := json.NewDecoder(strings.NewReader(content))
+	if err := decoder.Decode(&raw); err != nil {
+		return agent.Decision{}, false, nil
+	}
+	if strings.TrimSpace(raw.Type) == "" {
+		return agent.Decision{}, false, nil
+	}
+	switch strings.TrimSpace(raw.Type) {
+	case "function_call":
+		decision, err := parseTextFunctionCall(strings.TrimSpace(raw.Name), strings.TrimSpace(raw.Arguments), allowedTools)
+		return decision, true, err
+	case "custom_tool_call":
+		name := strings.TrimSpace(raw.Name)
+		if name == "" {
+			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "name"`)
+		}
+		def, ok := allowedToolDefinition(allowedTools, name)
+		if !ok {
+			return agent.Decision{}, true, fmt.Errorf("anthropic response called unavailable tool %q", name)
+		}
+		if def.Kind != agent.ToolKindCustom {
+			return agent.Decision{}, true, fmt.Errorf("anthropic response used custom_tool_call for non-custom tool %q", name)
+		}
+		input := strings.TrimSpace(raw.Input)
+		if input == "" {
+			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "input"`)
+		}
+		return agent.Decision{
+			Tool: &agent.ToolAction{
+				Name:  def.Name,
+				Kind:  agent.ToolKindCustom,
+				Input: input,
+			},
+		}, true, nil
+	case "local_shell_call":
+		input, err := parseLocalShellInput(raw.Action)
+		if err != nil {
+			return agent.Decision{}, true, err
+		}
+		return agent.Decision{
+			Tool: &agent.ToolAction{
+				Name:  agent.ToolNameRunShell,
+				Kind:  agent.ToolKindFunction,
+				Input: input,
+			},
+		}, true, nil
+	default:
+		return agent.Decision{}, false, nil
+	}
+}
+
+func parseTextFunctionCall(name, arguments string, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
+	if name == "" {
+		return agent.Decision{}, fmt.Errorf(`function_call must include non-empty "name"`)
+	}
+	def, ok := allowedToolDefinition(allowedTools, name)
+	if !ok {
+		return agent.Decision{}, fmt.Errorf("anthropic response called unavailable tool %q", name)
+	}
+	if def.Kind == agent.ToolKindCustom {
+		input, err := extractCustomToolInputString(arguments)
+		if err != nil {
+			return agent.Decision{}, err
+		}
+		return agent.Decision{
+			Tool: &agent.ToolAction{
+				Name:  def.Name,
+				Kind:  agent.ToolKindCustom,
+				Input: input,
+			},
+		}, nil
+	}
+	input := strings.TrimSpace(arguments)
+	if input == "" {
+		input = "{}"
+	}
+	return agent.Decision{
+		Tool: &agent.ToolAction{
+			Name:  def.Name,
+			Kind:  agent.ToolKindFunction,
+			Input: input,
+		},
+	}, nil
 }
 
 func parseToolUseDecision(block anthropicContentBlock, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
@@ -297,11 +503,7 @@ func parseToolUseDecision(block anthropicContentBlock, allowedTools []agent.Tool
 	if name == "" {
 		return agent.Decision{}, fmt.Errorf("anthropic tool_use block must include non-empty name")
 	}
-	allowedByName := make(map[string]agent.ToolDefinition, len(allowedTools))
-	for _, tool := range allowedTools {
-		allowedByName[tool.Name] = tool
-	}
-	def, ok := allowedByName[name]
+	def, ok := allowedToolDefinition(allowedTools, name)
 	if !ok {
 		return agent.Decision{}, fmt.Errorf("anthropic response called unavailable tool %q", name)
 	}
@@ -341,9 +543,11 @@ func buildAnthropicTools(tools []agent.ToolDefinition) []anthropicTool {
 	result := make([]anthropicTool, 0, len(tools))
 	for _, tool := range tools {
 		result = append(result, anthropicTool{
-			Name:        tool.Name,
-			Description: anthropicToolDescription(tool),
-			InputSchema: anthropicToolSchema(tool),
+			Name:          tool.Name,
+			Description:   anthropicToolDescription(tool),
+			Strict:        tool.Strict,
+			InputSchema:   anthropicToolSchema(tool),
+			InputExamples: anthropicToolInputExamples(tool),
 		})
 	}
 	return result
@@ -354,20 +558,13 @@ func anthropicToolDescription(tool agent.ToolDefinition) string {
 	if tool.CustomFormat == nil {
 		return description
 	}
-	var parts []string
-	if description != "" {
-		parts = append(parts, description)
-	}
 	if format := anthropicToolFormatLabel(tool.CustomFormat); format != "" {
-		parts = append(parts, "Input format: "+format+".")
+		if description == "" {
+			return "Input format: " + format + "."
+		}
+		return description + "\n\nInput format: " + format + "."
 	}
-	if definition := strings.TrimSpace(tool.CustomFormat.Definition); definition != "" {
-		parts = append(parts, "Input definition:\n"+definition)
-	}
-	if example := firstAnthropicToolExample(tool.Examples); example != "" {
-		parts = append(parts, "Example:\n"+example)
-	}
-	return strings.Join(parts, "\n\n")
+	return description
 }
 
 func anthropicToolFormatLabel(format *agent.ToolFormat) string {
@@ -398,6 +595,37 @@ func firstAnthropicToolExample(examples []string) string {
 	return ""
 }
 
+func anthropicToolInputExamples(tool agent.ToolDefinition) []map[string]any {
+	if len(tool.Examples) == 0 {
+		return nil
+	}
+	examples := make([]map[string]any, 0, len(tool.Examples))
+	for _, example := range tool.Examples {
+		if payload, ok := anthropicToolInputExample(tool, example); ok {
+			examples = append(examples, payload)
+		}
+	}
+	if len(examples) == 0 {
+		return nil
+	}
+	return examples
+}
+
+func anthropicToolInputExample(tool agent.ToolDefinition, example string) (map[string]any, bool) {
+	example = strings.TrimSpace(example)
+	if example == "" {
+		return nil, false
+	}
+	if tool.Kind == agent.ToolKindCustom {
+		return map[string]any{anthropicCustomToolInputField(tool): example}, true
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(example), &payload); err != nil || payload == nil {
+		return nil, false
+	}
+	return payload, true
+}
+
 func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 	if tool.Kind == agent.ToolKindCustom {
 		if tool.Name == agent.ToolNameApplyPatch {
@@ -416,12 +644,12 @@ func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 		return map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"input": map[string]any{
+				anthropicCustomToolInputField(tool): map[string]any{
 					"type":        "string",
 					"description": "Freeform custom tool input.",
 				},
 			},
-			"required":             []string{"input"},
+			"required":             []string{anthropicCustomToolInputField(tool)},
 			"additionalProperties": false,
 		}
 	}
@@ -434,6 +662,13 @@ func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 		"required":             []string{},
 		"additionalProperties": false,
 	}
+}
+
+func anthropicCustomToolInputField(tool agent.ToolDefinition) string {
+	if tool.Name == agent.ToolNameApplyPatch {
+		return "patch"
+	}
+	return "input"
 }
 
 func extractAnthropicText(blocks []anthropicContentBlock) string {
@@ -500,12 +735,92 @@ func extractCustomToolInput(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &payload); err != nil {
 		return "", fmt.Errorf("could not decode custom tool input: %w", err)
 	}
+	return extractCustomToolInputPayload(payload)
+}
+
+func extractCustomToolInputString(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("custom tool input must not be empty")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", fmt.Errorf("could not decode custom tool input: %w", err)
+	}
+	return extractCustomToolInputPayload(payload)
+}
+
+func extractCustomToolInputPayload(payload map[string]any) (string, error) {
 	for _, key := range []string{"patch", "input"} {
 		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
 			return value, nil
 		}
 	}
 	return "", fmt.Errorf("custom tool input must include non-empty string field \"patch\" or \"input\"")
+}
+
+func extractLegacyCustomToolInput(input string, args json.RawMessage) (string, error) {
+	input = strings.TrimSpace(input)
+	if input != "" {
+		return input, nil
+	}
+	args = bytes.TrimSpace(args)
+	if len(args) == 0 || string(args) == "null" {
+		return "", fmt.Errorf(`anthropic response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
+	}
+	if payload, err := extractCustomToolInput(args); err == nil {
+		return payload, nil
+	}
+	var direct string
+	if err := json.Unmarshal(args, &direct); err == nil && strings.TrimSpace(direct) != "" {
+		return strings.TrimSpace(direct), nil
+	}
+	return "", fmt.Errorf(`anthropic response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
+}
+
+func parseLocalShellInput(action *boundaryLocalShellRun) (string, error) {
+	if action == nil {
+		return "", fmt.Errorf("local_shell_call must include action")
+	}
+	if strings.TrimSpace(action.Type) != "" && strings.TrimSpace(action.Type) != "exec" {
+		return "", fmt.Errorf(`local_shell_call action.type must be "exec"`)
+	}
+	command, err := extractShellCommand(action.Command)
+	if err != nil {
+		return "", err
+	}
+	payload := map[string]any{
+		"command": command,
+	}
+	if strings.TrimSpace(action.WorkingDirectory) != "" {
+		payload["workdir"] = strings.TrimSpace(action.WorkingDirectory)
+	}
+	if action.TimeoutMS > 0 {
+		payload["timeout_ms"] = action.TimeoutMS
+	}
+	return compactJSON(payload), nil
+}
+
+func extractShellCommand(command []string) (string, error) {
+	switch {
+	case len(command) == 0:
+		return "", fmt.Errorf("local_shell_call action.command must not be empty")
+	case len(command) == 1:
+		return strings.TrimSpace(command[0]), nil
+	case len(command) == 3 && (command[0] == "bash" || command[0] == "sh" || command[0] == "/bin/bash" || command[0] == "/bin/sh") && command[1] == "-lc":
+		return strings.TrimSpace(command[2]), nil
+	default:
+		return "", fmt.Errorf("local_shell_call action.command must be a single command string or a [bash, -lc, snippet] style exec")
+	}
+}
+
+func allowedToolDefinition(allowedTools []agent.ToolDefinition, name string) (agent.ToolDefinition, bool) {
+	for _, tool := range allowedTools {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return agent.ToolDefinition{}, false
 }
 
 func compactJSON(value any) string {

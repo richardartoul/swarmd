@@ -114,6 +114,7 @@ type ToolDefinition struct {
 	Name              string         `json:"name"`
 	Description       string         `json:"description"`
 	Kind              ToolKind       `json:"kind"`
+	Strict            bool           `json:"strict,omitempty"`
 	Parameters        map[string]any `json:"parameters,omitempty"`
 	CustomFormat      *ToolFormat    `json:"custom_format,omitempty"`
 	RequiredArguments []string       `json:"required_arguments,omitempty"`
