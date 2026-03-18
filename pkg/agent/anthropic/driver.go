@@ -342,11 +342,60 @@ func buildAnthropicTools(tools []agent.ToolDefinition) []anthropicTool {
 	for _, tool := range tools {
 		result = append(result, anthropicTool{
 			Name:        tool.Name,
-			Description: tool.Description,
+			Description: anthropicToolDescription(tool),
 			InputSchema: anthropicToolSchema(tool),
 		})
 	}
 	return result
+}
+
+func anthropicToolDescription(tool agent.ToolDefinition) string {
+	description := strings.TrimSpace(tool.Description)
+	if tool.CustomFormat == nil {
+		return description
+	}
+	var parts []string
+	if description != "" {
+		parts = append(parts, description)
+	}
+	if format := anthropicToolFormatLabel(tool.CustomFormat); format != "" {
+		parts = append(parts, "Input format: "+format+".")
+	}
+	if definition := strings.TrimSpace(tool.CustomFormat.Definition); definition != "" {
+		parts = append(parts, "Input definition:\n"+definition)
+	}
+	if example := firstAnthropicToolExample(tool.Examples); example != "" {
+		parts = append(parts, "Example:\n"+example)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+func anthropicToolFormatLabel(format *agent.ToolFormat) string {
+	if format == nil {
+		return ""
+	}
+	typeName := strings.TrimSpace(format.Type)
+	syntax := strings.TrimSpace(format.Syntax)
+	switch {
+	case typeName != "" && syntax != "":
+		return typeName + "/" + syntax
+	case typeName != "":
+		return typeName
+	case syntax != "":
+		return syntax
+	default:
+		return ""
+	}
+}
+
+func firstAnthropicToolExample(examples []string) string {
+	for _, example := range examples {
+		example = strings.TrimSpace(example)
+		if example != "" {
+			return example
+		}
+	}
+	return ""
 }
 
 func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
@@ -357,7 +406,7 @@ func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 				"properties": map[string]any{
 					"patch": map[string]any{
 						"type":        "string",
-						"description": "Structured patch text for the apply_patch grammar.",
+						"description": "Structured patch text. Provide the full patch body including \"*** Begin Patch\" and \"*** End Patch\".",
 					},
 				},
 				"required":             []string{"patch"},

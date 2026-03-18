@@ -553,6 +553,9 @@ func formatExpandedToolGuidance(tool ToolDefinition) string {
 	switch {
 	case tool.CustomFormat != nil:
 		fmt.Fprintf(&b, "  Format: %s/%s\n", tool.CustomFormat.Type, tool.CustomFormat.Syntax)
+		if strings.TrimSpace(tool.CustomFormat.Definition) != "" {
+			fmt.Fprintf(&b, "  Definition:\n%s\n", indentLines(tool.CustomFormat.Definition, "    "))
+		}
 	default:
 		if len(tool.Parameters) > 0 {
 			if schema, err := json.MarshalIndent(tool.Parameters, "", "  "); err == nil {

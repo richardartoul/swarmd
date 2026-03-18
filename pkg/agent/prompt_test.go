@@ -207,6 +207,9 @@ func TestToolExpandedGuidancePromptIncludesRelevantDetails(t *testing.T) {
 	if !strings.Contains(got, "Format: grammar/lark") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want custom format guidance", got)
 	}
+	if !strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want custom format definition", got)
+	}
 	if !strings.Contains(got, "Example 1: *** Begin Patch") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch example", got)
 	}

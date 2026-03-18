@@ -235,12 +235,25 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if snapshot[0].Request.Tools[1].Name != agent.ToolNameApplyPatch {
 		t.Fatalf("second tool = %#v, want apply_patch", snapshot[0].Request.Tools[1])
 	}
+	if !strings.Contains(snapshot[0].Request.Tools[1].Description, "Input format: grammar/lark.") {
+		t.Fatalf("patch tool description = %q, want custom format guidance", snapshot[0].Request.Tools[1].Description)
+	}
+	if !strings.Contains(snapshot[0].Request.Tools[1].Description, "Input definition:\nstart: PATCH\nPATCH: /.+/s") {
+		t.Fatalf("patch tool description = %q, want custom format definition", snapshot[0].Request.Tools[1].Description)
+	}
 	properties, ok := patchSchema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("patch schema properties = %#v, want object", patchSchema["properties"])
 	}
 	if _, ok := properties["patch"]; !ok {
 		t.Fatalf("patch schema = %#v, want patch wrapper property", patchSchema)
+	}
+	patchProperty, ok := properties["patch"].(map[string]any)
+	if !ok {
+		t.Fatalf("patch property = %#v, want object", properties["patch"])
+	}
+	if patchProperty["description"] != `Structured patch text. Provide the full patch body including "*** Begin Patch" and "*** End Patch".` {
+		t.Fatalf("patch property description = %#v, want explicit patch wrapper guidance", patchProperty["description"])
 	}
 }
 
