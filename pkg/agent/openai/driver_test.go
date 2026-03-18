@@ -756,6 +756,40 @@ func TestDriverNextTreatsResponsesOutputTextAsFinish(t *testing.T) {
 	}
 }
 
+func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"type":"finish","thought":"all work is complete","result":"done"}`},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:        agent.ToolNameReadFile,
+			Description: "Reads a file.",
+			Kind:        agent.ToolKindFunction,
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	if got := decision.Thought; got != "all work is complete" {
+		t.Fatalf("decision.Thought = %q, want %q", got, "all work is complete")
+	}
+	if got := decision.Finish.Value; got != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
 func TestDriverNextTreatsPlainAssistantTextAsFinish(t *testing.T) {
 	t.Parallel()
 

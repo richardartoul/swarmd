@@ -201,6 +201,10 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 		version: 8,
 		apply:   applyStepTypeColumnMigration,
 	},
+	{
+		version: 9,
+		apply:   applyRunFinishThoughtMigration,
+	},
 }
 
 const legacyNamespaceRenameSQL = `
@@ -526,6 +530,17 @@ func applyStepTypeColumnMigration(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "steps", "step_type", "TEXT NOT NULL DEFAULT ''")
+}
+
+func applyRunFinishThoughtMigration(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "runs")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	return addColumnIfMissing(ctx, tx, "runs", "finish_thought", "TEXT NOT NULL DEFAULT ''")
 }
 
 func addColumnIfMissing(ctx context.Context, tx *sql.Tx, tableName, columnName, definition string) error {

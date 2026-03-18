@@ -111,6 +111,7 @@ func TestStoreClaimMessageAndCompleteRun(t *testing.T) {
 		Duration:          25 * time.Millisecond,
 		CWD:               agentRecord.RootPath,
 		UsageCachedTokens: 11,
+		FinishThought:     "the task is complete",
 		Value:             map[string]any{"ok": true},
 	}); err != nil {
 		t.Fatalf("CompleteRun() error = %v", err)
@@ -125,6 +126,9 @@ func TestStoreClaimMessageAndCompleteRun(t *testing.T) {
 	}
 	if runRecord.ValueJSON == "" {
 		t.Fatal("run value json was empty")
+	}
+	if runRecord.FinishThought != "the task is complete" {
+		t.Fatalf("run finish thought = %q, want %q", runRecord.FinishThought, "the task is complete")
 	}
 	if runRecord.TriggerPrompt != "hello worker" {
 		t.Fatalf("run trigger prompt = %q, want %q", runRecord.TriggerPrompt, "hello worker")

@@ -59,6 +59,30 @@ func TestHandleTriggerKeepsStateWithinTrigger(t *testing.T) {
 	}
 }
 
+func TestHandleTriggerRecordsFinishThought(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				finishWithThought("done", "all requested work is complete"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "trigger-finish-thought"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if got := result.FinishThought; got != "all requested work is complete" {
+		t.Fatalf("result.FinishThought = %q, want %q", got, "all requested work is complete")
+	}
+	if got := result.Value; got != "done" {
+		t.Fatalf("result.Value = %#v, want %q", got, "done")
+	}
+}
+
 func TestHandleTriggerResetsBetweenTriggersByDefault(t *testing.T) {
 	t.Parallel()
 
@@ -1085,6 +1109,13 @@ func shell(src string) agent.Decision {
 
 func finish(value any) agent.Decision {
 	return agent.Decision{Finish: &agent.FinishAction{Value: value}}
+}
+
+func finishWithThought(value any, thought string) agent.Decision {
+	return agent.Decision{
+		Thought: thought,
+		Finish:  &agent.FinishAction{Value: value},
+	}
 }
 
 func withCachedTokens(decision agent.Decision, cachedTokens int) agent.Decision {

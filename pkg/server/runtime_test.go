@@ -325,6 +325,61 @@ func TestResultPersisterRetriesThenDeadLetters(t *testing.T) {
 	}
 }
 
+func TestResultPersisterStoresFinishThought(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-finish-thought")
+	createServerWorker(t, ctx, s, namespace.ID, "worker", filepath.Join(t.TempDir(), "worker"))
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-finish-thought",
+		RecipientAgentID: "worker",
+		Payload:          "say done",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	queue := &MessageQueue{
+		Store:         s,
+		NamespaceID:   namespace.ID,
+		AgentID:       "worker",
+		PollInterval:  10 * time.Millisecond,
+		LeaseDuration: time.Minute,
+	}
+	persister := ResultPersister{Store: s}
+
+	trigger, err := queue.Next(ctx)
+	if err != nil {
+		t.Fatalf("queue.Next() error = %v", err)
+	}
+	if err := persister.HandleResult(ctx, agent.Result{
+		Trigger:       trigger,
+		FinishedAt:    time.Now().UTC(),
+		Duration:      5 * time.Millisecond,
+		Status:        agent.ResultStatusFinished,
+		FinishThought: "all work is complete",
+		Value:         "done",
+	}); err != nil {
+		t.Fatalf("HandleResult() error = %v", err)
+	}
+
+	triggerCtx, err := TriggerContextFromTrigger(trigger)
+	if err != nil {
+		t.Fatalf("TriggerContextFromTrigger() error = %v", err)
+	}
+	run, err := s.GetRun(ctx, namespace.ID, triggerCtx.RunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	if run.FinishThought != "all work is complete" {
+		t.Fatalf("run.FinishThought = %q, want %q", run.FinishThought, "all work is complete")
+	}
+}
+
 func TestResultPersisterRejectsOutboxWithoutCapability(t *testing.T) {
 	t.Parallel()
 

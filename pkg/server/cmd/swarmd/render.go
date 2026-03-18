@@ -313,6 +313,7 @@ func renderRunShow(w io.Writer, data runShowData) {
 	writeKeyValue(w, "error", displayEmpty(run.Error))
 	writeBlock(w, "trigger_prompt", run.TriggerPrompt)
 	writeBlock(w, "system_prompt", run.SystemPrompt)
+	writeBlock(w, "finish_thought", run.FinishThought)
 	writeBlock(w, "value", server.RenderEnvelope(run.ValueJSON))
 	if data.Message != nil {
 		writeKeyValue(w, "message_status", string(data.Message.Status))

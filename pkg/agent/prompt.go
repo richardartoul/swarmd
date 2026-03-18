@@ -19,7 +19,7 @@ Use the structured tools provided by the runtime as the source of truth for what
 Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
-- When tools are available, either emit exactly one tool call or emit no tool call and finish normally.
+- When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
 - Do not invent tools or arguments that are not provided.
@@ -32,7 +32,8 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
-- When the task is complete, finish by responding normally to the user without another tool call.`
+- When the task is complete, finish without another tool call by emitting JSON in the form {"type":"finish","thought":"<brief reason for finishing>","result":<user-facing final value>}.
+- Keep "thought" concise and put the actual user-facing response or structured return payload in "result".`
 
 const defaultSystemPromptWithNetwork = `You are a sandboxed local agent.
 
@@ -41,7 +42,7 @@ Use the structured tools provided by the runtime as the source of truth for what
 Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
-- When tools are available, either emit exactly one tool call or emit no tool call and finish normally.
+- When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
 - Do not invent tools or arguments that are not provided.
@@ -54,7 +55,8 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
-- When the task is complete, finish by responding normally to the user without another tool call.`
+- When the task is complete, finish without another tool call by emitting JSON in the form {"type":"finish","thought":"<brief reason for finishing>","result":<user-facing final value>}.
+- Keep "thought" concise and put the actual user-facing response or structured return payload in "result".`
 
 func defaultSystemPrompt(networkEnabled bool) string {
 	if networkEnabled {
@@ -267,6 +269,9 @@ func (a *Agent) appendHistory(prompt string, result Result) {
 		}
 	}
 	fmt.Fprintf(&b, "Ending cwd: %s\n", result.CWD)
+	if strings.TrimSpace(result.FinishThought) != "" {
+		fmt.Fprintf(&b, "Final thought: %s\n", result.FinishThought)
+	}
 	if result.Value != nil {
 		fmt.Fprintf(&b, "Final result: %s\n", formatValue(result.Value))
 	}
@@ -317,7 +322,8 @@ func formatCurrentState(req Request) string {
 		b.WriteString("No prior steps have been run for this trigger.\n")
 	}
 	b.WriteString("\nCompact tool metadata is always included. Focused details appear only for likely relevant or recently failed actions.\n")
-	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.\n")
+	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish with a structured finish object.\n")
+	b.WriteString("When finishing, prefer {\"type\":\"finish\",\"thought\":\"...\",\"result\":...} so the runtime can record the final thought separately.\n")
 	b.WriteString("Never emit multiple tool calls in a single response.\n")
 	return b.String()
 }

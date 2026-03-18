@@ -122,7 +122,7 @@ func (s *Store) ListRuns(ctx context.Context, params ListRunsParams) ([]RunRecor
 	}
 
 	query := `
-SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
+SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
 FROM runs
 `
 	var conditions []string

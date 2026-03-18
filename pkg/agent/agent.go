@@ -232,6 +232,7 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 		}
 		if decision.Finish != nil {
 			result.Status = ResultStatusFinished
+			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
 			result.Steps = stepsSnapshot
 			finished := a.finishResult(result)

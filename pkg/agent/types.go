@@ -263,16 +263,17 @@ type Step = toolscore.Step
 
 // Result records handling of one trigger.
 type Result struct {
-	Trigger    Trigger
-	StartedAt  time.Time
-	FinishedAt time.Time
-	Duration   time.Duration
-	Status     ResultStatus
-	CWD        string
-	Usage      Usage
-	Value      any
-	Steps      []Step
-	Error      string
+	Trigger       Trigger
+	StartedAt     time.Time
+	FinishedAt    time.Time
+	Duration      time.Duration
+	Status        ResultStatus
+	CWD           string
+	Usage         Usage
+	FinishThought string
+	Value         any
+	Steps         []Step
+	Error         string
 }
 
 const (

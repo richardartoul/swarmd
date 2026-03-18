@@ -206,7 +206,7 @@ func loadRunItems(ctx context.Context, store *cpstore.Store, query tuiPageQuery)
 			kind:        tuiItemRun,
 			title:       run.ID,
 			desc:        desc,
-			filter:      strings.Join([]string{run.NamespaceID, run.ID, run.AgentID, run.TriggerID, run.Error, desc}, " "),
+			filter:      strings.Join([]string{run.NamespaceID, run.ID, run.AgentID, run.TriggerID, run.FinishThought, run.Error, desc}, " "),
 			namespaceID: run.NamespaceID,
 			agentID:     run.AgentID,
 			messageID:   run.MessageID,

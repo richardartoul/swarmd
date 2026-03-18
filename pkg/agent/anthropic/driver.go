@@ -84,9 +84,9 @@ type anthropicTool struct {
 }
 
 type anthropicToolChoice struct {
-	Type                    string `json:"type"`
-	Name                    string `json:"name,omitempty"`
-	DisableParallelToolUse  bool   `json:"disable_parallel_tool_use,omitempty"`
+	Type                   string `json:"type"`
+	Name                   string `json:"name,omitempty"`
+	DisableParallelToolUse bool   `json:"disable_parallel_tool_use,omitempty"`
 }
 
 type messagesResponse struct {
@@ -112,6 +112,12 @@ type apiErrorResponse struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
+}
+
+type structuredFinishResponse struct {
+	Type    string          `json:"type"`
+	Thought string          `json:"thought"`
+	Result  json.RawMessage `json:"result"`
 }
 
 // New constructs an Anthropic-backed driver.
@@ -248,7 +254,7 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 }
 
 func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
-	thought := extractAnthropicText(response.Content)
+	text := extractAnthropicText(response.Content)
 	var toolUses []anthropicContentBlock
 	for _, block := range response.Content {
 		if block.Type == "tool_use" {
@@ -263,14 +269,17 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 		if err != nil {
 			return agent.Decision{}, err
 		}
-		if thought != "" {
-			decision.Thought = thought
+		if text != "" {
+			decision.Thought = text
 		}
 		return decision, nil
 	}
-	if thought != "" {
+	if decision, ok, err := parseStructuredFinishDecision(text); ok || err != nil {
+		return decision, err
+	}
+	if text != "" {
 		return agent.Decision{
-			Finish: &agent.FinishAction{Value: parseFinishValue(thought)},
+			Finish: &agent.FinishAction{Value: parseFinishValue(text)},
 		}, nil
 	}
 	stopReason := strings.TrimSpace(response.StopReason)
@@ -392,6 +401,35 @@ func extractAnthropicText(blocks []anthropicContentBlock) string {
 	return b.String()
 }
 
+func parseStructuredFinishDecision(content string) (agent.Decision, bool, error) {
+	content = unwrapCodeFence(strings.TrimSpace(content))
+	if content == "" {
+		return agent.Decision{}, false, nil
+	}
+
+	var raw structuredFinishResponse
+	if err := json.Unmarshal([]byte(content), &raw); err != nil {
+		return agent.Decision{}, false, nil
+	}
+	if strings.TrimSpace(raw.Type) == "" {
+		return agent.Decision{}, false, nil
+	}
+	if strings.TrimSpace(raw.Type) != "finish" {
+		return agent.Decision{}, true, fmt.Errorf(`anthropic structured finish must set "type" to "finish"`)
+	}
+
+	var value any
+	if len(raw.Result) > 0 && string(raw.Result) != "null" {
+		if err := json.Unmarshal(raw.Result, &value); err != nil {
+			return agent.Decision{}, true, fmt.Errorf("could not decode finish result: %w", err)
+		}
+	}
+	return agent.Decision{
+		Thought: strings.TrimSpace(raw.Thought),
+		Finish:  &agent.FinishAction{Value: value},
+	}, true, nil
+}
+
 func compactRawJSON(raw json.RawMessage) (string, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -437,6 +475,17 @@ func parseFinishValue(content string) any {
 		return value
 	}
 	return content
+}
+
+func unwrapCodeFence(content string) string {
+	content = strings.TrimSpace(content)
+	if !strings.HasPrefix(content, "```") {
+		return content
+	}
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	return strings.TrimSpace(content)
 }
 
 func parseModelAndReasoningLevel(model string) (string, string) {

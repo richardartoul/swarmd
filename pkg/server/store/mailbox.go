@@ -256,13 +256,14 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	runRes, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs
-		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_cached_tokens = ?, value_json = ?, error = ?, updated_at_ms = ?
+		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_cached_tokens = ?, finish_thought = ?, value_json = ?, error = ?, updated_at_ms = ?
 		 WHERE namespace_id = ? AND run_id = ?`,
 		params.Status,
 		toMillis(params.FinishedAt),
 		toDurationMillis(params.Duration),
 		params.CWD,
 		params.UsageCachedTokens,
+		params.FinishThought,
 		valueJSON,
 		params.Error,
 		toMillis(now),
@@ -336,7 +337,7 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 
 func (s *Store) GetRun(ctx context.Context, namespaceID, runID string) (RunRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
+SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
 FROM runs
 WHERE namespace_id = ? AND run_id = ?
 `, namespaceID, runID)
@@ -540,6 +541,7 @@ func scanRun(scanner interface{ Scan(dest ...any) error }) (RunRecord, error) {
 		&durationMS,
 		&record.CWD,
 		&record.UsageCachedTokens,
+		&record.FinishThought,
 		&record.ValueJSON,
 		&record.Error,
 		&record.TriggerPrompt,

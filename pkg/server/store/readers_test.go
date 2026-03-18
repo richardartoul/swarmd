@@ -76,6 +76,7 @@ func TestStoreListReaders(t *testing.T) {
 		Duration:          finishedAt.Sub(startedAt),
 		CWD:               agentRecord.RootPath,
 		UsageCachedTokens: 4,
+		FinishThought:     "finished after reading the config",
 		Value:             map[string]any{"ok": true},
 	}); err != nil {
 		t.Fatalf("CompleteRun() error = %v", err)
@@ -127,6 +128,9 @@ func TestStoreListReaders(t *testing.T) {
 	}
 	if runs[0].SystemPrompt != "Reader system prompt" {
 		t.Fatalf("ListRuns()[0].SystemPrompt = %q, want %q", runs[0].SystemPrompt, "Reader system prompt")
+	}
+	if runs[0].FinishThought != "finished after reading the config" {
+		t.Fatalf("ListRuns()[0].FinishThought = %q, want %q", runs[0].FinishThought, "finished after reading the config")
 	}
 
 	steps, err := s.ListStepsByRun(ctx, namespace.ID, claimed.Run.ID)

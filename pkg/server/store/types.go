@@ -141,6 +141,7 @@ type RunRecord struct {
 	Duration          time.Duration
 	CWD               string
 	UsageCachedTokens int
+	FinishThought     string
 	ValueJSON         string
 	Error             string
 	TriggerPrompt     string
@@ -291,6 +292,7 @@ type CompleteRunParams struct {
 	Duration          time.Duration
 	CWD               string
 	UsageCachedTokens int
+	FinishThought     string
 	Value             any
 	Error             string
 	RetryAt           *time.Time

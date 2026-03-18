@@ -131,3 +131,58 @@ CREATE TABLE steps (
 		}
 	}
 }
+
+func TestMigrateAddsRunFinishThoughtColumn(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "migration-runs.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create schema_migrations error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (8)`); err != nil {
+		t.Fatalf("insert schema version error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE runs (
+	namespace_id TEXT NOT NULL,
+	run_id TEXT NOT NULL,
+	message_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	trigger_id TEXT NOT NULL,
+	status TEXT NOT NULL,
+	started_at_ms INTEGER NOT NULL,
+	finished_at_ms INTEGER,
+	duration_millis INTEGER NOT NULL,
+	cwd TEXT NOT NULL DEFAULT '',
+	usage_cached_tokens INTEGER NOT NULL,
+	value_json TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	trigger_prompt TEXT NOT NULL DEFAULT '',
+	system_prompt TEXT NOT NULL DEFAULT '',
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+)`); err != nil {
+		t.Fatalf("create runs error = %v", err)
+	}
+
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	exists, err := tableColumnExists(ctx, store.DB(), "runs", "finish_thought")
+	if err != nil {
+		t.Fatalf("tableColumnExists(%q) error = %v", "finish_thought", err)
+	}
+	if !exists {
+		t.Fatal("runs table missing migrated column finish_thought")
+	}
+}

@@ -50,11 +50,14 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	if !strings.Contains(got, `Use at most one tool call per response.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want tool-call limit guidance", got)
 	}
-	if !strings.Contains(got, `either emit exactly one tool call or emit no tool call and finish normally.`) {
+	if !strings.Contains(got, `either emit exactly one tool call or emit no tool call and finish with a structured finish object.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want explicit single-tool-call guidance", got)
 	}
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response; do additional tool work in later turns.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want no-multiple-tool-calls guidance", got)
+	}
+	if !strings.Contains(got, `{"type":"finish","thought":"<brief reason for finishing>","result":<user-facing final value>}`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want structured finish guidance", got)
 	}
 }
 
@@ -65,8 +68,11 @@ func TestFormatCurrentStateIncludesSingleToolCallReminder(t *testing.T) {
 		CWD:  "/workspace",
 		Step: 1,
 	})
-	if !strings.Contains(got, `Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.`) {
+	if !strings.Contains(got, `Use exactly one tool call when more work is needed, or no tool call when you are ready to finish with a structured finish object.`) {
 		t.Fatalf("formatCurrentState() = %q, want explicit single-tool-call reminder", got)
+	}
+	if !strings.Contains(got, `{"type":"finish","thought":"...","result":...}`) {
+		t.Fatalf("formatCurrentState() = %q, want structured finish reminder", got)
 	}
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response.`) {
 		t.Fatalf("formatCurrentState() = %q, want no-multiple-tool-calls reminder", got)

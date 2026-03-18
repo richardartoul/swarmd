@@ -115,6 +115,7 @@ func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) 
 		Duration:          result.Duration,
 		CWD:               result.CWD,
 		UsageCachedTokens: result.Usage.CachedTokens,
+		FinishThought:     result.FinishThought,
 		Value:             result.Value,
 		Error:             result.Error,
 		RetryAt:           retryAt,
