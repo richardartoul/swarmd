@@ -117,8 +117,9 @@ const (
 )
 
 type driverRequestContext struct {
-	Mode          driverRequestMode
-	PriorMessages []Message
+	Mode           driverRequestMode
+	PriorMessages  []Message
+	StepReplayData map[string]string
 }
 
 func newTriggerDriverRequestContext() driverRequestContext {
@@ -130,6 +131,19 @@ func newSessionDriverRequestContext(priorMessages []Message) driverRequestContex
 		Mode:          driverRequestModeSession,
 		PriorMessages: cloneMessages(priorMessages),
 	}
+}
+
+func (c driverRequestContext) withStepReplayData(callID, replayData string) driverRequestContext {
+	callID = strings.TrimSpace(callID)
+	replayData = strings.TrimSpace(replayData)
+	if callID == "" || replayData == "" {
+		return c
+	}
+	if c.StepReplayData == nil {
+		c.StepReplayData = make(map[string]string, 1)
+	}
+	c.StepReplayData[callID] = replayData
+	return c
 }
 
 func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customCommands []sandbox.CommandInfo) string {
@@ -150,7 +164,7 @@ func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customC
 		"- Network access is disabled unless this runtime explicitly exposes network-capable tools or shell commands.",
 		"- If you use run_shell, the sandbox command surface is:",
 		"- Shell builtins: echo, printf, pwd, cd, set, shift, unset, true, false, break, continue, test, [, :",
-		"- Coreutils: "+strings.Join(coreutilsNames, ", "),
+		"- Coreutils: " + strings.Join(coreutilsNames, ", "),
 		"- Grep policy: this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E/-F is rejected.",
 	}
 	if len(customCommands) > 0 {
@@ -189,12 +203,13 @@ func (a *Agent) buildDriverRequestWithContext(
 	}
 
 	req := Request{
-		Trigger:     trigger,
-		Step:        step,
-		SandboxRoot: a.sandboxRoot,
-		CWD:         cwd,
-		Steps:       steps,
-		Tools:       append([]ToolDefinition(nil), a.toolDefinitions...),
+		Trigger:        trigger,
+		Step:           step,
+		SandboxRoot:    a.sandboxRoot,
+		CWD:            cwd,
+		Steps:          steps,
+		Tools:          append([]ToolDefinition(nil), a.toolDefinitions...),
+		StepReplayData: cloneStepReplayData(requestContext.StepReplayData),
 	}
 	req.Messages = []Message{
 		{Role: MessageRoleSystem, Content: a.systemPrompt},
@@ -392,4 +407,15 @@ func indentLines(text, prefix string) string {
 
 func cloneMessages(messages []Message) []Message {
 	return append([]Message(nil), messages...)
+}
+
+func cloneStepReplayData(data map[string]string) map[string]string {
+	if len(data) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(data))
+	for key, value := range data {
+		cloned[key] = value
+	}
+	return cloned
 }

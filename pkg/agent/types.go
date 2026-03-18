@@ -202,6 +202,9 @@ type Request struct {
 	Steps       []Step
 	Tools       []ToolDefinition
 	Messages    []Message
+	// StepReplayData carries opaque provider-specific replay metadata keyed by
+	// [StepCallID]. Drivers may use it to reconstruct native multi-step context.
+	StepReplayData map[string]string
 }
 
 type Usage = toolscore.Usage
@@ -213,6 +216,9 @@ type Decision struct {
 	Shell   *ShellAction
 	Tool    *ToolAction
 	Finish  *FinishAction
+	// ReplayData carries opaque provider-specific metadata for the action
+	// represented by this decision so later requests can replay native context.
+	ReplayData string
 }
 
 // ShellAction asks the agent to run shell source in the sandbox.

@@ -126,11 +126,72 @@ type messagesResponse struct {
 }
 
 type anthropicContentBlock struct {
-	Type  string          `json:"type"`
-	Text  string          `json:"text"`
-	ID    string          `json:"id"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type      string          `json:"type"`
+	Text      string          `json:"text"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	Thinking  string          `json:"thinking"`
+	Signature string          `json:"signature"`
+	Data      string          `json:"data"`
+	raw       json.RawMessage
+}
+
+func (b *anthropicContentBlock) UnmarshalJSON(data []byte) error {
+	type rawBlock struct {
+		Type      string          `json:"type"`
+		Text      string          `json:"text"`
+		ID        string          `json:"id"`
+		Name      string          `json:"name"`
+		Input     json.RawMessage `json:"input"`
+		Thinking  string          `json:"thinking"`
+		Signature string          `json:"signature"`
+		Data      string          `json:"data"`
+	}
+	var decoded rawBlock
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	b.Type = decoded.Type
+	b.Text = decoded.Text
+	b.ID = decoded.ID
+	b.Name = decoded.Name
+	b.Input = append(json.RawMessage(nil), decoded.Input...)
+	b.Thinking = decoded.Thinking
+	b.Signature = decoded.Signature
+	b.Data = decoded.Data
+	b.raw = append(json.RawMessage(nil), data...)
+	return nil
+}
+
+func (b anthropicContentBlock) rawJSON() json.RawMessage {
+	if len(b.raw) > 0 {
+		return append(json.RawMessage(nil), b.raw...)
+	}
+	type rawBlock struct {
+		Type      string          `json:"type"`
+		Text      string          `json:"text,omitempty"`
+		ID        string          `json:"id,omitempty"`
+		Name      string          `json:"name,omitempty"`
+		Input     json.RawMessage `json:"input,omitempty"`
+		Thinking  string          `json:"thinking,omitempty"`
+		Signature string          `json:"signature,omitempty"`
+		Data      string          `json:"data,omitempty"`
+	}
+	data, err := json.Marshal(rawBlock{
+		Type:      b.Type,
+		Text:      b.Text,
+		ID:        b.ID,
+		Name:      b.Name,
+		Input:     b.Input,
+		Thinking:  b.Thinking,
+		Signature: b.Signature,
+		Data:      b.Data,
+	})
+	if err != nil {
+		return nil
+	}
+	return data
 }
 
 type anthropicUsage struct {
@@ -292,7 +353,9 @@ func buildAnthropicMessages(req agent.Request, promptCacheTTL string) ([]anthrop
 	replays := agent.BuildStepReplays(req.Steps)
 	cacheableReplayIdx := lastAnthropicCacheableReplayIndex(replays)
 	for idx, replay := range replays {
-		replayOptions := anthropicReplayOptions{}
+		replayOptions := anthropicReplayOptions{
+			AssistantPreamble: strings.TrimSpace(req.StepReplayData[replay.CallID]),
+		}
 		if idx == cacheableReplayIdx {
 			replayOptions.ResultCacheControl = anthropicPromptCacheControl(promptCacheTTL)
 		}
@@ -321,6 +384,7 @@ func splitAnthropicRequestMessages(messages []agent.Message) ([]agent.Message, a
 
 type anthropicReplayOptions struct {
 	ResultCacheControl *anthropicCacheControl
+	AssistantPreamble  string
 }
 
 func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.ToolDefinition, options anthropicReplayOptions) ([]anthropicMessage, error) {
@@ -336,12 +400,9 @@ func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.
 		return nil, err
 	}
 
-	assistantContent := make([]any, 0, 2)
-	if replay.Thought != "" {
-		assistantContent = append(assistantContent, anthropicRequestTextBlock{
-			Type: "text",
-			Text: replay.Thought,
-		})
+	assistantContent, err := anthropicReplayAssistantContent(replay, options.AssistantPreamble)
+	if err != nil {
+		return nil, err
 	}
 	assistantContent = append(assistantContent, anthropicRequestToolUseBlock{
 		Type:  "tool_use",
@@ -369,6 +430,33 @@ func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.
 			Content: []any{resultBlock},
 		},
 	}, nil
+}
+
+func anthropicReplayAssistantContent(replay agent.StepReplay, rawPreamble string) ([]any, error) {
+	rawPreamble = strings.TrimSpace(rawPreamble)
+	if rawPreamble == "" {
+		assistantContent := make([]any, 0, 1)
+		if replay.Thought != "" {
+			assistantContent = append(assistantContent, anthropicRequestTextBlock{
+				Type: "text",
+				Text: replay.Thought,
+			})
+		}
+		return assistantContent, nil
+	}
+	var blocks []json.RawMessage
+	if err := json.Unmarshal([]byte(rawPreamble), &blocks); err != nil {
+		return nil, fmt.Errorf("could not decode anthropic replay preamble: %w", err)
+	}
+	assistantContent := make([]any, 0, len(blocks))
+	for _, block := range blocks {
+		block = bytes.TrimSpace(block)
+		if len(block) == 0 || string(block) == "null" {
+			continue
+		}
+		assistantContent = append(assistantContent, append(json.RawMessage(nil), block...))
+	}
+	return assistantContent, nil
 }
 
 func lastAnthropicCacheableReplayIndex(replays []agent.StepReplay) int {
@@ -481,6 +569,7 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 		if err != nil {
 			return agent.Decision{}, err
 		}
+		decision.ReplayData = extractAnthropicReplayPreamble(response.Content)
 		if text != "" {
 			decision.Thought = text
 		}
@@ -900,6 +989,27 @@ func extractAnthropicText(blocks []anthropicContentBlock) string {
 		b.WriteString(block.Text)
 	}
 	return b.String()
+}
+
+func extractAnthropicReplayPreamble(blocks []anthropicContentBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	preamble := make([]json.RawMessage, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			break
+		}
+		raw := bytes.TrimSpace(block.rawJSON())
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		preamble = append(preamble, raw)
+	}
+	if len(preamble) == 0 {
+		return ""
+	}
+	return compactJSON(preamble)
 }
 
 func parseStructuredFinishDecision(content string) (agent.Decision, bool, error) {

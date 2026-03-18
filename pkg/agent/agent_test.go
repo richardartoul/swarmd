@@ -330,6 +330,43 @@ func TestSessionCarriesFailedTurnStepsWithoutAssistantReply(t *testing.T) {
 	}
 }
 
+func TestHandleTriggerCarriesToolReplayDataToNextDriverRequest(t *testing.T) {
+	t.Parallel()
+
+	replayData := `[{"type":"thinking","thinking":"","signature":"sig-step-1"}]`
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			{
+				Tool: &agent.ToolAction{
+					Name:  agent.ToolNameRunShell,
+					Kind:  agent.ToolKindFunction,
+					Input: `{"command":"printf step-one"}`,
+				},
+				ReplayData: replayData,
+			},
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:   t.TempDir(),
+		Driver: driver,
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "replay-data"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+	if got := driver.requests[1].StepReplayData["step_1"]; got != replayData {
+		t.Fatalf("second request StepReplayData[step_1] = %q, want %q", got, replayData)
+	}
+}
+
 func TestHandleTriggerIncludesSandboxRootInDriverRequest(t *testing.T) {
 	t.Parallel()
 
@@ -1208,6 +1245,12 @@ func (d *recordingDriver) Next(_ context.Context, req agent.Request) (agent.Deci
 	copied := req
 	copied.Messages = append([]agent.Message(nil), req.Messages...)
 	copied.Steps = append([]agent.Step(nil), req.Steps...)
+	if len(req.StepReplayData) > 0 {
+		copied.StepReplayData = make(map[string]string, len(req.StepReplayData))
+		for key, value := range req.StepReplayData {
+			copied.StepReplayData[key] = value
+		}
+	}
 	d.requests = append(d.requests, copied)
 	if d.index >= len(d.decisions) {
 		return agent.Decision{}, fmt.Errorf("unexpected extra decision request")

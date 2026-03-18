@@ -536,6 +536,57 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesRequestReplaysStoredAssistantPreamble(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			Thought:        "inspect the file first",
+			ActionName:     agent.ToolNameReadFile,
+			ActionToolKind: agent.ToolKindFunction,
+			ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+			ActionOutput:   "demo content",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+		StepReplayData: map[string]string{
+			"step_1": `[{"type":"thinking","thinking":"","signature":"sig-step-1"},{"type":"text","text":"inspect the file first"}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+
+	assistantBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	if len(assistantBlocks) != 3 {
+		t.Fatalf("len(assistantBlocks) = %d, want 3", len(assistantBlocks))
+	}
+	if assistantBlocks[0]["type"] != "thinking" {
+		t.Fatalf("assistantBlocks[0] = %#v, want thinking block", assistantBlocks[0])
+	}
+	if assistantBlocks[0]["signature"] != "sig-step-1" {
+		t.Fatalf("assistantBlocks[0][signature] = %#v, want %q", assistantBlocks[0]["signature"], "sig-step-1")
+	}
+	if assistantBlocks[1]["type"] != "text" || assistantBlocks[1]["text"] != "inspect the file first" {
+		t.Fatalf("assistantBlocks[1] = %#v, want stored text block", assistantBlocks[1])
+	}
+	if assistantBlocks[2]["type"] != "tool_use" || assistantBlocks[2]["id"] != "step_1" || assistantBlocks[2]["name"] != agent.ToolNameReadFile {
+		t.Fatalf("assistantBlocks[2] = %#v, want tool_use block", assistantBlocks[2])
+	}
+}
+
 func TestBuildMessagesRequestReplaysCustomToolWrapperField(t *testing.T) {
 	t.Parallel()
 
@@ -755,6 +806,53 @@ func TestParseMessageDecisionPreservesAssistantTextForToolUse(t *testing.T) {
 	}
 	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
 		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+}
+
+func TestParseMessageDecisionCapturesReplayPreambleForToolUse(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseMessageDecision(messagesResponse{
+		Content: []anthropicContentBlock{
+			{
+				Type:      "thinking",
+				Thinking:  "",
+				Signature: "sig-tool-use",
+			},
+			{
+				Type: "text",
+				Text: "inspect the config before reading it",
+			},
+			{
+				Type:  "tool_use",
+				ID:    "toolu_1",
+				Name:  agent.ToolNameReadFile,
+				Input: json.RawMessage(`{"file_path":"/tmp/demo.txt"}`),
+			},
+		},
+		StopReason: "tool_use",
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseMessageDecision() error = %v", err)
+	}
+	if decision.ReplayData == "" {
+		t.Fatal("decision.ReplayData = empty, want replay preamble")
+	}
+	var replayBlocks []map[string]any
+	if err := json.Unmarshal([]byte(decision.ReplayData), &replayBlocks); err != nil {
+		t.Fatalf("json.Unmarshal(decision.ReplayData): %v", err)
+	}
+	if len(replayBlocks) != 2 {
+		t.Fatalf("len(replayBlocks) = %d, want 2", len(replayBlocks))
+	}
+	if replayBlocks[0]["type"] != "thinking" || replayBlocks[0]["signature"] != "sig-tool-use" {
+		t.Fatalf("replayBlocks[0] = %#v, want preserved thinking block", replayBlocks[0])
+	}
+	if replayBlocks[1]["type"] != "text" || replayBlocks[1]["text"] != "inspect the config before reading it" {
+		t.Fatalf("replayBlocks[1] = %#v, want preserved text block", replayBlocks[1])
 	}
 }
 

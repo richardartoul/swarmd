@@ -23,31 +23,31 @@ var ErrQueueRequired = errors.New("agent queue is required for Serve")
 
 // Agent runs a queue-driven agent loop on top of a sandboxed shell.
 type Agent struct {
-	queue                Queue
-	driver               Driver
-	onResult             ResultHandler
-	onStep               StepHandler
-	parser               *syntax.Parser
-	runner               *interp.Runner
-	fileSystem           sandbox.FileSystem
-	sandboxRoot          string
-	httpClientFactory    interp.HTTPClientFactory
-	stdout               *switchWriter
-	stderr               *switchWriter
-	maxSteps             int
-	maxOutputBytes       int
-	stepTimeout          time.Duration
-	preserveState        bool
-	systemPrompt         string
-	liveStdout           io.Writer
-	liveStderr           io.Writer
-	networkEnabled       bool
-	toolDefinitions      []ToolDefinition
-	toolByName           map[string]ToolDefinition
-	toolHandlerByName    map[string]ToolHandler
-	toolRuntimeData      any
-	webSearchBackend     WebSearchBackend
-	customCommands       []sandbox.CommandInfo
+	queue             Queue
+	driver            Driver
+	onResult          ResultHandler
+	onStep            StepHandler
+	parser            *syntax.Parser
+	runner            *interp.Runner
+	fileSystem        sandbox.FileSystem
+	sandboxRoot       string
+	httpClientFactory interp.HTTPClientFactory
+	stdout            *switchWriter
+	stderr            *switchWriter
+	maxSteps          int
+	maxOutputBytes    int
+	stepTimeout       time.Duration
+	preserveState     bool
+	systemPrompt      string
+	liveStdout        io.Writer
+	liveStderr        io.Writer
+	networkEnabled    bool
+	toolDefinitions   []ToolDefinition
+	toolByName        map[string]ToolDefinition
+	toolHandlerByName map[string]ToolHandler
+	toolRuntimeData   any
+	webSearchBackend  WebSearchBackend
+	customCommands    []sandbox.CommandInfo
 }
 
 type turnRunInput struct {
@@ -134,31 +134,31 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	return &Agent{
-		queue:                cfg.Queue,
-		driver:               cfg.Driver,
-		onResult:             cfg.OnResult,
-		onStep:               cfg.OnStep,
-		parser:               syntax.NewParser(syntax.Variant(syntax.LangPOSIX)),
-		runner:               runner,
-		fileSystem:           policy,
-		sandboxRoot:          sandboxRoot,
-		httpClientFactory:    httpClientFactory,
-		stdout:               stdout,
-		stderr:               stderr,
-		maxSteps:             maxSteps,
-		maxOutputBytes:       maxOutputBytes,
-		stepTimeout:          cfg.StepTimeout,
-		preserveState:        cfg.PreserveStateBetweenTriggers,
-		systemPrompt:         systemPrompt,
-		liveStdout:           cfg.Stdout,
-		liveStderr:           cfg.Stderr,
-		networkEnabled:       networkEnabled,
-		toolDefinitions:      toolDefinitions,
-		toolByName:           toolByName,
-		toolHandlerByName:    toolHandlerByName,
-		toolRuntimeData:      cfg.ToolRuntimeData,
-		webSearchBackend:     webSearchBackend,
-		customCommands:       commandInfosFromCustomCommands(cfg.CustomCommands),
+		queue:             cfg.Queue,
+		driver:            cfg.Driver,
+		onResult:          cfg.OnResult,
+		onStep:            cfg.OnStep,
+		parser:            syntax.NewParser(syntax.Variant(syntax.LangPOSIX)),
+		runner:            runner,
+		fileSystem:        policy,
+		sandboxRoot:       sandboxRoot,
+		httpClientFactory: httpClientFactory,
+		stdout:            stdout,
+		stderr:            stderr,
+		maxSteps:          maxSteps,
+		maxOutputBytes:    maxOutputBytes,
+		stepTimeout:       cfg.StepTimeout,
+		preserveState:     cfg.PreserveStateBetweenTriggers,
+		systemPrompt:      systemPrompt,
+		liveStdout:        cfg.Stdout,
+		liveStderr:        cfg.Stderr,
+		networkEnabled:    networkEnabled,
+		toolDefinitions:   toolDefinitions,
+		toolByName:        toolByName,
+		toolHandlerByName: toolHandlerByName,
+		toolRuntimeData:   cfg.ToolRuntimeData,
+		webSearchBackend:  webSearchBackend,
+		customCommands:    commandInfosFromCustomCommands(cfg.CustomCommands),
 	}, nil
 }
 
@@ -212,6 +212,7 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		nextStepIndex = 1
 	}
 	priorSteps := cloneSteps(input.PriorSteps)
+	requestContext := input.RequestContext
 	turnSteps := make([]Step, 0, a.maxSteps)
 	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
 		if err := ctx.Err(); err != nil {
@@ -229,7 +230,7 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			requestStep,
 			a.runner.Dir,
 			stepsSnapshot,
-			input.RequestContext,
+			requestContext,
 		)
 		if err != nil {
 			result.Status = ResultStatusDriverError
@@ -272,6 +273,9 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			step, runErr = a.runShellStep(ctx, input.Trigger, stepIndex, decision)
 		}
 		turnSteps = append(turnSteps, step)
+		if decision.Tool != nil {
+			requestContext = requestContext.withStepReplayData(StepCallID(step), decision.ReplayData)
+		}
 		if a.onStep != nil {
 			if stepErr := a.onStep.HandleStep(ctx, input.Trigger, step); stepErr != nil {
 				return a.finishResult(Result{
