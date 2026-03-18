@@ -109,6 +109,29 @@ func commandInfosFromCustomCommands(commands []sandbox.CustomCommand) []sandbox.
 	return infos
 }
 
+type driverRequestMode int
+
+const (
+	driverRequestModeTrigger driverRequestMode = iota
+	driverRequestModeSession
+)
+
+type driverRequestContext struct {
+	Mode          driverRequestMode
+	PriorMessages []Message
+}
+
+func newTriggerDriverRequestContext() driverRequestContext {
+	return driverRequestContext{Mode: driverRequestModeTrigger}
+}
+
+func newSessionDriverRequestContext(priorMessages []Message) driverRequestContext {
+	return driverRequestContext{
+		Mode:          driverRequestModeSession,
+		PriorMessages: cloneMessages(priorMessages),
+	}
+}
+
 func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customCommands []sandbox.CommandInfo) string {
 	if !hasTool(tools, ToolNameRunShell) {
 		return ""
@@ -150,6 +173,16 @@ func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customC
 }
 
 func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps []Step) (Request, string, error) {
+	return a.buildDriverRequestWithContext(trigger, step, cwd, steps, newTriggerDriverRequestContext())
+}
+
+func (a *Agent) buildDriverRequestWithContext(
+	trigger Trigger,
+	step int,
+	cwd string,
+	steps []Step,
+	requestContext driverRequestContext,
+) (Request, string, error) {
 	prompt, err := triggerPrompt(trigger)
 	if err != nil {
 		return Request{}, "", err
@@ -172,14 +205,14 @@ func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps 
 			Content: availability,
 		})
 	}
-	triggerContext := formatTriggerContext(prompt, req.Trigger)
+	req.Messages = append(req.Messages, cloneMessages(requestContext.PriorMessages)...)
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
-		Content: triggerContext,
+		Content: currentUserTurnContent(prompt, req.Trigger, requestContext.Mode),
 	})
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
-		Content: formatCurrentStateForPrompt(prompt, req),
+		Content: formatCurrentStateForPromptWithContext(prompt, req, requestContext),
 	})
 	return req, prompt, nil
 }
@@ -207,6 +240,10 @@ func formatCurrentState(req Request) string {
 }
 
 func formatCurrentStateForPrompt(prompt string, req Request) string {
+	return formatCurrentStateForPromptWithContext(prompt, req, newTriggerDriverRequestContext())
+}
+
+func formatCurrentStateForPromptWithContext(prompt string, req Request, requestContext driverRequestContext) string {
 	var b strings.Builder
 	b.WriteString("Current execution state\n")
 	if strings.TrimSpace(req.SandboxRoot) != "" {
@@ -216,7 +253,7 @@ func formatCurrentStateForPrompt(prompt string, req Request) string {
 	fmt.Fprintf(&b, "Current working directory: %s\n", req.CWD)
 	fmt.Fprintf(&b, "Current step number: %d\n", req.Step)
 	if len(req.Steps) == 0 {
-		b.WriteString("No prior steps have been run for this trigger.\n")
+		fmt.Fprintf(&b, "No prior steps have been run for this %s.\n", requestContext.currentStateTarget())
 	}
 	b.WriteString("\nNative tool metadata is included elsewhere in this request. Retry guidance appears below only when the last attempted tool needs repair.\n")
 	if expanded := toolExpandedGuidancePrompt(prompt, req); expanded != "" {
@@ -228,6 +265,20 @@ func formatCurrentStateForPrompt(prompt string, req Request) string {
 	b.WriteString("When finishing, prefer {\"type\":\"finish\",\"thought\":\"...\",\"result\":...} so the runtime can record the final thought separately.\n")
 	b.WriteString("Never emit multiple tool calls in a single response.\n")
 	return b.String()
+}
+
+func currentUserTurnContent(prompt string, trigger Trigger, mode driverRequestMode) string {
+	if mode == driverRequestModeSession {
+		return prompt
+	}
+	return formatTriggerContext(prompt, trigger)
+}
+
+func (c driverRequestContext) currentStateTarget() string {
+	if c.Mode == driverRequestModeSession {
+		return "turn"
+	}
+	return "trigger"
 }
 
 func hasTool(tools []ToolDefinition, name string) bool {
@@ -337,4 +388,8 @@ func indentLines(text, prefix string) string {
 		lines[idx] = prefix + line
 	}
 	return strings.Join(lines, "\n")
+}
+
+func cloneMessages(messages []Message) []Message {
+	return append([]Message(nil), messages...)
 }

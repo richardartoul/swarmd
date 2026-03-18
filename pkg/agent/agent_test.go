@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +168,165 @@ func TestHandleTriggerPreservesStateBetweenTriggersWhenConfigured(t *testing.T) 
 
 	if strings.TrimSpace(second.Steps[0].Stdout) != filepath.Join(resolvedRoot, "sub") {
 		t.Fatalf("second pwd = %q, want %q", strings.TrimSpace(second.Steps[0].Stdout), filepath.Join(resolvedRoot, "sub"))
+	}
+}
+
+func TestSessionReplaysConversationAndStepsAcrossTurns(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			shell("printf 'first'"),
+			finish("first answer"),
+			shell("printf 'second'"),
+			finish("second answer"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:     t.TempDir(),
+		MaxSteps: 2,
+		Driver:   driver,
+	})
+	session := agent.NewSession(a)
+
+	first, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-1",
+		Kind:    "repl.prompt",
+		Payload: "first question",
+	})
+	if err != nil {
+		t.Fatalf("first RunTrigger() error = %v", err)
+	}
+	second, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-2",
+		Kind:    "repl.prompt",
+		Payload: "second question",
+	})
+	if err != nil {
+		t.Fatalf("second RunTrigger() error = %v", err)
+	}
+
+	if first.Status != agent.ResultStatusFinished {
+		t.Fatalf("first.Status = %q, want %q", first.Status, agent.ResultStatusFinished)
+	}
+	if second.Status != agent.ResultStatusFinished {
+		t.Fatalf("second.Status = %q, want %q", second.Status, agent.ResultStatusFinished)
+	}
+	if len(second.Steps) != 1 {
+		t.Fatalf("len(second.Steps) = %d, want 1", len(second.Steps))
+	}
+	if second.Steps[0].Index != 2 {
+		t.Fatalf("second step index = %d, want 2", second.Steps[0].Index)
+	}
+	if got := agent.StepCallID(second.Steps[0]); got != "step_2" {
+		t.Fatalf("StepCallID(second step) = %q, want %q", got, "step_2")
+	}
+
+	if len(driver.requests) != 4 {
+		t.Fatalf("len(driver.requests) = %d, want 4", len(driver.requests))
+	}
+	secondTurnFirstRequest := driver.requests[2]
+	if secondTurnFirstRequest.Step != 1 {
+		t.Fatalf("second turn request step = %d, want 1", secondTurnFirstRequest.Step)
+	}
+	if len(secondTurnFirstRequest.Steps) != 1 {
+		t.Fatalf("len(second turn request steps) = %d, want 1", len(secondTurnFirstRequest.Steps))
+	}
+	if secondTurnFirstRequest.Steps[0].Index != 1 {
+		t.Fatalf("prior replayed step index = %d, want 1", secondTurnFirstRequest.Steps[0].Index)
+	}
+	if got := agent.StepCallID(secondTurnFirstRequest.Steps[0]); got != "step_1" {
+		t.Fatalf("StepCallID(prior step) = %q, want %q", got, "step_1")
+	}
+
+	var (
+		userMessages      []string
+		assistantMessages []string
+	)
+	for _, message := range secondTurnFirstRequest.Messages {
+		switch message.Role {
+		case agent.MessageRoleUser:
+			userMessages = append(userMessages, message.Content)
+		case agent.MessageRoleAssistant:
+			assistantMessages = append(assistantMessages, message.Content)
+		}
+		if strings.Contains(message.Content, "Trigger context\n") {
+			t.Fatalf("session message = %q, want plain session turns without trigger wrapper", message.Content)
+		}
+	}
+	if !slices.Contains(userMessages, "first question") {
+		t.Fatalf("user messages = %#v, want prior user turn", userMessages)
+	}
+	if !slices.Contains(userMessages, "second question") {
+		t.Fatalf("user messages = %#v, want current user turn", userMessages)
+	}
+	if !slices.Contains(assistantMessages, "first answer") {
+		t.Fatalf("assistant messages = %#v, want prior assistant reply", assistantMessages)
+	}
+}
+
+func TestSessionCarriesFailedTurnStepsWithoutAssistantReply(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			shell("printf 'partial'"),
+			finish("second answer"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:     t.TempDir(),
+		MaxSteps: 1,
+		Driver:   driver,
+	})
+	session := agent.NewSession(a)
+
+	first, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-1",
+		Kind:    "repl.prompt",
+		Payload: "first question",
+	})
+	if err != nil {
+		t.Fatalf("first RunTrigger() error = %v", err)
+	}
+	second, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-2",
+		Kind:    "repl.prompt",
+		Payload: "second question",
+	})
+	if err != nil {
+		t.Fatalf("second RunTrigger() error = %v", err)
+	}
+
+	if first.Status != agent.ResultStatusMaxSteps {
+		t.Fatalf("first.Status = %q, want %q", first.Status, agent.ResultStatusMaxSteps)
+	}
+	if second.Status != agent.ResultStatusFinished {
+		t.Fatalf("second.Status = %q, want %q", second.Status, agent.ResultStatusFinished)
+	}
+
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+	secondTurnRequest := driver.requests[1]
+	if secondTurnRequest.Step != 1 {
+		t.Fatalf("second turn request step = %d, want 1", secondTurnRequest.Step)
+	}
+	if len(secondTurnRequest.Steps) != 1 {
+		t.Fatalf("len(second turn request steps) = %d, want 1", len(secondTurnRequest.Steps))
+	}
+	if secondTurnRequest.Steps[0].Index != 1 {
+		t.Fatalf("replayed failed step index = %d, want 1", secondTurnRequest.Steps[0].Index)
+	}
+
+	var assistantMessages []string
+	for _, message := range secondTurnRequest.Messages {
+		if message.Role == agent.MessageRoleAssistant {
+			assistantMessages = append(assistantMessages, message.Content)
+		}
+	}
+	if len(assistantMessages) != 0 {
+		t.Fatalf("assistant messages = %#v, want no assistant reply for prior max-step turn", assistantMessages)
 	}
 }
 

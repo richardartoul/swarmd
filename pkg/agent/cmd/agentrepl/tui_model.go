@@ -377,14 +377,10 @@ func (m *agentTUIModel) handleResult(result agent.Result) {
 
 	switch result.Status {
 	case agent.ResultStatusFinished:
-		value := "done"
-		if result.Value != nil {
-			value = renderValue(result.Value)
-		}
 		m.appendEntry(transcriptEntry{
 			kind:  transcriptKindAssistant,
 			title: "assistant",
-			body:  value,
+			body:  agent.RenderResultValue(result.Value),
 		})
 		m.status = ""
 	default:

@@ -17,9 +17,9 @@ import (
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
-func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepNum int, decision Decision) (Step, error) {
+func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int, decision Decision) (Step, error) {
 	step := Step{
-		Index:          stepNum,
+		Index:          stepIndex,
 		Type:           StepTypeTool,
 		Thought:        decision.Thought,
 		ActionName:     decision.Tool.Name,
@@ -54,7 +54,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepNum int, d
 	}
 	toolCtx := runtimeToolContext{
 		agent:   a,
-		stepNum: stepNum,
+		stepNum: stepIndex,
 	}
 	err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool)
 	if err != nil {

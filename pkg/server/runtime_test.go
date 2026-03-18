@@ -626,8 +626,8 @@ func TestRuntimeManagerComposesBasePromptWithConfiguredPrompt(t *testing.T) {
 	if !strings.Contains(combinedPrompts, `Run curl and summarize the result.`) {
 		t.Fatalf("combined system prompts = %q, want configured prompt", combinedPrompts)
 	}
-	if !strings.Contains(combinedPrompts, `server_log: Write a message to the server logs with namespace and agent context.`) {
-		t.Fatalf("combined system prompts = %q, want structured server_log tool prompt", combinedPrompts)
+	if !strings.Contains(combinedPrompts, `Runtime-only run_shell guidance:`) {
+		t.Fatalf("combined system prompts = %q, want runtime-only run_shell guidance", combinedPrompts)
 	}
 }
 

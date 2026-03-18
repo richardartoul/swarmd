@@ -352,6 +352,45 @@ func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *tes
 	}
 }
 
+func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		sandboxRoot:  "/workspace",
+		systemPrompt: DefaultSystemPrompt,
+	}
+	req, _, err := a.buildDriverRequestWithContext(Trigger{
+		ID:      "trigger-2",
+		Kind:    "repl.prompt",
+		Payload: "second question",
+	}, 1, "/workspace", nil, newSessionDriverRequestContext([]Message{
+		{Role: MessageRoleUser, Content: "first question"},
+		{Role: MessageRoleAssistant, Content: "first answer"},
+	}))
+	if err != nil {
+		t.Fatalf("buildDriverRequestWithContext() error = %v", err)
+	}
+
+	if len(req.Messages) != 5 {
+		t.Fatalf("len(req.Messages) = %d, want 5", len(req.Messages))
+	}
+	if req.Messages[1] != (Message{Role: MessageRoleUser, Content: "first question"}) {
+		t.Fatalf("req.Messages[1] = %#v, want prior user turn", req.Messages[1])
+	}
+	if req.Messages[2] != (Message{Role: MessageRoleAssistant, Content: "first answer"}) {
+		t.Fatalf("req.Messages[2] = %#v, want prior assistant turn", req.Messages[2])
+	}
+	if req.Messages[3] != (Message{Role: MessageRoleUser, Content: "second question"}) {
+		t.Fatalf("req.Messages[3] = %#v, want plain current user turn", req.Messages[3])
+	}
+	if strings.Contains(req.Messages[3].Content, "Trigger context") {
+		t.Fatalf("current session user message = %#v, want plain prompt without trigger wrapper", req.Messages[3])
+	}
+	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this turn.") {
+		t.Fatalf("current-state message = %#v, want turn-scoped footer wording", req.Messages[4])
+	}
+}
+
 func TestReadFileNestedSchemaUsesEmptyRequiredArray(t *testing.T) {
 	t.Parallel()
 

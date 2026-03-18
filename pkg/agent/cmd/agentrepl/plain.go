@@ -21,11 +21,6 @@ func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
 
 	stdinFile := os.Stdin
 	queue := agent.Queue(newREPLQueue(stdinFile, os.Stdout))
-	if opts.singlePrompt != "" {
-		queue = &singlePromptQueue{
-			trigger: makeTrigger(opts.singlePrompt, 1),
-		}
-	}
 
 	if opts.singlePrompt == "" && term.IsTerminal(int(stdinFile.Fd())) {
 		fmt.Fprintln(os.Stdout, "agentrepl ready. Enter a prompt to trigger the agent, or :quit to exit.")
@@ -37,7 +32,21 @@ func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
 		verbose: opts.verbose,
 	}
 
-	cfg, err := opts.agentConfig(queue, driver, printer, printer, os.Stdout, os.Stderr)
+	if opts.singlePrompt != "" {
+		cfg, err := opts.agentConfig(&singlePromptQueue{
+			trigger: makeTrigger(opts.singlePrompt, 1),
+		}, driver, printer, printer, os.Stdout, os.Stderr)
+		if err != nil {
+			return err
+		}
+		runtime, err := agent.New(cfg)
+		if err != nil {
+			return err
+		}
+		return runtime.Serve(ctx)
+	}
+
+	cfg, err := opts.agentConfig(nil, driver, printer, printer, os.Stdout, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -45,5 +54,5 @@ func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
 	if err != nil {
 		return err
 	}
-	return runtime.Serve(ctx)
+	return runSessionLoop(ctx, queue, agent.NewSession(runtime))
 }

@@ -50,6 +50,14 @@ type Agent struct {
 	customCommands       []sandbox.CommandInfo
 }
 
+type turnRunInput struct {
+	Trigger        Trigger
+	PriorSteps     []Step
+	NextStepIndex  int
+	ResetRunner    bool
+	RequestContext driverRequestContext
+}
+
 // New constructs an [Agent].
 func New(cfg Config) (*Agent, error) {
 	if cfg.Driver == nil {
@@ -173,40 +181,60 @@ func (a *Agent) Serve(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if a.onResult != nil {
-			if err := a.onResult.HandleResult(ctx, result); err != nil {
-				return err
-			}
+		if err := a.handleResult(ctx, result); err != nil {
+			return err
 		}
 	}
 }
 
 // HandleTrigger handles a single trigger synchronously.
 func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, error) {
+	return a.runTurn(ctx, turnRunInput{
+		Trigger:        trigger,
+		NextStepIndex:  1,
+		ResetRunner:    !a.preserveState,
+		RequestContext: newTriggerDriverRequestContext(),
+	})
+}
+
+func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error) {
 	result := Result{
-		Trigger:   trigger,
+		Trigger:   input.Trigger,
 		StartedAt: time.Now(),
 	}
 
-	if !a.preserveState {
+	if input.ResetRunner {
 		a.runner.Reset()
 	}
 
-	steps := make([]Step, 0, a.maxSteps)
-	for stepNum := 1; stepNum <= a.maxSteps; stepNum++ {
+	nextStepIndex := input.NextStepIndex
+	if nextStepIndex <= 0 {
+		nextStepIndex = 1
+	}
+	priorSteps := cloneSteps(input.PriorSteps)
+	turnSteps := make([]Step, 0, a.maxSteps)
+	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
 		if err := ctx.Err(); err != nil {
 			result.Status = ResultStatusCanceled
 			result.Error = err.Error()
-			result.Steps = cloneSteps(steps)
+			result.Steps = turnSteps
 			return a.finishResult(result), err
 		}
 
-		stepsSnapshot := cloneSteps(steps)
-		request, _, err := a.buildDriverRequest(trigger, stepNum, a.runner.Dir, stepsSnapshot)
+		stepsSnapshot := make([]Step, 0, len(priorSteps)+len(turnSteps))
+		stepsSnapshot = append(stepsSnapshot, priorSteps...)
+		stepsSnapshot = append(stepsSnapshot, turnSteps...)
+		request, _, err := a.buildDriverRequestWithContext(
+			input.Trigger,
+			requestStep,
+			a.runner.Dir,
+			stepsSnapshot,
+			input.RequestContext,
+		)
 		if err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
-			result.Steps = stepsSnapshot
+			result.Steps = turnSteps
 			return a.finishResult(result), nil
 		}
 
@@ -214,21 +242,21 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 		if err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
-			result.Steps = stepsSnapshot
+			result.Steps = turnSteps
 			return a.finishResult(result), nil
 		}
 		result.Usage = mergeUsage(result.Usage, decision.Usage)
 		if err := validateDecision(decision); err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
-			result.Steps = stepsSnapshot
+			result.Steps = turnSteps
 			return a.finishResult(result), nil
 		}
 		if decision.Finish != nil {
 			result.Status = ResultStatusFinished
 			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
-			result.Steps = stepsSnapshot
+			result.Steps = turnSteps
 			return a.finishResult(result), nil
 		}
 
@@ -236,22 +264,23 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 			step   Step
 			runErr error
 		)
+		stepIndex := nextStepIndex + len(turnSteps)
 		switch {
 		case decision.Tool != nil:
-			step, runErr = a.runToolStep(ctx, trigger, stepNum, decision)
+			step, runErr = a.runToolStep(ctx, input.Trigger, stepIndex, decision)
 		default:
-			step, runErr = a.runShellStep(ctx, trigger, stepNum, decision)
+			step, runErr = a.runShellStep(ctx, input.Trigger, stepIndex, decision)
 		}
-		steps = append(steps, step)
+		turnSteps = append(turnSteps, step)
 		if a.onStep != nil {
-			if stepErr := a.onStep.HandleStep(ctx, trigger, step); stepErr != nil {
+			if stepErr := a.onStep.HandleStep(ctx, input.Trigger, step); stepErr != nil {
 				return a.finishResult(Result{
-					Trigger:   trigger,
+					Trigger:   input.Trigger,
 					StartedAt: result.StartedAt,
 					Status:    ResultStatusFatalError,
 					CWD:       a.runner.Dir,
 					Usage:     result.Usage,
-					Steps:     cloneSteps(steps),
+					Steps:     turnSteps,
 					Error:     stepErr.Error(),
 				}), stepErr
 			}
@@ -260,25 +289,32 @@ func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, err
 			if ctx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
 				result.Status = ResultStatusCanceled
 				result.Error = ctx.Err().Error()
-				result.Steps = cloneSteps(steps)
+				result.Steps = turnSteps
 				return a.finishResult(result), ctx.Err()
 			}
 			result.Status = ResultStatusFatalError
 			result.Error = runErr.Error()
-			result.Steps = cloneSteps(steps)
+			result.Steps = turnSteps
 			return a.finishResult(result), nil
 		}
 	}
 
 	result.Status = ResultStatusMaxSteps
 	result.Error = fmt.Sprintf("agent reached max steps (%d)", a.maxSteps)
-	result.Steps = cloneSteps(steps)
+	result.Steps = turnSteps
 	return a.finishResult(result), nil
 }
 
-func (a *Agent) runShellStep(ctx context.Context, trigger Trigger, stepNum int, decision Decision) (Step, error) {
+func (a *Agent) handleResult(ctx context.Context, result Result) error {
+	if a.onResult == nil {
+		return nil
+	}
+	return a.onResult.HandleResult(ctx, result)
+}
+
+func (a *Agent) runShellStep(ctx context.Context, trigger Trigger, stepIndex int, decision Decision) (Step, error) {
 	step := Step{
-		Index:      stepNum,
+		Index:      stepIndex,
 		Type:       StepTypeShell,
 		Thought:    decision.Thought,
 		ActionName: ToolNameRunShell,
@@ -290,7 +326,7 @@ func (a *Agent) runShellStep(ctx context.Context, trigger Trigger, stepNum int, 
 	}
 	defer finishStep(&step)
 
-	prog, err := a.parser.Parse(strings.NewReader(decision.Shell.Source), fmt.Sprintf("agent-step-%d", stepNum))
+	prog, err := a.parser.Parse(strings.NewReader(decision.Shell.Source), fmt.Sprintf("agent-step-%d", stepIndex))
 	if err != nil {
 		step.Status = StepStatusParseError
 		step.Error = err.Error()

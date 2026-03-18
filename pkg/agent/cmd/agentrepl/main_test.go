@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -183,6 +184,65 @@ func TestProgressPrinterPrintsStepAndResult(t *testing.T) {
 	}
 	if got := stderr.String(); !strings.Contains(got, "step 1 error> command failed") {
 		t.Fatalf("stderr = %q, want step error", got)
+	}
+}
+
+func TestRunSessionLoopProcessesMultiplePromptsAfterFinish(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	resultsCh := make(chan agent.Result, 2)
+	queueCh := make(chan agent.Trigger, 2)
+	queue := agent.QueueFunc(func(ctx context.Context) (agent.Trigger, error) {
+		select {
+		case <-ctx.Done():
+			return agent.Trigger{}, ctx.Err()
+		case trigger := <-queueCh:
+			return trigger, nil
+		}
+	})
+
+	cfg := agent.Config{
+		Root: t.TempDir(),
+		Driver: agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
+			return agent.Decision{
+				Finish: &agent.FinishAction{Value: req.Trigger.Payload},
+			}, nil
+		}),
+		OnResult: agent.ResultHandlerFunc(func(_ context.Context, result agent.Result) error {
+			resultsCh <- result
+			if result.Trigger.ID == "prompt-2" {
+				cancel()
+			}
+			return nil
+		}),
+	}
+	runtime, err := agent.New(cfg)
+	if err != nil {
+		t.Fatalf("agent.New() error = %v", err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runSessionLoop(ctx, queue, agent.NewSession(runtime))
+	}()
+
+	queueCh <- makeTrigger("first prompt", 1)
+	queueCh <- makeTrigger("second prompt", 2)
+
+	first := <-resultsCh
+	second := <-resultsCh
+	if first.Trigger.ID != "prompt-1" || first.Value != "first prompt" {
+		t.Fatalf("first result = %#v, want prompt-1/first prompt", first)
+	}
+	if second.Trigger.ID != "prompt-2" || second.Value != "second prompt" {
+		t.Fatalf("second result = %#v, want prompt-2/second prompt", second)
+	}
+
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSessionLoop() error = %v, want %v", err, context.Canceled)
 	}
 }
 

@@ -88,7 +88,7 @@ func runTUIAgent(ctx context.Context, opts runtimeOptions, queue agent.Queue, ev
 		stream: transcriptKindStderr,
 	}
 
-	cfg, err := opts.agentConfig(queue, driver, handlers, handlers, stdout, stderr)
+	cfg, err := opts.agentConfig(nil, driver, handlers, handlers, stdout, stderr)
 	if err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func runTUIAgent(ctx context.Context, opts runtimeOptions, queue agent.Queue, ev
 	if err != nil {
 		return err
 	}
-	return runtime.Serve(ctx)
+	return runSessionLoop(ctx, queue, agent.NewSession(runtime))
 }
 
 type tuiEventBus struct {

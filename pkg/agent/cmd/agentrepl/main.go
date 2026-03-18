@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -335,12 +334,8 @@ func (p progressPrinter) HandleResult(ctx context.Context, result agent.Result) 
 
 	switch result.Status {
 	case agent.ResultStatusFinished:
-		if result.Value != nil {
-			fmt.Fprint(p.stdout, prefixLines("assistant> ", renderValue(result.Value)))
-			fmt.Fprintln(p.stdout)
-		} else {
-			fmt.Fprintln(p.stdout, "assistant> done")
-		}
+		fmt.Fprint(p.stdout, prefixLines("assistant> ", agent.RenderResultValue(result.Value)))
+		fmt.Fprintln(p.stdout)
 	default:
 		if result.Error != "" {
 			fmt.Fprintf(p.stderr, "result [%s]: %s\n", result.Status, result.Error)
@@ -365,16 +360,15 @@ func makeTrigger(prompt string, id int) agent.Trigger {
 	}
 }
 
-func renderValue(value any) string {
-	switch value := value.(type) {
-	case string:
-		return value
-	default:
-		data, err := json.MarshalIndent(value, "", "  ")
+func runSessionLoop(ctx context.Context, queue agent.Queue, session *agent.Session) error {
+	for {
+		trigger, err := queue.Next(ctx)
 		if err != nil {
-			return fmt.Sprint(value)
+			return err
 		}
-		return string(data)
+		if _, err := session.RunTrigger(ctx, trigger); err != nil {
+			return err
+		}
 	}
 }
 
