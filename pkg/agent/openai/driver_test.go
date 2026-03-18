@@ -251,104 +251,24 @@ func TestDriverNextForwardsPreparedMessages(t *testing.T) {
 	}
 }
 
-func TestBuildOpenAIRequestMessagesReplaysRunShellBeforeCurrentState(t *testing.T) {
+func TestNextChatCompletionsRejectsToolBearingRequests(t *testing.T) {
 	t.Parallel()
 
-	messages := buildOpenAIRequestMessages(agent.Request{
+	driver := newTestDriver(t, "http://example.invalid")
+	_, err := driver.nextChatCompletions(context.Background(), agent.Request{
 		Messages: []agent.Message{
-			{Role: agent.MessageRoleSystem, Content: "test prompt"},
-			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: "list files"},
 		},
-		Steps: []agent.Step{{
-			Index:      1,
-			Type:       agent.StepTypeShell,
-			Thought:    "check the current directory",
-			ActionName: agent.ToolNameRunShell,
-			Shell:      "pwd",
-			Status:     agent.StepStatusOK,
-			CWDAfter:   "/workspace",
-			Stdout:     "/workspace\n",
-		}},
 		Tools: []agent.ToolDefinition{{
-			Name:       agent.ToolNameRunShell,
-			Kind:       agent.ToolKindFunction,
-			Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}, "additionalProperties": false},
+			Name: agent.ToolNameRunShell,
+			Kind: agent.ToolKindFunction,
 		}},
 	}, openAIAdapterCapabilities{})
-
-	if len(messages) != 5 {
-		t.Fatalf("len(messages) = %d, want 5", len(messages))
+	if err == nil {
+		t.Fatal("nextChatCompletions() error = nil, want tool-bearing request rejection")
 	}
-	if messages[2].Role != agent.MessageRoleAssistant {
-		t.Fatalf("messages[2].Role = %q, want assistant", messages[2].Role)
-	}
-	if messages[2].Content != "check the current directory" {
-		t.Fatalf("messages[2].Content = %q, want replay thought", messages[2].Content)
-	}
-	if len(messages[2].ToolCalls) != 1 {
-		t.Fatalf("len(messages[2].ToolCalls) = %d, want 1", len(messages[2].ToolCalls))
-	}
-	if messages[2].ToolCalls[0].ID != "step_1" {
-		t.Fatalf("messages[2].ToolCalls[0].ID = %q, want %q", messages[2].ToolCalls[0].ID, "step_1")
-	}
-	if messages[2].ToolCalls[0].Function.Name != agent.ToolNameRunShell {
-		t.Fatalf("messages[2].ToolCalls[0].Function.Name = %q, want %q", messages[2].ToolCalls[0].Function.Name, agent.ToolNameRunShell)
-	}
-	if messages[2].ToolCalls[0].Function.Arguments != `{"command":"pwd"}` {
-		t.Fatalf("messages[2].ToolCalls[0].Function.Arguments = %q, want normalized run_shell input", messages[2].ToolCalls[0].Function.Arguments)
-	}
-	if messages[3].Role != "tool" || messages[3].ToolCallID != "step_1" {
-		t.Fatalf("messages[3] = %#v, want tool output message for step_1", messages[3])
-	}
-	if !strings.Contains(messages[3].Content, "Status: ok") {
-		t.Fatalf("messages[3].Content = %q, want observation summary", messages[3].Content)
-	}
-	if messages[4].Content != "Current execution state\nCurrent step number: 2" {
-		t.Fatalf("messages[4].Content = %q, want current-state footer last", messages[4].Content)
-	}
-}
-
-func TestBuildOpenAIRequestMessagesWrapsCustomReplayForFunctionFallback(t *testing.T) {
-	t.Parallel()
-
-	messages := buildOpenAIRequestMessages(agent.Request{
-		Messages: []agent.Message{
-			{Role: agent.MessageRoleSystem, Content: "test prompt"},
-			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
-		},
-		Steps: []agent.Step{{
-			Index:          1,
-			Thought:        "patch it",
-			ActionName:     agent.ToolNameApplyPatch,
-			ActionToolKind: agent.ToolKindCustom,
-			ActionInput:    "*** Begin Patch\n*** End Patch",
-			Status:         agent.StepStatusOK,
-			CWDAfter:       "/workspace",
-		}},
-		Tools: []agent.ToolDefinition{{
-			Name:         agent.ToolNameApplyPatch,
-			Kind:         agent.ToolKindCustom,
-			CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
-			Interop: agent.ToolInterop{
-				OpenAIPreferredKind: agent.ToolBoundaryKindCustom,
-				OpenAIFallbackKind:  agent.ToolBoundaryKindFunction,
-			},
-		}},
-	}, openAIAdapterCapabilities{})
-
-	if len(messages) != 5 {
-		t.Fatalf("len(messages) = %d, want 5", len(messages))
-	}
-	if len(messages[2].ToolCalls) != 1 {
-		t.Fatalf("len(messages[2].ToolCalls) = %d, want 1", len(messages[2].ToolCalls))
-	}
-	if messages[2].ToolCalls[0].Function.Name != agent.ToolNameApplyPatch {
-		t.Fatalf("messages[2].ToolCalls[0].Function.Name = %q, want %q", messages[2].ToolCalls[0].Function.Name, agent.ToolNameApplyPatch)
-	}
-	if messages[2].ToolCalls[0].Function.Arguments != compactJSON(map[string]any{"patch": "*** Begin Patch\n*** End Patch"}) {
-		t.Fatalf("messages[2].ToolCalls[0].Function.Arguments = %q, want wrapped patch arguments", messages[2].ToolCalls[0].Function.Arguments)
+	if !strings.Contains(err.Error(), "does not support tool-bearing requests") {
+		t.Fatalf("nextChatCompletions() error = %v, want tool-bearing request rejection", err)
 	}
 }
 

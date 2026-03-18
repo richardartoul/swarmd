@@ -67,6 +67,41 @@ func TestDefaultWorkerPromptCacheSettingsDoesNotForceUnsupportedRetention(t *tes
 	}
 }
 
+func TestDefaultAnthropicWorkerPromptCacheTTLUsesStableDefault(t *testing.T) {
+	t.Parallel()
+
+	ttl := defaultAnthropicWorkerPromptCacheTTL(cpstore.RunnableAgent{
+		AgentRecord: cpstore.AgentRecord{
+			NamespaceID:   "default",
+			ID:            "worker-a",
+			ModelProvider: "anthropic",
+			ModelName:     "claude-sonnet-4-6",
+		},
+	})
+
+	if ttl != "1h" {
+		t.Fatalf("prompt cache ttl = %q, want %q", ttl, "1h")
+	}
+}
+
+func TestDefaultAnthropicWorkerPromptCacheTTLUsesStableDefaultForCustomBaseURL(t *testing.T) {
+	t.Parallel()
+
+	ttl := defaultAnthropicWorkerPromptCacheTTL(cpstore.RunnableAgent{
+		AgentRecord: cpstore.AgentRecord{
+			NamespaceID:   "default",
+			ID:            "worker-a",
+			ModelProvider: "anthropic",
+			ModelName:     "claude-sonnet-4-6",
+			ModelBaseURL:  "http://localhost:8080/messages",
+		},
+	})
+
+	if ttl != "1h" {
+		t.Fatalf("prompt cache ttl = %q, want %q even for custom base URL", ttl, "1h")
+	}
+}
+
 func TestMultiProviderWorkerDriverFactoryDefaultsEmptyProviderToOpenAI(t *testing.T) {
 	t.Parallel()
 

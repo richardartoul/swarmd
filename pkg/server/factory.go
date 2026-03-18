@@ -45,11 +45,13 @@ func (f AnthropicWorkerDriverFactory) NewWorkerDriver(_ context.Context, record 
 	if strings.TrimSpace(record.ModelProvider) != "anthropic" {
 		return nil, fmt.Errorf("unsupported worker model provider %q for agent %q/%q", record.ModelProvider, record.NamespaceID, record.ID)
 	}
+	promptCacheTTL := defaultAnthropicWorkerPromptCacheTTL(record)
 	driver, err := agentanthropic.New(agentanthropic.Config{
-		APIKey:     f.APIKey,
-		BaseURL:    record.ModelBaseURL,
-		Model:      record.ModelName,
-		HTTPClient: f.HTTPClient,
+		APIKey:         f.APIKey,
+		BaseURL:        record.ModelBaseURL,
+		Model:          record.ModelName,
+		HTTPClient:     f.HTTPClient,
+		PromptCacheTTL: promptCacheTTL,
 	})
 	if err != nil {
 		return nil, err
@@ -122,4 +124,8 @@ func supportsExtendedPromptCache(model string) bool {
 	default:
 		return false
 	}
+}
+
+func defaultAnthropicWorkerPromptCacheTTL(record cpstore.RunnableAgent) string {
+	return "1h"
 }

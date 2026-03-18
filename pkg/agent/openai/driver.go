@@ -63,10 +63,8 @@ type chatCompletionRequest struct {
 }
 
 type chatMessage struct {
-	Role       string                   `json:"role"`
-	Content    string                   `json:"content,omitempty"`
-	ToolCalls  []chatCompletionToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string                   `json:"tool_call_id,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type chatCompletionTool struct {
@@ -288,17 +286,21 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 }
 
 func (d *Driver) nextChatCompletions(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
+	if len(req.Tools) > 0 {
+		return agent.Decision{}, fmt.Errorf("openai chat completions path does not support tool-bearing requests; use responses API")
+	}
 	requestBody := chatCompletionRequest{
 		Model:                d.model,
 		ReasoningEffort:      d.reasoningEffort,
-		Messages:             buildOpenAIRequestMessages(req, caps),
+		Messages:             make([]chatMessage, 0, len(req.Messages)),
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: d.promptCacheRetention,
 	}
-	if len(req.Tools) > 0 {
-		requestBody.Tools = buildChatCompletionTools(req.Tools, caps)
-		requestBody.ToolChoice = "auto"
-		requestBody.ParallelToolCalls = boolPtr(false)
+	for _, message := range req.Messages {
+		requestBody.Messages = append(requestBody.Messages, chatMessage{
+			Role:    message.Role,
+			Content: message.Content,
+		})
 	}
 
 	decision, err := d.complete(ctx, requestBody, req.Tools, caps)
@@ -797,48 +799,6 @@ func extractLegacyCustomToolInput(input string, args json.RawMessage) (string, e
 	return "", fmt.Errorf(`openai response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
 }
 
-func buildChatCompletionTools(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) []chatCompletionTool {
-	if len(tools) == 0 {
-		return nil
-	}
-	result := make([]chatCompletionTool, 0, len(tools))
-	for _, adapter := range buildOpenAIToolAdapters(tools, caps) {
-		tool := adapter.Tool
-		parameters := tool.Parameters
-		if adapter.BoundaryKind != agent.ToolBoundaryKindFunction || tool.Kind == agent.ToolKindCustom {
-			parameters = map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"patch": map[string]any{
-						"type":        "string",
-						"description": "Structured patch text for the apply_patch grammar.",
-					},
-				},
-				"required":             []string{"patch"},
-				"additionalProperties": false,
-			}
-		}
-		if len(parameters) == 0 {
-			parameters = map[string]any{
-				"type":                 "object",
-				"properties":           map[string]any{},
-				"required":             []string{},
-				"additionalProperties": false,
-			}
-		}
-		result = append(result, chatCompletionTool{
-			Type: "function",
-			Function: chatCompletionFunctionTool{
-				Name:        adapter.ExposedName,
-				Description: tool.Description,
-				Strict:      tool.Strict,
-				Parameters:  parameters,
-			},
-		})
-	}
-	return result
-}
-
 func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) []responsesTool {
 	if len(tools) == 0 {
 		return nil
@@ -878,31 +838,6 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 	return result
 }
 
-func buildOpenAIRequestMessages(req agent.Request, caps openAIAdapterCapabilities) []chatMessage {
-	if len(req.Messages) == 0 {
-		return nil
-	}
-	prefix, footer := splitRequestMessages(req.Messages)
-	replays := agent.BuildStepReplays(req.Steps)
-	messages := make([]chatMessage, 0, len(req.Messages)+len(replays)*2)
-	for _, message := range prefix {
-		messages = append(messages, chatMessage{
-			Role:    message.Role,
-			Content: message.Content,
-		})
-	}
-	adapters := openAIToolAdaptersByInternalName(req.Tools, caps)
-	for _, replay := range replays {
-		adapter, ok := adapters[replay.ToolName]
-		messages = append(messages, buildOpenAIReplayMessages(replay, adapter, ok)...)
-	}
-	messages = append(messages, chatMessage{
-		Role:    footer.Role,
-		Content: footer.Content,
-	})
-	return messages
-}
-
 func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities) []responsesInputItem {
 	if len(req.Messages) == 0 {
 		return nil
@@ -933,30 +868,6 @@ func splitRequestMessages(messages []agent.Message) ([]agent.Message, agent.Mess
 		return nil, agent.Message{}
 	}
 	return messages[:len(messages)-1], messages[len(messages)-1]
-}
-
-func buildOpenAIReplayMessages(replay agent.StepReplay, adapter openAIToolAdapter, ok bool) []chatMessage {
-	name, arguments := openAIReplayCallNameAndArguments(replay, adapter, ok)
-	message := chatMessage{
-		Role:    agent.MessageRoleAssistant,
-		Content: replay.Thought,
-		ToolCalls: []chatCompletionToolCall{{
-			ID:   replay.CallID,
-			Type: "function",
-			Function: chatCompletionFunctionCall{
-				Name:      name,
-				Arguments: arguments,
-			},
-		}},
-	}
-	return []chatMessage{
-		message,
-		{
-			Role:       "tool",
-			Content:    replay.Output,
-			ToolCallID: replay.CallID,
-		},
-	}
 }
 
 func buildResponsesReplayItems(replay agent.StepReplay, adapter openAIToolAdapter, ok bool) []responsesInputItem {

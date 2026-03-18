@@ -7,7 +7,7 @@ import (
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
 
-func TestBuildChatCompletionToolsUsesEmptyArrayForNestedRequired(t *testing.T) {
+func TestBuildResponsesToolsUsesEmptyArrayForNestedRequired(t *testing.T) {
 	t.Parallel()
 
 	allTools, err := agent.ResolveToolDefinitions(nil, true)
@@ -28,12 +28,12 @@ func TestBuildChatCompletionToolsUsesEmptyArrayForNestedRequired(t *testing.T) {
 		t.Fatal("read_file tool definition not found")
 	}
 
-	tools := buildChatCompletionTools([]agent.ToolDefinition{readFileTool}, openAIAdapterCapabilities{})
+	tools := buildResponsesTools([]agent.ToolDefinition{readFileTool}, openAIAdapterCapabilities{})
 	if len(tools) != 1 {
 		t.Fatalf("len(tools) = %d, want 1", len(tools))
 	}
 
-	encoded, err := json.Marshal(tools[0].Function.Parameters)
+	encoded, err := json.Marshal(tools[0].Parameters)
 	if err != nil {
 		t.Fatalf("json.Marshal(parameters) error = %v", err)
 	}

@@ -60,6 +60,18 @@ func TestNewRejectsAgentOwnedPromptSettings(t *testing.T) {
 	}
 }
 
+func TestNewRejectsInvalidPromptCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	if _, err := New(Config{
+		APIKey:         "test-key",
+		Model:          "claude-sonnet-4-6",
+		PromptCacheTTL: "24h",
+	}); err == nil {
+		t.Fatal("New() error = nil, want invalid prompt cache ttl rejection")
+	}
+}
+
 func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	t.Parallel()
 
@@ -158,6 +170,101 @@ func TestDriverNextSendsAdaptiveThinkingFromModelSuffix(t *testing.T) {
 	}
 	if snapshot[0].Request.OutputConfig == nil || snapshot[0].Request.OutputConfig.Effort != "medium" {
 		t.Fatalf("request output_config = %#v, want medium effort", snapshot[0].Request.OutputConfig)
+	}
+}
+
+func TestDriverNextDefaultsPromptCacheTTLTo5m(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "done",
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: server.URL,
+		Model:   "claude-sonnet-4-6",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
+	}
+	if snapshot[0].Request.CacheControl == nil {
+		t.Fatal("request cache_control = nil, want default prompt cache enabled")
+	}
+	if snapshot[0].Request.CacheControl.Type != "ephemeral" {
+		t.Fatalf("request cache_control.type = %q, want %q", snapshot[0].Request.CacheControl.Type, "ephemeral")
+	}
+	if snapshot[0].Request.CacheControl.TTL != "5m" {
+		t.Fatalf("request cache_control.ttl = %q, want %q", snapshot[0].Request.CacheControl.TTL, "5m")
+	}
+}
+
+func TestDriverNextForwardsPromptCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "done",
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver, err := New(Config{
+		APIKey:         "test-key",
+		BaseURL:        server.URL,
+		Model:          "claude-sonnet-4-6",
+		PromptCacheTTL: "1h",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
+	}
+	if snapshot[0].Request.CacheControl == nil {
+		t.Fatal("request cache_control = nil, want prompt cache enabled")
+	}
+	if snapshot[0].Request.CacheControl.Type != "ephemeral" {
+		t.Fatalf("request cache_control.type = %q, want %q", snapshot[0].Request.CacheControl.Type, "ephemeral")
+	}
+	if snapshot[0].Request.CacheControl.TTL != "1h" {
+		t.Fatalf("request cache_control.ttl = %q, want %q", snapshot[0].Request.CacheControl.TTL, "1h")
 	}
 }
 
@@ -524,6 +631,18 @@ func TestParseDecisionAcceptsLocalShellCallJSON(t *testing.T) {
 	}
 	if !strings.Contains(decision.Tool.Input, `"workdir":"/workspace"`) {
 		t.Fatalf("decision.Tool.Input = %q, want working directory payload", decision.Tool.Input)
+	}
+}
+
+func TestParseDecisionRejectsUnavailableLocalShellCallJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, nil)
+	if err == nil {
+		t.Fatal("parseDecision() error = nil, want unavailable tool rejection")
+	}
+	if !strings.Contains(err.Error(), `unavailable tool "run_shell"`) {
+		t.Fatalf("parseDecision() error = %v, want unavailable tool rejection", err)
 	}
 }
 

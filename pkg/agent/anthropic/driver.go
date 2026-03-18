@@ -31,10 +31,11 @@ const (
 
 // Config configures a new Anthropic-backed driver.
 type Config struct {
-	APIKey     string
-	BaseURL    string
-	Model      string
-	HTTPClient *http.Client
+	APIKey         string
+	BaseURL        string
+	Model          string
+	HTTPClient     *http.Client
+	PromptCacheTTL string
 
 	// Deprecated: configure the prompt on [agent.Config].
 	SystemPrompt string
@@ -45,17 +46,19 @@ type Config struct {
 
 // Driver implements [agent.Driver] using the Anthropic Messages API.
 type Driver struct {
-	apiKey    string
-	baseURL   string
-	model     string
-	reasoning string
-	client    *http.Client
-	maxTokens int
+	apiKey         string
+	baseURL        string
+	model          string
+	reasoning      string
+	client         *http.Client
+	maxTokens      int
+	promptCacheTTL string
 }
 
 type messagesRequest struct {
 	Model        string                 `json:"model"`
 	MaxTokens    int                    `json:"max_tokens"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 	System       string                 `json:"system,omitempty"`
 	Messages     []anthropicMessage     `json:"messages"`
 	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
@@ -75,6 +78,11 @@ type anthropicThinking struct {
 
 type anthropicOutputConfig struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+type anthropicCacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type anthropicRequestTextBlock struct {
@@ -181,6 +189,10 @@ func New(cfg Config) (*Driver, error) {
 	if cfg.PreserveConversation {
 		return nil, fmt.Errorf("anthropic conversation history is configured on agent.Config, not anthropic.Config")
 	}
+	promptCacheTTL, err := normalizePromptCacheTTL(cfg.PromptCacheTTL)
+	if err != nil {
+		return nil, err
+	}
 	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
@@ -191,12 +203,13 @@ func New(cfg Config) (*Driver, error) {
 		client = &http.Client{Timeout: 2 * time.Minute}
 	}
 	return &Driver{
-		apiKey:    cfg.APIKey,
-		baseURL:   baseURL,
-		model:     model,
-		reasoning: reasoning,
-		client:    client,
-		maxTokens: DefaultMaxTokens,
+		apiKey:         cfg.APIKey,
+		baseURL:        baseURL,
+		model:          model,
+		reasoning:      reasoning,
+		client:         client,
+		maxTokens:      DefaultMaxTokens,
+		promptCacheTTL: promptCacheTTL,
 	}, nil
 }
 
@@ -216,6 +229,12 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 	payload := messagesRequest{
 		Model:     d.model,
 		MaxTokens: d.maxTokens,
+	}
+	if d.promptCacheTTL != "" {
+		payload.CacheControl = &anthropicCacheControl{
+			Type: "ephemeral",
+			TTL:  d.promptCacheTTL,
+		}
 	}
 	if d.reasoning != "" {
 		payload.Thinking = &anthropicThinking{Type: "adaptive"}
@@ -565,6 +584,9 @@ func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefiniti
 			},
 		}, true, nil
 	case "local_shell_call":
+		if _, ok := allowedToolDefinition(allowedTools, agent.ToolNameRunShell); !ok {
+			return agent.Decision{}, true, fmt.Errorf("anthropic response called unavailable tool %q", agent.ToolNameRunShell)
+		}
 		input, err := parseLocalShellInput(raw.Action)
 		if err != nil {
 			return agent.Decision{}, true, err
@@ -951,6 +973,17 @@ func compactJSON(value any) string {
 		return "{}"
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func normalizePromptCacheTTL(value string) (string, error) {
+	switch strings.TrimSpace(value) {
+	case "":
+		return "5m", nil
+	case "5m", "1h":
+		return strings.TrimSpace(value), nil
+	default:
+		return "", fmt.Errorf(`anthropic prompt cache ttl must be empty, "5m", or "1h"`)
+	}
 }
 
 func parseFinishValue(content string) any {
