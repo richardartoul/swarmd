@@ -72,10 +72,7 @@ func (m *tuiModel) submitTriggerPrompt() error {
 	if !m.triggering {
 		return nil
 	}
-	prompt := strings.TrimSpace(m.triggerInput.Value())
-	if prompt == "" {
-		return fmt.Errorf("manual trigger prompt must not be empty")
-	}
+	prompt := m.triggerInput.Value()
 	agentRecord, err := m.store.GetAgent(m.ctx, m.triggerTarget.NamespaceID, m.triggerTarget.AgentID)
 	if err != nil {
 		return fmt.Errorf("load agent %s: %w", m.triggerTarget.Label, err)
@@ -90,15 +87,16 @@ func (m *tuiModel) submitTriggerPrompt() error {
 	if agentRecord.MaxAttempts > 0 {
 		params.MaxAttempts = agentRecord.MaxAttempts
 	}
+	targetLabel := m.triggerTarget.Label
 	record, err := m.store.EnqueueMessage(m.ctx, params)
 	if err != nil {
-		return fmt.Errorf("enqueue manual trigger for %s: %w", m.triggerTarget.Label, err)
+		return fmt.Errorf("enqueue manual trigger for %s: %w", targetLabel, err)
 	}
 	m.exitTriggerMode()
 	if err := m.reloadCurrentPage(); err != nil {
 		return err
 	}
-	m.status = fmt.Sprintf("queued prompt for %s (message=%s thread=%s)", m.triggerTarget.Label, record.ID, record.ThreadID)
+	m.status = fmt.Sprintf("queued prompt for %s (message=%s thread=%s)", targetLabel, record.ID, record.ThreadID)
 	return nil
 }
 

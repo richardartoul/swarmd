@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -41,6 +42,7 @@ type tuiKeyMap struct {
 	selectItem  key.Binding
 	back        key.Binding
 	refresh     key.Binding
+	trigger     key.Binding
 	openAgent   key.Binding
 	openMailbox key.Binding
 	openRuns    key.Binding
@@ -60,6 +62,7 @@ func newTUIKeyMap() tuiKeyMap {
 		selectItem:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
 		back:        key.NewBinding(key.WithKeys("esc", "backspace"), key.WithHelp("esc", "back")),
 		refresh:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
+		trigger:     key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "trigger")),
 		openAgent:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "agent")),
 		openMailbox: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mailbox")),
 		openRuns:    key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "runs")),
@@ -72,13 +75,13 @@ func newTUIKeyMap() tuiKeyMap {
 }
 
 func (k tuiKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.nextSection, k.selectItem, k.back, k.refresh, k.help, k.quit}
+	return []key.Binding{k.nextSection, k.selectItem, k.trigger, k.back, k.refresh, k.help, k.quit}
 }
 
 func (k tuiKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.nextSection, k.prevSection, k.selectItem, k.back},
-		{k.focusList, k.focusDetail, k.openAgent, k.openMailbox, k.openRuns, k.openSched},
+		{k.focusList, k.focusDetail, k.trigger, k.openAgent, k.openMailbox, k.openRuns, k.openSched},
 		{k.openThread, k.openSteps, k.refresh, k.help, k.quit},
 	}
 }
@@ -100,6 +103,9 @@ type tuiModel struct {
 	height         int
 	showHelp       bool
 	status         string
+	triggering     bool
+	triggerInput   textinput.Model
+	triggerTarget  tuiTriggerTarget
 }
 
 func newTUIModel(ctx context.Context, store *cpstore.Store, dbPath string) (tuiModel, error) {
@@ -117,15 +123,16 @@ func newTUIModel(ctx context.Context, store *cpstore.Store, dbPath string) (tuiM
 	detail.MouseWheelEnabled = true
 
 	model := tuiModel{
-		ctx:      ctx,
-		store:    store,
-		dbPath:   dbPath,
-		sections: append([]tuiSection(nil), allTUISections...),
-		list:     left,
-		detail:   detail,
-		help:     help.New(),
-		keys:     newTUIKeyMap(),
-		focus:    tuiPaneList,
+		ctx:          ctx,
+		store:        store,
+		dbPath:       dbPath,
+		sections:     append([]tuiSection(nil), allTUISections...),
+		list:         left,
+		detail:       detail,
+		help:         help.New(),
+		keys:         newTUIKeyMap(),
+		focus:        tuiPaneList,
+		triggerInput: newTUITriggerInput(),
 	}
 	root, err := loadTUIPage(ctx, store, tuiSectionNamespaces.rootPage())
 	if err != nil {
@@ -149,6 +156,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case tea.MouseMsg:
+		if m.triggering {
+			return m, nil
+		}
 		return m, m.updateMouse(msg)
 	case tea.KeyMsg:
 		if key.Matches(msg, m.keys.quit) {
@@ -159,13 +169,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resize()
 			return m, nil
 		}
+		if m.triggering {
+			cmd, err := m.handleTriggerKey(msg)
+			if err != nil {
+				m.status = err.Error()
+			}
+			return m, cmd
+		}
 
 		if m.list.FilterState() != list.Filtering {
-			if ok, err := m.handleGlobalKey(msg); ok {
+			if ok, cmd, err := m.handleGlobalKey(msg); ok {
 				if err != nil {
 					m.status = err.Error()
 				}
-				return m, nil
+				return m, cmd
 			}
 		}
 
@@ -176,6 +193,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, m.updateList(msg)
 	default:
+		if m.triggering {
+			var cmd tea.Cmd
+			m.triggerInput, cmd = m.triggerInput.Update(msg)
+			return m, cmd
+		}
 		if m.focus == tuiPaneDetail {
 			return m, m.updateDetailMsg(msg)
 		}
@@ -196,54 +218,57 @@ func (m tuiModel) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
-func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, error) {
+func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, tea.Cmd, error) {
 	switch {
 	case directSectionKey(msg.String()):
-		return true, m.switchSection(directSectionIndex(msg.String()))
+		return true, nil, m.switchSection(directSectionIndex(msg.String()))
 	case key.Matches(msg, m.keys.nextSection):
-		return true, m.switchSectionByOffset(1)
+		return true, nil, m.switchSectionByOffset(1)
 	case key.Matches(msg, m.keys.prevSection):
-		return true, m.switchSectionByOffset(-1)
+		return true, nil, m.switchSectionByOffset(-1)
 	case key.Matches(msg, m.keys.refresh):
-		return true, m.reloadCurrentPage()
+		return true, nil, m.reloadCurrentPage()
+	case key.Matches(msg, m.keys.trigger):
+		cmd, ok := m.startTriggerMode()
+		return ok, cmd, nil
 	case key.Matches(msg, m.keys.focusList):
 		m.focus = tuiPaneList
 		m.status = ""
-		return true, nil
+		return true, nil, nil
 	case key.Matches(msg, m.keys.focusDetail):
 		m.focus = tuiPaneDetail
 		m.status = ""
-		return true, nil
+		return true, nil, nil
 	case key.Matches(msg, m.keys.back) && m.list.FilterState() == list.Unfiltered:
 		if len(m.stack) > 1 {
 			m.popPage()
-			return true, nil
+			return true, nil, nil
 		}
 		if m.focus == tuiPaneDetail {
 			m.focus = tuiPaneList
 			m.status = ""
-			return true, nil
+			return true, nil, nil
 		}
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.selectItem):
-		return true, m.openAction(tuiActionEnter)
+		return true, nil, m.openAction(tuiActionEnter)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openAgent):
-		return true, m.openAction(tuiActionAgent)
+		return true, nil, m.openAction(tuiActionAgent)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openMailbox):
-		return true, m.openAction(tuiActionMailbox)
+		return true, nil, m.openAction(tuiActionMailbox)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openRuns):
-		return true, m.openAction(tuiActionRuns)
+		return true, nil, m.openAction(tuiActionRuns)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openSched):
-		return true, m.openAction(tuiActionSchedules)
+		return true, nil, m.openAction(tuiActionSchedules)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openThread):
-		return true, m.openAction(tuiActionThread)
+		return true, nil, m.openAction(tuiActionThread)
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openSteps):
-		return true, m.openAction(tuiActionSteps)
+		return true, nil, m.openAction(tuiActionSteps)
 	case m.focus == tuiPaneDetail && msg.String() == "/":
 		m.focus = tuiPaneList
 		m.status = ""
-		return false, nil
+		return false, nil, nil
 	}
-	return false, nil
+	return false, nil, nil
 }
 
 func (m *tuiModel) updateDetail(msg tea.KeyMsg) {
@@ -450,6 +475,7 @@ func (m *tuiModel) resize() {
 	m.list.SetSize(maxInt(20, listWidth-2), maxInt(4, bodyHeight-2))
 	m.detail.Width = maxInt(20, detailWidth-2)
 	m.detail.Height = maxInt(4, bodyHeight-2)
+	m.triggerInput.Width = maxInt(20, m.width-10)
 	m.refreshDetailContent()
 }
 
@@ -459,10 +485,7 @@ func (m tuiModel) paneDimensions() (listWidth, detailWidth, bodyHeight int) {
 		listWidth = maxInt(28, m.width/2)
 	}
 	detailWidth = maxInt(32, m.width-listWidth)
-	bodyHeight = maxInt(10, m.height-6)
-	if m.showHelp {
-		bodyHeight = maxInt(8, m.height-9)
-	}
+	bodyHeight = maxInt(8, m.height-lipgloss.Height(m.headerView())-lipgloss.Height(m.footerView()))
 	return listWidth, detailWidth, bodyHeight
 }
 
@@ -512,12 +535,15 @@ func (m tuiModel) headerView() string {
 func (m tuiModel) footerView() string {
 	m.help.Width = m.width
 	m.help.ShowAll = m.showHelp
-	status := m.statusLine()
-	helpView := m.help.View(m.keys)
-	if strings.TrimSpace(helpView) == "" {
-		return status
+	lines := []string{m.statusLine()}
+	if actions := strings.TrimSpace(m.footerActionView()); actions != "" {
+		lines = append(lines, actions)
 	}
-	return status + "\n" + helpView
+	helpView := m.help.View(m.keys)
+	if strings.TrimSpace(helpView) != "" {
+		lines = append(lines, helpView)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m tuiModel) statusLine() string {
@@ -529,7 +555,7 @@ func (m tuiModel) statusLine() string {
 		if item, ok := m.selectedItem(); ok {
 			actions := availableTUIActions(*page, item)
 			if len(actions) > 0 {
-				status += " | links: " + strings.Join(actions, " ")
+				status += " | shortcuts: " + strings.Join(actions, " ")
 			}
 		}
 	}

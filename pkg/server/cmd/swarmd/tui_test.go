@@ -305,6 +305,75 @@ func TestTUIWheelScrollsDetailPaneUnderMouse(t *testing.T) {
 	}
 }
 
+func TestTUIManualTriggerAllowsEmptyPrompt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := seedCommandRunFixture(t)
+	store, err := cpstore.Open(ctx, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("cpstore.Open() error = %v", err)
+	}
+	defer store.Close()
+
+	model, err := newTUIModel(ctx, store, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("newTUIModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.resize()
+	if err := model.switchSection(sectionIndex(tuiSectionRuns)); err != nil {
+		t.Fatalf("switchSection(runs) error = %v", err)
+	}
+
+	update := func(msg tea.Msg) {
+		updated, _ := model.Update(msg)
+		next, ok := updated.(tuiModel)
+		if !ok {
+			t.Fatalf("Update() model type = %T, want tuiModel", updated)
+		}
+		model = next
+	}
+
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if !model.triggering {
+		t.Fatal("model.triggering = false, want true after trigger shortcut")
+	}
+
+	update(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.triggering {
+		t.Fatal("model.triggering = true after empty submit, want false")
+	}
+	if !strings.Contains(model.status, "queued prompt for "+fixture.namespaceID+"/"+fixture.agentID) {
+		t.Fatalf("status = %q, want queued prompt status", model.status)
+	}
+
+	messages, err := store.ListMailboxMessages(ctx, cpstore.ListMailboxMessagesParams{
+		NamespaceID: fixture.namespaceID,
+		AgentID:     fixture.agentID,
+		Limit:       2,
+	})
+	if err != nil {
+		t.Fatalf("ListMailboxMessages() error = %v", err)
+	}
+	if len(messages) < 2 {
+		t.Fatalf("len(messages) = %d, want at least 2 after enqueue", len(messages))
+	}
+
+	payload, err := cpstore.DecodeEnvelopeAny(messages[0].PayloadJSON)
+	if err != nil {
+		t.Fatalf("DecodeEnvelopeAny(payload) error = %v", err)
+	}
+	payloadMap, ok := payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload = %#v, want object", payload)
+	}
+	if got := payloadMap["text"]; got != "" {
+		t.Fatalf("payload[text] = %#v, want empty string", got)
+	}
+}
+
 func seedTUIScheduleFixture(t *testing.T) string {
 	t.Helper()
 
