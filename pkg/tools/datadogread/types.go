@@ -17,6 +17,7 @@ const (
 	DatadogReadActionGetDashboard   = "get_dashboard"
 	DatadogReadActionQueryMetrics   = "query_metrics"
 	DatadogReadActionSearchLogs     = "search_logs"
+	DatadogReadActionAggregateLogs  = "aggregate_logs"
 	DatadogReadActionListEvents     = "list_events"
 
 	DatadogAPIKeyEnvVar = "DD_API_KEY"
@@ -44,6 +45,9 @@ type DatadogReadRequest struct {
 	MonitorID   int64
 	DashboardID string
 	Query       string
+	Indexes     []string
+	Compute     []DatadogLogsAggregateCompute
+	GroupBy     []DatadogLogsAggregateGroupBy
 	StorageTier string
 	From        time.Time
 	To          time.Time
@@ -54,22 +58,25 @@ type DatadogReadRequest struct {
 }
 
 type DatadogReadResult struct {
-	Action          string                `json:"action"`
-	Item            any                   `json:"item,omitempty"`
-	Items           any                   `json:"items,omitempty"`
-	Series          []DatadogMetricSeries `json:"series,omitempty"`
-	Query           string                `json:"query,omitempty"`
-	From            string                `json:"from,omitempty"`
-	To              string                `json:"to,omitempty"`
-	Page            int64                 `json:"page,omitempty"`
-	PageSize        int                   `json:"page_size,omitempty"`
-	PageOffset      int64                 `json:"page_offset,omitempty"`
-	NextOffset      *int64                `json:"next_offset,omitempty"`
-	NextCursor      string                `json:"next_cursor,omitempty"`
-	Status          string                `json:"status,omitempty"`
-	ElapsedMS       int64                 `json:"elapsed_ms,omitempty"`
-	Warnings        []string              `json:"warnings,omitempty"`
-	SeriesTruncated bool                  `json:"series_truncated,omitempty"`
+	Action          string                        `json:"action"`
+	Item            any                           `json:"item,omitempty"`
+	Items           any                           `json:"items,omitempty"`
+	Series          []DatadogMetricSeries         `json:"series,omitempty"`
+	Indexes         []string                      `json:"indexes,omitempty"`
+	Computes        []DatadogLogsAggregateCompute `json:"computes,omitempty"`
+	GroupBy         []DatadogLogsAggregateGroupBy `json:"group_by,omitempty"`
+	Query           string                        `json:"query,omitempty"`
+	From            string                        `json:"from,omitempty"`
+	To              string                        `json:"to,omitempty"`
+	Page            int64                         `json:"page,omitempty"`
+	PageSize        int                           `json:"page_size,omitempty"`
+	PageOffset      int64                         `json:"page_offset,omitempty"`
+	NextOffset      *int64                        `json:"next_offset,omitempty"`
+	NextCursor      string                        `json:"next_cursor,omitempty"`
+	Status          string                        `json:"status,omitempty"`
+	ElapsedMS       int64                         `json:"elapsed_ms,omitempty"`
+	Warnings        []string                      `json:"warnings,omitempty"`
+	SeriesTruncated bool                          `json:"series_truncated,omitempty"`
 }
 
 type DatadogIncident struct {
@@ -145,6 +152,42 @@ type DatadogLogEntry struct {
 	Host      string   `json:"host,omitempty"`
 	Tags      []string `json:"tags,omitempty"`
 	Message   string   `json:"message,omitempty"`
+}
+
+type DatadogLogsAggregateCompute struct {
+	ID          string `json:"id,omitempty"`
+	Aggregation string `json:"aggregation,omitempty"`
+	Metric      string `json:"metric,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Interval    string `json:"interval,omitempty"`
+}
+
+type DatadogLogsAggregateGroupBy struct {
+	Facet string                    `json:"facet,omitempty"`
+	Limit int64                     `json:"limit,omitempty"`
+	Sort  *DatadogLogsAggregateSort `json:"sort,omitempty"`
+}
+
+type DatadogLogsAggregateSort struct {
+	Order       string `json:"order,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Aggregation string `json:"aggregation,omitempty"`
+	Metric      string `json:"metric,omitempty"`
+}
+
+type DatadogLogsAggregateBucket struct {
+	By       map[string]any `json:"by,omitempty"`
+	Computes map[string]any `json:"computes,omitempty"`
+}
+
+type DatadogLogsAggregateTimeseries struct {
+	Points    []DatadogLogsAggregatePoint `json:"points,omitempty"`
+	Truncated bool                        `json:"truncated,omitempty"`
+}
+
+type DatadogLogsAggregatePoint struct {
+	Time  string  `json:"time,omitempty"`
+	Value float64 `json:"value"`
 }
 
 type DatadogEvent struct {

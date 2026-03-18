@@ -129,6 +129,8 @@ func (c *DatadogClient) ExecuteRead(ctx context.Context, req DatadogReadRequest)
 		return c.queryMetrics(ctx, req)
 	case DatadogReadActionSearchLogs:
 		return c.searchLogs(ctx, req)
+	case DatadogReadActionAggregateLogs:
+		return c.aggregateLogs(ctx, req)
 	case DatadogReadActionListEvents:
 		return c.listEvents(ctx, req)
 	default:
@@ -317,6 +319,79 @@ func (c *DatadogClient) searchLogs(ctx context.Context, req DatadogReadRequest) 
 		From:     formatRFC3339(req.From),
 		To:       formatRFC3339(req.To),
 		PageSize: req.PageSize,
+	}
+	if response.Meta != nil {
+		result.ElapsedMS = response.Meta.GetElapsed()
+		if response.Meta.Page != nil && response.Meta.Page.After != nil {
+			result.NextCursor = strings.TrimSpace(*response.Meta.Page.After)
+		}
+		if response.Meta.Status != nil {
+			result.Status = string(*response.Meta.Status)
+		}
+		result.Warnings = normalizeDatadogWarnings(response.Meta.Warnings)
+	}
+	return result, nil
+}
+
+func (c *DatadogClient) aggregateLogs(ctx context.Context, req DatadogReadRequest) (DatadogReadResult, error) {
+	filter := datadogV2.LogsQueryFilter{}
+	query := req.Query
+	from := formatRFC3339(req.From)
+	to := formatRFC3339(req.To)
+	filter.Query = &query
+	filter.From = &from
+	filter.To = &to
+	if len(req.Indexes) > 0 {
+		filter.Indexes = append([]string(nil), req.Indexes...)
+	}
+	if strings.TrimSpace(req.StorageTier) != "" {
+		storageTier, err := datadogV2.NewLogsStorageTierFromValue(strings.TrimSpace(req.StorageTier))
+		if err != nil {
+			return DatadogReadResult{}, fmt.Errorf("aggregate logs: %w", err)
+		}
+		filter.StorageTier = storageTier
+	}
+	compute, err := buildDatadogLogsAggregateCompute(req.Compute)
+	if err != nil {
+		return DatadogReadResult{}, fmt.Errorf("aggregate logs: %w", err)
+	}
+	groupBy, err := buildDatadogLogsAggregateGroupBy(req.GroupBy)
+	if err != nil {
+		return DatadogReadResult{}, fmt.Errorf("aggregate logs: %w", err)
+	}
+	body := datadogV2.LogsAggregateRequest{
+		Filter:  &filter,
+		Compute: compute,
+	}
+	if len(groupBy) > 0 {
+		body.GroupBy = groupBy
+	}
+	if strings.TrimSpace(req.PageCursor) != "" {
+		cursor := strings.TrimSpace(req.PageCursor)
+		body.Page = &datadogV2.LogsAggregateRequestPage{
+			Cursor: &cursor,
+		}
+	}
+	response, _, err := datadogV2.NewLogsApi(c.apiClient).AggregateLogs(c.requestContext(ctx), body)
+	if err != nil {
+		return DatadogReadResult{}, fmt.Errorf("aggregate logs: %w", err)
+	}
+	items := make([]DatadogLogsAggregateBucket, 0)
+	if response.Data != nil {
+		items = make([]DatadogLogsAggregateBucket, 0, len(response.Data.GetBuckets()))
+		for _, bucket := range response.Data.GetBuckets() {
+			items = append(items, normalizeDatadogLogsAggregateBucket(bucket))
+		}
+	}
+	result := DatadogReadResult{
+		Action:   req.Action,
+		Items:    items,
+		Indexes:  append([]string(nil), req.Indexes...),
+		Computes: withDatadogLogsAggregateComputeIDs(req.Compute),
+		GroupBy:  cloneDatadogLogsAggregateGroupBy(req.GroupBy),
+		Query:    req.Query,
+		From:     formatRFC3339(req.From),
+		To:       formatRFC3339(req.To),
 	}
 	if response.Meta != nil {
 		result.ElapsedMS = response.Meta.GetElapsed()
@@ -571,6 +646,80 @@ func normalizeDatadogLog(log datadogV2.Log) DatadogLogEntry {
 	return result
 }
 
+func normalizeDatadogLogsAggregateBucket(bucket datadogV2.LogsAggregateBucket) DatadogLogsAggregateBucket {
+	result := DatadogLogsAggregateBucket{}
+	if len(bucket.By) > 0 {
+		result.By = make(map[string]any, len(bucket.By))
+		for key, value := range bucket.By {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if text, ok := value.(string); ok {
+				result.By[key] = strings.TrimSpace(text)
+				continue
+			}
+			result.By[key] = value
+		}
+	}
+	if len(bucket.Computes) > 0 {
+		result.Computes = make(map[string]any, len(bucket.Computes))
+		for key, value := range bucket.Computes {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			normalized := normalizeDatadogLogsAggregateBucketValue(value)
+			if normalized == nil {
+				continue
+			}
+			result.Computes[key] = normalized
+		}
+		if len(result.Computes) == 0 {
+			result.Computes = nil
+		}
+	}
+	if len(result.By) == 0 {
+		result.By = nil
+	}
+	return result
+}
+
+func normalizeDatadogLogsAggregateBucketValue(value datadogV2.LogsAggregateBucketValue) any {
+	if single := value.LogsAggregateBucketValueSingleString; single != nil {
+		return strings.TrimSpace(*single)
+	}
+	if single := value.LogsAggregateBucketValueSingleNumber; single != nil {
+		return *single
+	}
+	if series := value.LogsAggregateBucketValueTimeseries; series != nil {
+		points := make([]DatadogLogsAggregatePoint, 0, toolscommon.MinInt(len(series.Items), datadogMaxMetricPoints))
+		var truncated bool
+		for idx, point := range series.Items {
+			if idx >= datadogMaxMetricPoints {
+				truncated = true
+				break
+			}
+			normalized := DatadogLogsAggregatePoint{}
+			if point.Time != nil {
+				normalized.Time = strings.TrimSpace(*point.Time)
+			}
+			if point.Value != nil {
+				normalized.Value = *point.Value
+			}
+			points = append(points, normalized)
+		}
+		return DatadogLogsAggregateTimeseries{
+			Points:    points,
+			Truncated: truncated,
+		}
+	}
+	if value.UnparsedObject != nil {
+		return value.UnparsedObject
+	}
+	return nil
+}
+
 func normalizeDatadogWarnings(warnings []datadogV2.LogsWarning) []string {
 	if len(warnings) == 0 {
 		return nil
@@ -649,6 +798,115 @@ func formatInt64Ptr(value *int64) string {
 		return ""
 	}
 	return fmt.Sprintf("%d", *value)
+}
+
+func buildDatadogLogsAggregateCompute(values []DatadogLogsAggregateCompute) ([]datadogV2.LogsCompute, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	compute := make([]datadogV2.LogsCompute, 0, len(values))
+	for _, value := range values {
+		aggregation, err := datadogV2.NewLogsAggregationFunctionFromValue(strings.TrimSpace(value.Aggregation))
+		if err != nil {
+			return nil, err
+		}
+		rule := datadogV2.LogsCompute{
+			Aggregation: *aggregation,
+		}
+		if strings.TrimSpace(value.Interval) != "" {
+			interval := strings.TrimSpace(value.Interval)
+			rule.Interval = &interval
+		}
+		if strings.TrimSpace(value.Metric) != "" {
+			metric := strings.TrimSpace(value.Metric)
+			rule.Metric = &metric
+		}
+		if strings.TrimSpace(value.Type) != "" {
+			computeType, err := datadogV2.NewLogsComputeTypeFromValue(strings.TrimSpace(value.Type))
+			if err != nil {
+				return nil, err
+			}
+			rule.Type = computeType
+		}
+		compute = append(compute, rule)
+	}
+	return compute, nil
+}
+
+func buildDatadogLogsAggregateGroupBy(values []DatadogLogsAggregateGroupBy) ([]datadogV2.LogsGroupBy, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	groupBy := make([]datadogV2.LogsGroupBy, 0, len(values))
+	for _, value := range values {
+		rule := datadogV2.LogsGroupBy{
+			Facet: strings.TrimSpace(value.Facet),
+		}
+		if value.Limit > 0 {
+			limit := value.Limit
+			rule.Limit = &limit
+		}
+		if value.Sort != nil {
+			sortRule := datadogV2.LogsAggregateSort{}
+			if strings.TrimSpace(value.Sort.Order) != "" {
+				order, err := datadogV2.NewLogsSortOrderFromValue(strings.TrimSpace(value.Sort.Order))
+				if err != nil {
+					return nil, err
+				}
+				sortRule.Order = order
+			}
+			if strings.TrimSpace(value.Sort.Type) != "" {
+				sortType, err := datadogV2.NewLogsAggregateSortTypeFromValue(strings.TrimSpace(value.Sort.Type))
+				if err != nil {
+					return nil, err
+				}
+				sortRule.Type = sortType
+			}
+			if strings.TrimSpace(value.Sort.Aggregation) != "" {
+				aggregation, err := datadogV2.NewLogsAggregationFunctionFromValue(strings.TrimSpace(value.Sort.Aggregation))
+				if err != nil {
+					return nil, err
+				}
+				sortRule.Aggregation = aggregation
+			}
+			if strings.TrimSpace(value.Sort.Metric) != "" {
+				metric := strings.TrimSpace(value.Sort.Metric)
+				sortRule.Metric = &metric
+			}
+			rule.Sort = &sortRule
+		}
+		groupBy = append(groupBy, rule)
+	}
+	return groupBy, nil
+}
+
+func withDatadogLogsAggregateComputeIDs(values []DatadogLogsAggregateCompute) []DatadogLogsAggregateCompute {
+	if len(values) == 0 {
+		return nil
+	}
+	compute := make([]DatadogLogsAggregateCompute, 0, len(values))
+	for idx, value := range values {
+		cloned := value
+		cloned.ID = fmt.Sprintf("c%d", idx)
+		compute = append(compute, cloned)
+	}
+	return compute
+}
+
+func cloneDatadogLogsAggregateGroupBy(values []DatadogLogsAggregateGroupBy) []DatadogLogsAggregateGroupBy {
+	if len(values) == 0 {
+		return nil
+	}
+	groupBy := make([]DatadogLogsAggregateGroupBy, 0, len(values))
+	for _, value := range values {
+		cloned := value
+		if value.Sort != nil {
+			sortRule := *value.Sort
+			cloned.Sort = &sortRule
+		}
+		groupBy = append(groupBy, cloned)
+	}
+	return groupBy
 }
 
 func truncateString(value string, limit int) string {

@@ -213,7 +213,7 @@ The stock swarmd binary currently exposes these custom tools:
 | `server_log` | No | none | Writes a message to the server logs with namespace and agent context attached automatically. |
 | `slack_post` | Yes | `default_channel` | Posts a new Slack message or thread reply. |
 | `slack_replies` | Yes | `default_channel` | Reads replies from one Slack thread, optionally after a cursor timestamp. |
-| `datadog_read` | Yes | none | Reads incidents, monitors, dashboards, metrics, logs, and events through the server-owned Datadog client. |
+| `datadog_read` | Yes | none | Reads incidents, monitors, dashboards, metrics, log search results, log aggregates, and events through the server-owned Datadog client. |
 
 Tool notes:
 
@@ -222,8 +222,9 @@ Tool notes:
 - if `channel` is omitted at call time, Slack tools fall back to `tools[].config.default_channel`
 - `slack_post`, `slack_replies`, and `datadog_read` all require `network.reachable_hosts`
 - `datadog_read` is a curated read-only tool, not a generic Datadog API proxy
-- `query_metrics` and `search_logs` require a `query` argument
-- `search_logs` also accepts optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
+- `query_metrics`, `search_logs`, and `aggregate_logs` require a `query` argument
+- `search_logs` and `aggregate_logs` both accept optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
+- `aggregate_logs` also accepts optional `indexes`, `compute`, `group_by`, and `page_cursor` inputs for Datadog log analytics queries
 
 Rules:
 

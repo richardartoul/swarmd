@@ -101,6 +101,112 @@ func TestNormalizeDatadogReadRequestRejectsInvalidStorageTier(t *testing.T) {
 	}
 }
 
+func TestNormalizeDatadogReadRequestAggregateLogsDefaultsCountAndGroupLimit(t *testing.T) {
+	t.Parallel()
+
+	req, err := NormalizeReadRequest(Input{
+		Action: DatadogReadActionAggregateLogs,
+		Query:  "service:api",
+		GroupBy: []logsAggregateGroupByInput{{
+			Facet: "status",
+		}},
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("NormalizeReadRequest() error = %v", err)
+	}
+	if got := len(req.Compute); got != 1 {
+		t.Fatalf("len(req.Compute) = %d, want 1", got)
+	}
+	if got := req.Compute[0].Aggregation; got != "count" {
+		t.Fatalf("req.Compute[0].Aggregation = %q, want %q", got, "count")
+	}
+	if got := req.Compute[0].Type; got != "total" {
+		t.Fatalf("req.Compute[0].Type = %q, want %q", got, "total")
+	}
+	if got := len(req.GroupBy); got != 1 {
+		t.Fatalf("len(req.GroupBy) = %d, want 1", got)
+	}
+	if got := req.GroupBy[0].Limit; got != datadogDefaultAggregateGroupLimit {
+		t.Fatalf("req.GroupBy[0].Limit = %d, want %d", got, datadogDefaultAggregateGroupLimit)
+	}
+}
+
+func TestNormalizeDatadogReadRequestAggregateLogsAcceptsIndexesAndAlphabeticalCursor(t *testing.T) {
+	t.Parallel()
+
+	req, err := NormalizeReadRequest(Input{
+		Action:     DatadogReadActionAggregateLogs,
+		Query:      "service:api",
+		Indexes:    []string{" main ", "main", ""},
+		PageCursor: "cursor-1",
+		GroupBy: []logsAggregateGroupByInput{{
+			Facet: "service",
+			Sort: &logsAggregateSortInput{
+				Order: "asc",
+			},
+		}},
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("NormalizeReadRequest() error = %v", err)
+	}
+	if got := len(req.Indexes); got != 1 {
+		t.Fatalf("len(req.Indexes) = %d, want 1", got)
+	}
+	if got := req.Indexes[0]; got != "main" {
+		t.Fatalf("req.Indexes[0] = %q, want %q", got, "main")
+	}
+	if req.GroupBy[0].Sort == nil {
+		t.Fatal("req.GroupBy[0].Sort = nil, want alphabetical sort")
+	}
+	if got := req.GroupBy[0].Sort.Type; got != "alphabetical" {
+		t.Fatalf("req.GroupBy[0].Sort.Type = %q, want %q", got, "alphabetical")
+	}
+	if got := req.GroupBy[0].Sort.Order; got != "asc" {
+		t.Fatalf("req.GroupBy[0].Sort.Order = %q, want %q", got, "asc")
+	}
+}
+
+func TestNormalizeDatadogReadRequestAggregateLogsRejectsMetriclessAvg(t *testing.T) {
+	t.Parallel()
+
+	_, err := NormalizeReadRequest(Input{
+		Action: DatadogReadActionAggregateLogs,
+		Query:  "service:api",
+		Compute: []logsAggregateComputeInput{{
+			Aggregation: "avg",
+		}},
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("NormalizeReadRequest() error = nil, want metric validation error")
+	}
+	if !strings.Contains(err.Error(), "compute[0].metric") {
+		t.Fatalf("NormalizeReadRequest() error = %v, want compute[0].metric error", err)
+	}
+}
+
+func TestNormalizeDatadogReadRequestAggregateLogsRejectsPageCursorWithoutAlphabeticalSort(t *testing.T) {
+	t.Parallel()
+
+	_, err := NormalizeReadRequest(Input{
+		Action:     DatadogReadActionAggregateLogs,
+		Query:      "service:api",
+		PageCursor: "cursor-1",
+		GroupBy: []logsAggregateGroupByInput{{
+			Facet: "status",
+			Sort: &logsAggregateSortInput{
+				Aggregation: "count",
+				Order:       "desc",
+			},
+		}},
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err == nil {
+		t.Fatal("NormalizeReadRequest() error = nil, want alphabetical page_cursor validation error")
+	}
+	if !strings.Contains(err.Error(), "alphabetical") {
+		t.Fatalf("NormalizeReadRequest() error = %v, want alphabetical page_cursor error", err)
+	}
+}
+
 func TestDatadogReadToolRejectsUnexpectedArguments(t *testing.T) {
 	t.Parallel()
 	registerTestTool(t)

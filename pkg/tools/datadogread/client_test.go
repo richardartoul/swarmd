@@ -199,6 +199,203 @@ func TestDatadogClientSearchLogsNormalizesWarningsAndCursor(t *testing.T) {
 	}
 }
 
+func TestDatadogClientAggregateLogsNormalizesBucketsAndCursor(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/logs/analytics/aggregate" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/api/v2/logs/analytics/aggregate")
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("json.NewDecoder(r.Body).Decode() error = %v", err)
+		}
+		filter, ok := body["filter"].(map[string]any)
+		if !ok {
+			t.Fatalf("body.filter = %#v, want object", body["filter"])
+		}
+		if got := filter["query"]; got != "service:api" {
+			t.Fatalf("filter.query = %#v, want %q", got, "service:api")
+		}
+		if got := filter["storage_tier"]; got != DatadogLogsStorageTierFlex {
+			t.Fatalf("filter.storage_tier = %#v, want %q", got, DatadogLogsStorageTierFlex)
+		}
+		indexes, ok := filter["indexes"].([]any)
+		if !ok || len(indexes) != 1 || indexes[0] != "main" {
+			t.Fatalf("filter.indexes = %#v, want [main]", filter["indexes"])
+		}
+		compute, ok := body["compute"].([]any)
+		if !ok || len(compute) != 2 {
+			t.Fatalf("body.compute = %#v, want two compute rules", body["compute"])
+		}
+		groupBy, ok := body["group_by"].([]any)
+		if !ok || len(groupBy) != 1 {
+			t.Fatalf("body.group_by = %#v, want one group_by rule", body["group_by"])
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"buckets": []map[string]any{
+					{
+						"by": map[string]any{
+							"status": "error",
+						},
+						"computes": map[string]any{
+							"c0": 12,
+							"c1": 420.5,
+						},
+					},
+					{
+						"by": map[string]any{
+							"status": "warn",
+						},
+						"computes": map[string]any{
+							"c0": 3,
+							"c1": 120.0,
+						},
+					},
+				},
+			},
+			"meta": map[string]any{
+				"elapsed": 15,
+				"status":  "done",
+				"page": map[string]any{
+					"after": "cursor-2",
+				},
+				"warnings": []map[string]any{{
+					"code":   "partial_results",
+					"title":  "Partial results",
+					"detail": "Index timeout",
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestDatadogClient(t, server)
+	result, err := client.ExecuteRead(context.Background(), DatadogReadRequest{
+		Action:  DatadogReadActionAggregateLogs,
+		Query:   "service:api",
+		Indexes: []string{"main"},
+		Compute: []DatadogLogsAggregateCompute{
+			{
+				Aggregation: "count",
+				Type:        "total",
+			},
+			{
+				Aggregation: "avg",
+				Metric:      "@duration",
+				Type:        "total",
+			},
+		},
+		GroupBy: []DatadogLogsAggregateGroupBy{{
+			Facet: "status",
+			Limit: 5,
+			Sort: &DatadogLogsAggregateSort{
+				Type:        "measure",
+				Order:       "desc",
+				Aggregation: "count",
+			},
+		}},
+		StorageTier: DatadogLogsStorageTierFlex,
+		From:        time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
+		To:          time.Date(2026, 3, 15, 1, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteRead(aggregate logs) error = %v", err)
+	}
+	items, ok := result.Items.([]DatadogLogsAggregateBucket)
+	if !ok {
+		t.Fatalf("result.Items type = %T, want []DatadogLogsAggregateBucket", result.Items)
+	}
+	if len(items) != 2 {
+		t.Fatalf("len(items) = %d, want 2", len(items))
+	}
+	if got := items[0].By["status"]; got != "error" {
+		t.Fatalf("items[0].By[status] = %#v, want %q", got, "error")
+	}
+	if got := items[0].Computes["c0"]; got != 12.0 {
+		t.Fatalf("items[0].Computes[c0] = %#v, want %v", got, 12.0)
+	}
+	if len(result.Computes) != 2 || result.Computes[0].ID != "c0" || result.Computes[1].ID != "c1" {
+		t.Fatalf("result.Computes = %#v, want compute ids c0/c1", result.Computes)
+	}
+	if len(result.GroupBy) != 1 || result.GroupBy[0].Facet != "status" {
+		t.Fatalf("result.GroupBy = %#v, want one status group_by", result.GroupBy)
+	}
+	if got := result.NextCursor; got != "cursor-2" {
+		t.Fatalf("result.NextCursor = %q, want %q", got, "cursor-2")
+	}
+	if got := result.ElapsedMS; got != 15 {
+		t.Fatalf("result.ElapsedMS = %d, want 15", got)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], "partial_results") {
+		t.Fatalf("result.Warnings = %#v, want normalized warning", result.Warnings)
+	}
+}
+
+func TestDatadogClientAggregateLogsTruncatesTimeseriesPoints(t *testing.T) {
+	t.Parallel()
+
+	points := make([]map[string]any, 0, datadogMaxMetricPoints+5)
+	for i := 0; i < datadogMaxMetricPoints+5; i++ {
+		points = append(points, map[string]any{
+			"time":  time.Date(2026, 3, 15, 0, i, 0, 0, time.UTC).Format(time.RFC3339),
+			"value": float64(i),
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v2/logs/analytics/aggregate" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/api/v2/logs/analytics/aggregate")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"buckets": []map[string]any{{
+					"computes": map[string]any{
+						"c0": points,
+					},
+				}},
+			},
+			"meta": map[string]any{
+				"status": "done",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestDatadogClient(t, server)
+	result, err := client.ExecuteRead(context.Background(), DatadogReadRequest{
+		Action: DatadogReadActionAggregateLogs,
+		Query:  "service:api",
+		Compute: []DatadogLogsAggregateCompute{{
+			Aggregation: "count",
+			Type:        "timeseries",
+			Interval:    "1m",
+		}},
+		From: time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC),
+		To:   time.Date(2026, 3, 15, 1, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("ExecuteRead(aggregate logs timeseries) error = %v", err)
+	}
+	items, ok := result.Items.([]DatadogLogsAggregateBucket)
+	if !ok || len(items) != 1 {
+		t.Fatalf("result.Items = %#v, want one aggregate bucket", result.Items)
+	}
+	series, ok := items[0].Computes["c0"].(DatadogLogsAggregateTimeseries)
+	if !ok {
+		t.Fatalf("items[0].Computes[c0] type = %T, want DatadogLogsAggregateTimeseries", items[0].Computes["c0"])
+	}
+	if got := len(series.Points); got != datadogMaxMetricPoints {
+		t.Fatalf("len(series.Points) = %d, want %d", got, datadogMaxMetricPoints)
+	}
+	if !series.Truncated {
+		t.Fatal("series.Truncated = false, want true")
+	}
+	if got := series.Points[0].Time; got != "2026-03-15T00:00:00Z" {
+		t.Fatalf("series.Points[0].Time = %q, want first point timestamp", got)
+	}
+}
+
 func TestDatadogClientQueryMetricsTruncatesPointlists(t *testing.T) {
 	t.Parallel()
 
