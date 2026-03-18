@@ -483,7 +483,7 @@ func parseDecision(content string, allowedTools []agent.ToolDefinition, caps ope
 		return decision, err
 	}
 
-	if decision, ok, err := parseLegacyDecision(content); ok || err != nil {
+	if decision, ok, err := parseLegacyDecision(content, allowedTools); ok || err != nil {
 		return decision, err
 	}
 
@@ -493,7 +493,7 @@ func parseDecision(content string, allowedTools []agent.ToolDefinition, caps ope
 	}, nil
 }
 
-func parseLegacyDecision(content string) (agent.Decision, bool, error) {
+func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
 	var raw decisionResponse
 	decoder := json.NewDecoder(strings.NewReader(content))
 	if err := decoder.Decode(&raw); err != nil {
@@ -515,26 +515,11 @@ func parseLegacyDecision(content string) (agent.Decision, bool, error) {
 		}
 		decision.Shell = &agent.ShellAction{Source: shell}
 	case "tool":
-		name := strings.TrimSpace(raw.Name)
-		if name == "" {
-			name = strings.TrimSpace(raw.Tool)
+		toolAction, err := parseLegacyToolAction(raw, allowedTools)
+		if err != nil {
+			return agent.Decision{}, true, err
 		}
-		if name == "" {
-			return agent.Decision{}, true, fmt.Errorf(`openai response type "tool" must include non-empty "name"`)
-		}
-		kind := agent.ToolKindFunction
-		input := strings.TrimSpace(raw.Input)
-		if len(raw.Args) > 0 && string(raw.Args) != "null" {
-			input = strings.TrimSpace(string(raw.Args))
-		}
-		if name == agent.ToolNameApplyPatch {
-			kind = agent.ToolKindCustom
-		}
-		decision.Tool = &agent.ToolAction{
-			Name:  name,
-			Kind:  kind,
-			Input: input,
-		}
+		decision.Tool = toolAction
 	case "finish":
 		var value any
 		if len(raw.Result) > 0 && string(raw.Result) != "null" {
@@ -548,6 +533,43 @@ func parseLegacyDecision(content string) (agent.Decision, bool, error) {
 	}
 
 	return decision, true, nil
+}
+
+func parseLegacyToolAction(raw decisionResponse, allowedTools []agent.ToolDefinition) (*agent.ToolAction, error) {
+	name := strings.TrimSpace(raw.Name)
+	if name == "" {
+		name = strings.TrimSpace(raw.Tool)
+	}
+	if name == "" {
+		return nil, fmt.Errorf(`openai response type "tool" must include non-empty "name"`)
+	}
+	def, ok := allowedToolDefinition(allowedTools, name)
+	if !ok {
+		return nil, fmt.Errorf("openai response called unavailable tool %q", name)
+	}
+	if def.Kind == agent.ToolKindCustom {
+		input, err := extractLegacyCustomToolInput(strings.TrimSpace(raw.Input), raw.Args)
+		if err != nil {
+			return nil, err
+		}
+		return &agent.ToolAction{
+			Name:  def.Name,
+			Kind:  agent.ToolKindCustom,
+			Input: input,
+		}, nil
+	}
+	input := strings.TrimSpace(raw.Input)
+	if len(raw.Args) > 0 && string(raw.Args) != "null" {
+		input = strings.TrimSpace(string(raw.Args))
+	}
+	if input == "" {
+		input = "{}"
+	}
+	return &agent.ToolAction{
+		Name:  def.Name,
+		Kind:  agent.ToolKindFunction,
+		Input: input,
+	}, nil
 }
 
 func parseFinishValue(content string) any {
@@ -616,13 +638,20 @@ func parseResponsesToolCallDecision(item responsesOutputItem, allowedTools []age
 		if name == "" {
 			return agent.Decision{}, fmt.Errorf("custom_tool_call must include non-empty name")
 		}
+		adapter, ok := allowedOpenAIToolAdapter(allowedTools, caps, name)
+		if !ok {
+			return agent.Decision{}, fmt.Errorf("openai response called unavailable tool %q", name)
+		}
+		if adapter.Tool.Kind != agent.ToolKindCustom {
+			return agent.Decision{}, fmt.Errorf("openai response used custom_tool_call for non-custom tool %q", name)
+		}
 		input := strings.TrimSpace(item.Input)
 		if input == "" {
 			return agent.Decision{}, fmt.Errorf("custom_tool_call must include non-empty input")
 		}
 		return agent.Decision{
 			Tool: &agent.ToolAction{
-				Name:  name,
+				Name:  adapter.Tool.Name,
 				Kind:  agent.ToolKindCustom,
 				Input: input,
 			},
@@ -657,18 +686,28 @@ func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefiniti
 		if name == "" {
 			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "name"`)
 		}
+		adapter, ok := allowedOpenAIToolAdapter(allowedTools, caps, name)
+		if !ok {
+			return agent.Decision{}, true, fmt.Errorf("openai response called unavailable tool %q", name)
+		}
+		if adapter.Tool.Kind != agent.ToolKindCustom {
+			return agent.Decision{}, true, fmt.Errorf("openai response used custom_tool_call for non-custom tool %q", name)
+		}
 		input := strings.TrimSpace(raw.Input)
 		if input == "" {
 			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "input"`)
 		}
 		return agent.Decision{
 			Tool: &agent.ToolAction{
-				Name:  name,
+				Name:  adapter.Tool.Name,
 				Kind:  agent.ToolKindCustom,
 				Input: input,
 			},
 		}, true, nil
 	case "local_shell_call":
+		if _, ok := allowedToolDefinition(allowedTools, agent.ToolNameRunShell); !ok {
+			return agent.Decision{}, true, fmt.Errorf("openai response called unavailable tool %q", agent.ToolNameRunShell)
+		}
 		input, err := parseLocalShellInput(raw.Action)
 		if err != nil {
 			return agent.Decision{}, true, err
@@ -736,6 +775,25 @@ func extractCustomToolInput(raw string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("custom tool arguments must include non-empty string field \"patch\"")
+}
+
+func extractLegacyCustomToolInput(input string, args json.RawMessage) (string, error) {
+	input = strings.TrimSpace(input)
+	if input != "" {
+		return input, nil
+	}
+	args = bytes.TrimSpace(args)
+	if len(args) == 0 || string(args) == "null" {
+		return "", fmt.Errorf(`openai response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
+	}
+	if payload, err := extractCustomToolInput(string(args)); err == nil {
+		return payload, nil
+	}
+	var direct string
+	if err := json.Unmarshal(args, &direct); err == nil && strings.TrimSpace(direct) != "" {
+		return strings.TrimSpace(direct), nil
+	}
+	return "", fmt.Errorf(`openai response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
 }
 
 func buildChatCompletionTools(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) []chatCompletionTool {
@@ -870,6 +928,24 @@ func buildOpenAIToolAdapters(tools []agent.ToolDefinition, caps openAIAdapterCap
 		adapters = append(adapters, adapter)
 	}
 	return adapters
+}
+
+func allowedOpenAIToolAdapter(allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities, exposedName string) (openAIToolAdapter, bool) {
+	for _, adapter := range buildOpenAIToolAdapters(allowedTools, caps) {
+		if adapter.ExposedName == exposedName {
+			return adapter, true
+		}
+	}
+	return openAIToolAdapter{}, false
+}
+
+func allowedToolDefinition(allowedTools []agent.ToolDefinition, name string) (agent.ToolDefinition, bool) {
+	for _, tool := range allowedTools {
+		if tool.Name == name {
+			return tool, true
+		}
+	}
+	return agent.ToolDefinition{}, false
 }
 
 func (d *Driver) shouldUseResponsesAPI(req agent.Request) bool {

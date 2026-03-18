@@ -883,7 +883,10 @@ func TestParseDecisionAcceptsCustomToolCallJSON(t *testing.T) {
 func TestParseDecisionAcceptsLocalShellCallJSON(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, nil, openAIAdapterCapabilities{})
+	decision, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameRunShell,
+		Kind: agent.ToolKindFunction,
+	}}, openAIAdapterCapabilities{})
 	if err != nil {
 		t.Fatalf("parseDecision() error = %v", err)
 	}
@@ -895,6 +898,68 @@ func TestParseDecisionAcceptsLocalShellCallJSON(t *testing.T) {
 	}
 	if !strings.Contains(decision.Tool.Input, `"workdir":"/workspace"`) {
 		t.Fatalf("decision.Tool.Input = %q, want working directory payload", decision.Tool.Input)
+	}
+}
+
+func TestParseDecisionRejectsUnavailableCustomToolCallJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseDecision(`{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** End Patch","call_id":"call_2"}`, nil, openAIAdapterCapabilities{SupportsCustomTools: true})
+	if err == nil {
+		t.Fatal("parseDecision() error = nil, want unavailable tool rejection")
+	}
+	if !strings.Contains(err.Error(), `unavailable tool "apply_patch"`) {
+		t.Fatalf("parseDecision() error = %v, want unavailable tool rejection", err)
+	}
+}
+
+func TestParseDecisionRejectsUnavailableLegacyToolJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseDecision(`{"type":"tool","name":"apply_patch","args":{"patch":"*** Begin Patch\n*** End Patch"}}`, nil, openAIAdapterCapabilities{})
+	if err == nil {
+		t.Fatal("parseDecision() error = nil, want unavailable tool rejection")
+	}
+	if !strings.Contains(err.Error(), `unavailable tool "apply_patch"`) {
+		t.Fatalf("parseDecision() error = %v, want unavailable tool rejection", err)
+	}
+}
+
+func TestParseDecisionAcceptsLegacyCustomToolJSON(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"tool","name":"apply_patch","args":{"patch":"*** Begin Patch\n*** End Patch"},"thought":"patch it"}`, []agent.ToolDefinition{{
+		Name: agent.ToolNameApplyPatch,
+		Kind: agent.ToolKindCustom,
+	}}, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Thought != "patch it" {
+		t.Fatalf("decision.Thought = %q, want %q", decision.Thought, "patch it")
+	}
+	if decision.Tool == nil || decision.Tool.Kind != agent.ToolKindCustom {
+		t.Fatalf("decision.Tool = %#v, want custom apply_patch tool", decision.Tool)
+	}
+	if decision.Tool.Input != "*** Begin Patch\n*** End Patch" {
+		t.Fatalf("decision.Tool.Input = %q, want unwrapped patch input", decision.Tool.Input)
+	}
+}
+
+func TestParseResponsesToolCallDecisionRejectsUnavailableCustomTool(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseResponsesToolCallDecision(responsesOutputItem{
+		Type:   "custom_tool_call",
+		Name:   agent.ToolNameApplyPatch,
+		Input:  "*** Begin Patch\n*** End Patch",
+		CallID: "call_2",
+	}, nil, openAIAdapterCapabilities{SupportsCustomTools: true})
+	if err == nil {
+		t.Fatal("parseResponsesToolCallDecision() error = nil, want unavailable tool rejection")
+	}
+	if !strings.Contains(err.Error(), `unavailable tool "apply_patch"`) {
+		t.Fatalf("parseResponsesToolCallDecision() error = %v, want unavailable tool rejection", err)
 	}
 }
 
