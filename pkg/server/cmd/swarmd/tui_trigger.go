@@ -18,15 +18,7 @@ func newTUITriggerInput() textinput.Model {
 }
 
 func (m *tuiModel) startTriggerMode() (tea.Cmd, bool) {
-	page := m.currentPage()
-	if page == nil {
-		return nil, false
-	}
-	item, ok := m.selectedItem()
-	if !ok {
-		return nil, false
-	}
-	target, ok := triggerTarget(*page, item)
+	target, ok := m.currentTriggerTarget()
 	if !ok {
 		return nil, false
 	}
@@ -38,6 +30,31 @@ func (m *tuiModel) startTriggerMode() (tea.Cmd, bool) {
 	m.status = ""
 	m.resize()
 	return cmd, true
+}
+
+func (m tuiModel) currentTriggerTarget() (tuiTriggerTarget, bool) {
+	page := m.currentPage()
+	if page == nil {
+		return tuiTriggerTarget{}, false
+	}
+	if item, ok := m.selectedItem(); ok {
+		if target, ok := triggerTarget(*page, item); ok {
+			return target, true
+		}
+	}
+	if page.kind == tuiPageRuns {
+		namespaceID := strings.TrimSpace(page.query.NamespaceID)
+		agentID := strings.TrimSpace(page.query.AgentID)
+		if namespaceID != "" && agentID != "" {
+			return tuiTriggerTarget{
+				NamespaceID: namespaceID,
+				AgentID:     agentID,
+				Label:       namespaceID + "/" + agentID,
+				ActionLabel: "Trigger Run Manually",
+			}, true
+		}
+	}
+	return tuiTriggerTarget{}, false
 }
 
 func (m *tuiModel) exitTriggerMode() {
@@ -112,15 +129,7 @@ func (m tuiModel) footerActionView() string {
 			}, " "),
 		}, "\n")
 	}
-	page := m.currentPage()
-	if page == nil {
-		return ""
-	}
-	item, ok := m.selectedItem()
-	if !ok {
-		return ""
-	}
-	target, ok := triggerTarget(*page, item)
+	target, ok := m.currentTriggerTarget()
 	if !ok {
 		return ""
 	}

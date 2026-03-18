@@ -22,7 +22,11 @@ func main() {
 			switch req.Step {
 			case 1:
 				return agent.Decision{
-					Shell: &agent.ShellAction{Source: "echo hello from the sandbox"},
+					Tool: &agent.ToolAction{
+						Name:  agent.ToolNameRunShell,
+						Kind:  agent.ToolKindFunction,
+						Input: `{"command":"echo hello from the sandbox"}`,
+					},
 				}, nil
 			default:
 				return agent.Decision{

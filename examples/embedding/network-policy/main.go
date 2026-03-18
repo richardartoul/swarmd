@@ -48,7 +48,11 @@ func runDisabledDemo() (agent.Result, error) {
 			if req.Step == 1 {
 				// curl is hidden from the sandbox surface until networking is enabled.
 				return agent.Decision{
-					Shell: &agent.ShellAction{Source: "command -v curl"},
+					Tool: &agent.ToolAction{
+						Name:  agent.ToolNameRunShell,
+						Kind:  agent.ToolKindFunction,
+						Input: `{"command":"command -v curl"}`,
+					},
 				}, nil
 			}
 			return agent.Decision{
@@ -82,7 +86,11 @@ func runBlockedDemo() (agent.Result, error) {
 		Driver: agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
 			if req.Step == 1 {
 				return agent.Decision{
-					Shell: &agent.ShellAction{Source: "curl -s " + server.URL},
+					Tool: &agent.ToolAction{
+						Name:  agent.ToolNameRunShell,
+						Kind:  agent.ToolKindFunction,
+						Input: fmt.Sprintf("{\"command\":%q}", "curl -s "+server.URL),
+					},
 				}, nil
 			}
 			return agent.Decision{
@@ -123,7 +131,11 @@ func runAllowlistedDemo() (agent.Result, error) {
 		Driver: agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
 			if req.Step == 1 {
 				return agent.Decision{
-					Shell: &agent.ShellAction{Source: "curl -s " + server.URL},
+					Tool: &agent.ToolAction{
+						Name:  agent.ToolNameRunShell,
+						Kind:  agent.ToolKindFunction,
+						Input: fmt.Sprintf("{\"command\":%q}", "curl -s "+server.URL),
+					},
 				}, nil
 			}
 			return agent.Decision{

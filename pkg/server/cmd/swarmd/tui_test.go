@@ -374,6 +374,111 @@ func TestTUIManualTriggerAllowsEmptyPrompt(t *testing.T) {
 	}
 }
 
+func TestTUIManualTriggerWorksOnScopedRunsPageWithoutRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "no-runs.db")
+	store := openCommandTestStore(t, dbPath)
+	defer store.Close()
+
+	namespace, err := store.CreateNamespace(ctx, cpstore.CreateNamespaceParams{
+		ID:   "namespace-no-runs",
+		Name: "Namespace No Runs",
+	})
+	if err != nil {
+		t.Fatalf("CreateNamespace() error = %v", err)
+	}
+	agentRecord, err := store.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker-no-runs",
+		Name:         "worker-no-runs",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     filepath.Join(t.TempDir(), "worker-no-runs"),
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  7,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	model, err := newTUIModel(ctx, store, dbPath)
+	if err != nil {
+		t.Fatalf("newTUIModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.resize()
+
+	page, err := loadTUIPage(ctx, store, newRunsPage(tuiPageQuery{
+		NamespaceID: namespace.ID,
+		AgentID:     agentRecord.ID,
+	}))
+	if err != nil {
+		t.Fatalf("loadTUIPage(scoped runs) error = %v", err)
+	}
+	if len(page.items) != 0 {
+		t.Fatalf("len(page.items) = %d, want 0 for no-runs agent", len(page.items))
+	}
+	model.applyCurrentPage(page)
+
+	if got := model.footerActionView(); !strings.Contains(got, "Trigger Run Manually") {
+		t.Fatalf("footerActionView() = %q, want trigger action on empty scoped runs page", got)
+	}
+
+	update := func(msg tea.Msg) {
+		updated, _ := model.Update(msg)
+		next, ok := updated.(tuiModel)
+		if !ok {
+			t.Fatalf("Update() model type = %T, want tuiModel", updated)
+		}
+		model = next
+	}
+
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	if !model.triggering {
+		t.Fatal("model.triggering = false, want true on empty scoped runs page")
+	}
+
+	model.triggerInput.SetValue("hello from empty runs")
+	update(tea.KeyMsg{Type: tea.KeyEnter})
+	if model.triggering {
+		t.Fatal("model.triggering = true after submit, want false")
+	}
+
+	messages, err := store.ListMailboxMessages(ctx, cpstore.ListMailboxMessagesParams{
+		NamespaceID: namespace.ID,
+		AgentID:     agentRecord.ID,
+		Limit:       5,
+	})
+	if err != nil {
+		t.Fatalf("ListMailboxMessages() error = %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("len(messages) = %d, want 1", len(messages))
+	}
+
+	payload, err := cpstore.DecodeEnvelopeAny(messages[0].PayloadJSON)
+	if err != nil {
+		t.Fatalf("DecodeEnvelopeAny(payload) error = %v", err)
+	}
+	payloadMap, ok := payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload = %#v, want object", payload)
+	}
+	if got := payloadMap["text"]; got != "hello from empty runs" {
+		t.Fatalf("payload[text] = %#v, want %q", got, "hello from empty runs")
+	}
+	if messages[0].RecipientAgentID != agentRecord.ID {
+		t.Fatalf("RecipientAgentID = %q, want %q", messages[0].RecipientAgentID, agentRecord.ID)
+	}
+	if messages[0].MaxAttempts != 7 {
+		t.Fatalf("MaxAttempts = %d, want %d", messages[0].MaxAttempts, 7)
+	}
+}
+
 func seedTUIScheduleFixture(t *testing.T) string {
 	t.Helper()
 
