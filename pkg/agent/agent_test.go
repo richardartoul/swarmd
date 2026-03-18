@@ -888,26 +888,26 @@ func TestHandleTriggerPreservesConversationInDriverMessages(t *testing.T) {
 		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
 	}
 	second := driver.requests[1]
-	if len(second.Messages) != 5 {
-		t.Fatalf("len(second.Messages) = %d, want 5", len(second.Messages))
+	if len(second.Messages) != 4 {
+		t.Fatalf("len(second.Messages) = %d, want 4", len(second.Messages))
 	}
-	if second.Messages[2].Role != agent.MessageRoleSystem {
-		t.Fatalf("second.Messages[2].Role = %q, want %q", second.Messages[2].Role, agent.MessageRoleSystem)
+	if second.Messages[2].Role != agent.MessageRoleUser {
+		t.Fatalf("second.Messages[2].Role = %q, want %q", second.Messages[2].Role, agent.MessageRoleUser)
 	}
 	if !strings.Contains(second.Messages[2].Content, "Conversation history across previous triggers") {
-		t.Fatalf("history message = %q, want heading", second.Messages[2].Content)
+		t.Fatalf("trigger context = %q, want history heading", second.Messages[2].Content)
 	}
 	if !strings.Contains(second.Messages[2].Content, "create a note") {
-		t.Fatalf("history message = %q, want prior prompt", second.Messages[2].Content)
+		t.Fatalf("trigger context = %q, want prior prompt", second.Messages[2].Content)
 	}
 	if !strings.Contains(second.Messages[2].Content, "created the file") {
-		t.Fatalf("history message = %q, want prior result", second.Messages[2].Content)
+		t.Fatalf("trigger context = %q, want prior result", second.Messages[2].Content)
 	}
-	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Trigger context") {
-		t.Fatalf("second.Messages[3] = %#v, want trigger context", second.Messages[3])
+	if !strings.Contains(second.Messages[2].Content, "Trigger context") {
+		t.Fatalf("second.Messages[2] = %#v, want trigger context", second.Messages[2])
 	}
-	if second.Messages[4].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[4].Content, "Current step number: 1") {
-		t.Fatalf("second.Messages[4] = %#v, want current state", second.Messages[4])
+	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Current step number: 1") {
+		t.Fatalf("second.Messages[3] = %#v, want current state", second.Messages[3])
 	}
 }
 

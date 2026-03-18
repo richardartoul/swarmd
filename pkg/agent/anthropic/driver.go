@@ -26,7 +26,8 @@ const (
 	// DefaultMaxTokens is the built-in Anthropic output budget used by this driver.
 	DefaultMaxTokens = 64000
 
-	anthropicVersion = "2023-06-01"
+	anthropicVersion                 = "2023-06-01"
+	anthropicReplayCacheMinOutputLen = 1024
 )
 
 // Config configures a new Anthropic-backed driver.
@@ -56,15 +57,15 @@ type Driver struct {
 }
 
 type messagesRequest struct {
-	Model        string                 `json:"model"`
-	MaxTokens    int                    `json:"max_tokens"`
-	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
-	System       string                 `json:"system,omitempty"`
-	Messages     []anthropicMessage     `json:"messages"`
-	Thinking     *anthropicThinking     `json:"thinking,omitempty"`
-	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
-	Tools        []anthropicTool        `json:"tools,omitempty"`
-	ToolChoice   *anthropicToolChoice   `json:"tool_choice,omitempty"`
+	Model        string                      `json:"model"`
+	MaxTokens    int                         `json:"max_tokens"`
+	CacheControl *anthropicCacheControl      `json:"cache_control,omitempty"`
+	System       []anthropicRequestTextBlock `json:"system,omitempty"`
+	Messages     []anthropicMessage          `json:"messages"`
+	Thinking     *anthropicThinking          `json:"thinking,omitempty"`
+	OutputConfig *anthropicOutputConfig      `json:"output_config,omitempty"`
+	Tools        []anthropicTool             `json:"tools,omitempty"`
+	ToolChoice   *anthropicToolChoice        `json:"tool_choice,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -86,8 +87,9 @@ type anthropicCacheControl struct {
 }
 
 type anthropicRequestTextBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type         string                 `json:"type"`
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicRequestToolUseBlock struct {
@@ -98,17 +100,20 @@ type anthropicRequestToolUseBlock struct {
 }
 
 type anthropicRequestToolResultBlock struct {
-	Type      string `json:"type"`
-	ToolUseID string `json:"tool_use_id"`
-	Content   string `json:"content"`
+	Type         string                 `json:"type"`
+	ToolUseID    string                 `json:"tool_use_id"`
+	Content      string                 `json:"content"`
+	IsError      bool                   `json:"is_error,omitempty"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicTool struct {
-	Name          string           `json:"name"`
-	Description   string           `json:"description,omitempty"`
-	Strict        bool             `json:"strict,omitempty"`
-	InputSchema   map[string]any   `json:"input_schema"`
-	InputExamples []map[string]any `json:"input_examples,omitempty"`
+	Name          string                 `json:"name"`
+	Description   string                 `json:"description,omitempty"`
+	Strict        bool                   `json:"strict,omitempty"`
+	InputSchema   map[string]any         `json:"input_schema"`
+	InputExamples []map[string]any       `json:"input_examples,omitempty"`
+	CacheControl  *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
 type anthropicToolChoice struct {
@@ -231,16 +236,13 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 		MaxTokens: d.maxTokens,
 	}
 	if d.promptCacheTTL != "" {
-		payload.CacheControl = &anthropicCacheControl{
-			Type: "ephemeral",
-			TTL:  d.promptCacheTTL,
-		}
+		payload.CacheControl = anthropicPromptCacheControl(d.promptCacheTTL)
 	}
 	if d.reasoning != "" {
 		payload.Thinking = &anthropicThinking{Type: "adaptive"}
 		payload.OutputConfig = &anthropicOutputConfig{Effort: d.reasoning}
 	}
-	system, messages, err := buildAnthropicMessages(req)
+	system, messages, err := buildAnthropicMessages(req, d.promptCacheTTL)
 	if err != nil {
 		return messagesRequest{}, err
 	}
@@ -250,7 +252,7 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 		return messagesRequest{}, fmt.Errorf("anthropic request must include at least one non-system message")
 	}
 	if len(req.Tools) > 0 {
-		payload.Tools = buildAnthropicTools(req.Tools)
+		payload.Tools = buildAnthropicTools(req.Tools, d.promptCacheTTL)
 		payload.ToolChoice = &anthropicToolChoice{
 			Type:                   "auto",
 			DisableParallelToolUse: true,
@@ -259,19 +261,22 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 	return payload, nil
 }
 
-func buildAnthropicMessages(req agent.Request) (string, []anthropicMessage, error) {
+func buildAnthropicMessages(req agent.Request, promptCacheTTL string) ([]anthropicRequestTextBlock, []anthropicMessage, error) {
 	if len(req.Messages) == 0 {
-		return "", nil, nil
+		return nil, nil, nil
 	}
 
-	var systemParts []string
+	var systemBlocks []anthropicRequestTextBlock
 	prefix, footer := splitAnthropicRequestMessages(req.Messages)
 	messages := make([]anthropicMessage, 0, len(req.Messages)+len(req.Steps)*2)
 	appendPrepared := func(message agent.Message) error {
 		switch message.Role {
 		case agent.MessageRoleSystem:
 			if strings.TrimSpace(message.Content) != "" {
-				systemParts = append(systemParts, message.Content)
+				systemBlocks = append(systemBlocks, anthropicRequestTextBlock{
+					Type: "text",
+					Text: message.Content,
+				})
 			}
 		case agent.MessageRoleUser, agent.MessageRoleAssistant:
 			messages = append(messages, anthropicMessage{
@@ -286,22 +291,31 @@ func buildAnthropicMessages(req agent.Request) (string, []anthropicMessage, erro
 
 	for _, message := range prefix {
 		if err := appendPrepared(message); err != nil {
-			return "", nil, err
+			return nil, nil, err
 		}
 	}
 
-	for _, replay := range agent.BuildStepReplays(req.Steps) {
-		replayMessages, err := buildAnthropicReplayMessages(replay, req.Tools)
+	replays := agent.BuildStepReplays(req.Steps)
+	cacheableReplayIdx := lastAnthropicCacheableReplayIndex(replays)
+	for idx, replay := range replays {
+		replayOptions := anthropicReplayOptions{}
+		if idx == cacheableReplayIdx {
+			replayOptions.ResultCacheControl = anthropicPromptCacheControl(promptCacheTTL)
+		}
+		replayMessages, err := buildAnthropicReplayMessages(replay, req.Tools, replayOptions)
 		if err != nil {
-			return "", nil, err
+			return nil, nil, err
 		}
 		messages = append(messages, replayMessages...)
 	}
 
 	if err := appendPrepared(footer); err != nil {
-		return "", nil, err
+		return nil, nil, err
 	}
-	return strings.Join(systemParts, "\n\n"), messages, nil
+	if len(systemBlocks) > 0 && promptCacheTTL != "" {
+		systemBlocks[len(systemBlocks)-1].CacheControl = anthropicPromptCacheControl(promptCacheTTL)
+	}
+	return systemBlocks, messages, nil
 }
 
 func splitAnthropicRequestMessages(messages []agent.Message) ([]agent.Message, agent.Message) {
@@ -311,7 +325,11 @@ func splitAnthropicRequestMessages(messages []agent.Message) ([]agent.Message, a
 	return messages[:len(messages)-1], messages[len(messages)-1]
 }
 
-func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.ToolDefinition) ([]anthropicMessage, error) {
+type anthropicReplayOptions struct {
+	ResultCacheControl *anthropicCacheControl
+}
+
+func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.ToolDefinition, options anthropicReplayOptions) ([]anthropicMessage, error) {
 	def, ok := allowedToolDefinition(allowedTools, replay.ToolName)
 	if !ok {
 		def = agent.ToolDefinition{
@@ -337,6 +355,15 @@ func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.
 		Name:  def.Name,
 		Input: input,
 	})
+	resultBlock := anthropicRequestToolResultBlock{
+		Type:      "tool_result",
+		ToolUseID: replay.CallID,
+		Content:   replay.Output,
+		IsError:   replay.IsError,
+	}
+	if options.ResultCacheControl != nil {
+		resultBlock.CacheControl = options.ResultCacheControl
+	}
 
 	return []anthropicMessage{
 		{
@@ -344,14 +371,36 @@ func buildAnthropicReplayMessages(replay agent.StepReplay, allowedTools []agent.
 			Content: assistantContent,
 		},
 		{
-			Role: agent.MessageRoleUser,
-			Content: []any{anthropicRequestToolResultBlock{
-				Type:      "tool_result",
-				ToolUseID: replay.CallID,
-				Content:   replay.Output,
-			}},
+			Role:    agent.MessageRoleUser,
+			Content: []any{resultBlock},
 		},
 	}, nil
+}
+
+func lastAnthropicCacheableReplayIndex(replays []agent.StepReplay) int {
+	for idx := len(replays) - 1; idx >= 0; idx-- {
+		if anthropicReplayEligibleForCache(replays[idx]) {
+			return idx
+		}
+	}
+	return -1
+}
+
+func anthropicReplayEligibleForCache(replay agent.StepReplay) bool {
+	if replay.IsError || len(strings.TrimSpace(replay.Output)) < anthropicReplayCacheMinOutputLen {
+		return false
+	}
+	switch replay.ToolName {
+	case agent.ToolNameListDir,
+		agent.ToolNameReadFile,
+		agent.ToolNameGrepFiles,
+		agent.ToolNameWebSearch,
+		agent.ToolNameReadWebPage,
+		agent.ToolNameHTTPRequest:
+		return true
+	default:
+		return false
+	}
 }
 
 func anthropicReplayToolInput(replay agent.StepReplay, def agent.ToolDefinition) (map[string]any, error) {
@@ -388,6 +437,7 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 	req.Header.Set("x-api-key", d.apiKey)
 	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("Content-Type", "application/json")
+	agent.MaybeWriteDebugPrompt(body.Bytes())
 
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -678,7 +728,7 @@ func parseToolUseDecision(block anthropicContentBlock, allowedTools []agent.Tool
 	}, nil
 }
 
-func buildAnthropicTools(tools []agent.ToolDefinition) []anthropicTool {
+func buildAnthropicTools(tools []agent.ToolDefinition, promptCacheTTL string) []anthropicTool {
 	if len(tools) == 0 {
 		return nil
 	}
@@ -692,7 +742,21 @@ func buildAnthropicTools(tools []agent.ToolDefinition) []anthropicTool {
 			InputExamples: anthropicToolInputExamples(tool),
 		})
 	}
+	if len(result) > 0 && promptCacheTTL != "" {
+		result[len(result)-1].CacheControl = anthropicPromptCacheControl(promptCacheTTL)
+	}
 	return result
+}
+
+func anthropicPromptCacheControl(ttl string) *anthropicCacheControl {
+	ttl = strings.TrimSpace(ttl)
+	if ttl == "" {
+		return nil
+	}
+	return &anthropicCacheControl{
+		Type: "ephemeral",
+		TTL:  ttl,
+	}
 }
 
 func anthropicToolDescription(tool agent.ToolDefinition) string {
@@ -741,16 +805,30 @@ func anthropicToolInputExamples(tool agent.ToolDefinition) []map[string]any {
 	if len(tool.Examples) == 0 {
 		return nil
 	}
-	examples := make([]map[string]any, 0, len(tool.Examples))
+	limit := anthropicToolInputExampleLimit(tool)
+	if limit == 0 {
+		return nil
+	}
+	examples := make([]map[string]any, 0, min(limit, len(tool.Examples)))
 	for _, example := range tool.Examples {
 		if payload, ok := anthropicToolInputExample(tool, example); ok {
 			examples = append(examples, payload)
+			if len(examples) == limit {
+				break
+			}
 		}
 	}
 	if len(examples) == 0 {
 		return nil
 	}
 	return examples
+}
+
+func anthropicToolInputExampleLimit(tool agent.ToolDefinition) int {
+	if tool.Kind == agent.ToolKindCustom {
+		return 1
+	}
+	return 0
 }
 
 func anthropicToolInputExample(tool agent.ToolDefinition, example string) (map[string]any, bool) {

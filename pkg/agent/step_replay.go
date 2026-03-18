@@ -15,6 +15,7 @@ type StepReplay struct {
 	ToolKind ToolKind
 	Input    string
 	Output   string
+	IsError  bool
 }
 
 // BuildStepReplay normalizes one completed step into provider-neutral replay data.
@@ -44,6 +45,7 @@ func BuildStepReplay(step Step) (StepReplay, bool) {
 		ToolKind: toolKind,
 		Input:    input,
 		Output:   formatStepObservationSummary(step),
+		IsError:  stepReplayIsError(step),
 	}, true
 }
 
@@ -101,4 +103,12 @@ func formatStepObservationSummary(step Step) string {
 		b.WriteString("Stderr was truncated.\n")
 	}
 	return b.String()
+}
+
+func stepReplayIsError(step Step) bool {
+	switch step.Status {
+	case StepStatusParseError, StepStatusPolicyError, StepStatusFatalError:
+		return true
+	}
+	return step.ExitStatus != 0
 }

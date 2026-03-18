@@ -193,6 +193,132 @@ func TestDriverNextCapturesCachedTokens(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "list the current directory"},
+		},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	if request.Text == nil || request.Text.Format == nil {
+		t.Fatal("request text.format = nil, want structured output config")
+	}
+	if request.Text.Format.Type != "json_schema" {
+		t.Fatalf("request text.format.type = %q, want %q", request.Text.Format.Type, "json_schema")
+	}
+	if request.Text.Format.Name != "agent_shell_or_finish" {
+		t.Fatalf("request text.format.name = %q, want %q", request.Text.Format.Name, "agent_shell_or_finish")
+	}
+	if !request.Text.Format.Strict {
+		t.Fatal("request text.format.strict = false, want true")
+	}
+	properties, ok := request.Text.Format.Schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties = %#v, want object", request.Text.Format.Schema["properties"])
+	}
+	typeSchema, ok := properties["type"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[type] = %#v, want object", properties["type"])
+	}
+	resultSchema, ok := properties["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[result] = %#v, want object", properties["result"])
+	}
+	enumValues, ok := typeSchema["enum"].([]string)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[type][enum] = %#v, want []string", typeSchema["enum"])
+	}
+	if len(enumValues) != 2 || enumValues[0] != "shell" || enumValues[1] != "finish" {
+		t.Fatalf("request text.format schema enum = %#v, want [shell finish]", enumValues)
+	}
+	if resultSchema["type"] != "string" {
+		t.Fatalf("request text.format.schema.properties[result][type] = %#v, want %q", resultSchema["type"], "string")
+	}
+}
+
+func TestBuildResponsesRequestAddsFinishOnlyStructuredTextFormatWhenToolsAvailable(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:        agent.ToolNameReadFile,
+			Description: "Reads a file.",
+			Kind:        agent.ToolKindFunction,
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+		}},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	if request.Text == nil || request.Text.Format == nil {
+		t.Fatal("request text.format = nil, want finish-only structured output config")
+	}
+	if request.Text.Format.Name != "agent_finish" {
+		t.Fatalf("request text.format.name = %q, want %q", request.Text.Format.Name, "agent_finish")
+	}
+	required, ok := request.Text.Format.Schema["required"].([]string)
+	if !ok {
+		t.Fatalf("request text.format.schema.required = %#v, want []string", request.Text.Format.Schema["required"])
+	}
+	if len(required) != 3 || required[0] != "type" || required[1] != "thought" || required[2] != "result" {
+		t.Fatalf("request text.format schema required = %#v, want [type thought result]", required)
+	}
+	properties, ok := request.Text.Format.Schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties = %#v, want object", request.Text.Format.Schema["properties"])
+	}
+	resultSchema, ok := properties["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("request text.format.schema.properties[result] = %#v, want object", properties["result"])
+	}
+	if resultSchema["type"] != "string" {
+		t.Fatalf("request text.format.schema.properties[result][type] = %#v, want %q", resultSchema["type"], "string")
+	}
+}
+
+func TestBuildResponsesRequestOmitsStructuredTextFormatOnUnsupportedModel(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-test",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	}, openAIAdapterCapabilities{})
+	if request.Text != nil {
+		t.Fatalf("request text = %#v, want nil for unsupported model", request.Text)
+	}
+}
+
+func TestBuildResponsesRequestOmitsStructuredTextFormatForCustomBaseURL(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: "https://compatible.example/v1",
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	}, openAIAdapterCapabilities{})
+	if request.Text != nil {
+		t.Fatalf("request text = %#v, want nil for compatible backend fallback", request.Text)
+	}
+}
+
 func TestDriverNextIgnoresTrailingJSONObjects(t *testing.T) {
 	t.Parallel()
 
@@ -609,6 +735,29 @@ func TestParseResponsesDecisionPreservesAssistantTextForToolCalls(t *testing.T) 
 	}
 }
 
+func TestParseResponsesDecisionTreatsRefusalAsFinish(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseResponsesDecision(responsesResponse{
+		Output: []responsesOutputItem{{
+			Type: "message",
+			Content: []responsesOutputContent{{
+				Type:    "refusal",
+				Refusal: "I can't help with that request.",
+			}},
+		}},
+	}, nil, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseResponsesDecision() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision for refusal")
+	}
+	if got := decision.Finish.Value; got != "I can't help with that request." {
+		t.Fatalf("decision.Finish.Value = %#v, want refusal text", got)
+	}
+}
+
 func TestDriverNextSendsResponsesReasoningObjectForToolRequests(t *testing.T) {
 	t.Parallel()
 
@@ -739,7 +888,7 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	t.Parallel()
 
 	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
-		{OutputText: `{"type":"finish","thought":"all work is complete","result":"done"}`},
+		{OutputText: `{"type":"finish","thought":"all work is complete","result":"\"done\""}`},
 	})
 	defer server.Close()
 
@@ -766,6 +915,28 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	}
 	if got := decision.Finish.Value; got != "done" {
 		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
+func TestParseDecisionDecodesStructuredFinishObjectString(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseDecision(`{"type":"finish","thought":"all work is complete","result":"{\"status\":\"done\",\"count\":2}"}`, nil, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseDecision() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	value, ok := decision.Finish.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("decision.Finish.Value = %#v, want object", decision.Finish.Value)
+	}
+	if value["status"] != "done" {
+		t.Fatalf("decision.Finish.Value[status] = %#v, want %q", value["status"], "done")
+	}
+	if value["count"] != float64(2) {
+		t.Fatalf("decision.Finish.Value[count] = %#v, want %v", value["count"], 2)
 	}
 }
 

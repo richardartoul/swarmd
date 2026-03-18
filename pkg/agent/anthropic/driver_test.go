@@ -103,8 +103,23 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	if len(snapshot) != 1 {
 		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
 	}
-	if snapshot[0].Request.System != "test prompt\n\ntool availability" {
-		t.Fatalf("request system = %q, want joined system prompt", snapshot[0].Request.System)
+	if len(snapshot[0].Request.System) != 2 {
+		t.Fatalf("len(request system) = %d, want 2", len(snapshot[0].Request.System))
+	}
+	if snapshot[0].Request.System[0].Type != "text" || snapshot[0].Request.System[0].Text != "test prompt" {
+		t.Fatalf("request system[0] = %#v, want base prompt block", snapshot[0].Request.System[0])
+	}
+	if snapshot[0].Request.System[0].CacheControl != nil {
+		t.Fatalf("request system[0].cache_control = %#v, want nil", snapshot[0].Request.System[0].CacheControl)
+	}
+	if snapshot[0].Request.System[1].Type != "text" || snapshot[0].Request.System[1].Text != "tool availability" {
+		t.Fatalf("request system[1] = %#v, want tool availability block", snapshot[0].Request.System[1])
+	}
+	if snapshot[0].Request.System[1].CacheControl == nil {
+		t.Fatal("request system[1].cache_control = nil, want cache breakpoint")
+	}
+	if snapshot[0].Request.System[1].CacheControl.TTL != "5m" {
+		t.Fatalf("request system[1].cache_control.ttl = %q, want %q", snapshot[0].Request.System[1].CacheControl.TTL, "5m")
 	}
 	if snapshot[0].Request.MaxTokens != DefaultMaxTokens {
 		t.Fatalf("request max_tokens = %d, want %d", snapshot[0].Request.MaxTokens, DefaultMaxTokens)
@@ -340,6 +355,12 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if snapshot[0].Request.Tools[0].Name != agent.ToolNameReadFile {
 		t.Fatalf("first tool = %#v, want read_file", snapshot[0].Request.Tools[0])
 	}
+	if len(snapshot[0].Request.Tools[0].InputExamples) != 0 {
+		t.Fatalf("len(read_file input_examples) = %d, want 0 for function tools", len(snapshot[0].Request.Tools[0].InputExamples))
+	}
+	if snapshot[0].Request.Tools[0].CacheControl != nil {
+		t.Fatalf("first tool cache_control = %#v, want nil", snapshot[0].Request.Tools[0].CacheControl)
+	}
 	patchSchema := snapshot[0].Request.Tools[1].InputSchema
 	if snapshot[0].Request.Tools[1].Name != agent.ToolNameApplyPatch {
 		t.Fatalf("second tool = %#v, want apply_patch", snapshot[0].Request.Tools[1])
@@ -355,6 +376,12 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	}
 	if len(snapshot[0].Request.Tools[1].InputExamples) != 1 {
 		t.Fatalf("len(patch tool input_examples) = %d, want 1", len(snapshot[0].Request.Tools[1].InputExamples))
+	}
+	if snapshot[0].Request.Tools[1].CacheControl == nil {
+		t.Fatal("patch tool cache_control = nil, want explicit cache breakpoint")
+	}
+	if snapshot[0].Request.Tools[1].CacheControl.TTL != "5m" {
+		t.Fatalf("patch tool cache_control.ttl = %q, want %q", snapshot[0].Request.Tools[1].CacheControl.TTL, "5m")
 	}
 	if got := snapshot[0].Request.Tools[1].InputExamples[0]["patch"]; got != "*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch" {
 		t.Fatalf("patch tool input_examples[0][patch] = %#v, want wrapped patch example", got)
@@ -372,6 +399,37 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	}
 	if patchProperty["description"] != `Structured patch text. Provide the full patch body including "*** Begin Patch" and "*** End Patch".` {
 		t.Fatalf("patch property description = %#v, want explicit patch wrapper guidance", patchProperty["description"])
+	}
+}
+
+func TestBuildAnthropicToolsCapsInputExamplesByToolKind(t *testing.T) {
+	t.Parallel()
+
+	tools := buildAnthropicTools([]agent.ToolDefinition{
+		{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+			Examples:   []string{`{"file_path":"/tmp/demo.txt"}`},
+		},
+		{
+			Name:         agent.ToolNameApplyPatch,
+			Kind:         agent.ToolKindCustom,
+			CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+			Examples: []string{
+				"*** Begin Patch\n*** End Patch",
+				"*** Begin Patch\n*** Update File: /workspace/demo.txt\n@@\n-old\n+new\n*** End Patch",
+			},
+		},
+	}, "")
+	if len(tools) != 2 {
+		t.Fatalf("len(tools) = %d, want 2", len(tools))
+	}
+	if len(tools[0].InputExamples) != 0 {
+		t.Fatalf("len(read_file input_examples) = %d, want 0", len(tools[0].InputExamples))
+	}
+	if len(tools[1].InputExamples) != 1 {
+		t.Fatalf("len(apply_patch input_examples) = %d, want 1", len(tools[1].InputExamples))
 	}
 }
 
@@ -404,8 +462,14 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
-	if payload.System != "test prompt" {
-		t.Fatalf("payload.System = %q, want %q", payload.System, "test prompt")
+	if len(payload.System) != 1 {
+		t.Fatalf("len(payload.System) = %d, want 1", len(payload.System))
+	}
+	if payload.System[0].Type != "text" || payload.System[0].Text != "test prompt" {
+		t.Fatalf("payload.System[0] = %#v, want test prompt block", payload.System[0])
+	}
+	if payload.System[0].CacheControl != nil {
+		t.Fatalf("payload.System[0].cache_control = %#v, want nil without prompt caching", payload.System[0].CacheControl)
 	}
 	if len(payload.Messages) != 4 {
 		t.Fatalf("len(payload.Messages) = %d, want 4", len(payload.Messages))
@@ -436,6 +500,12 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	}
 	if userBlocks[0]["type"] != "tool_result" || userBlocks[0]["tool_use_id"] != "step_1" {
 		t.Fatalf("userBlocks[0] = %#v, want tool_result block", userBlocks[0])
+	}
+	if _, ok := userBlocks[0]["is_error"]; ok {
+		t.Fatalf("userBlocks[0] = %#v, want no is_error for successful replay", userBlocks[0])
+	}
+	if _, ok := userBlocks[0]["cache_control"]; ok {
+		t.Fatalf("userBlocks[0] = %#v, want no cache_control without prompt caching", userBlocks[0])
 	}
 	if !strings.Contains(userBlocks[0]["content"].(string), "demo content") {
 		t.Fatalf("tool_result content = %#v, want observation output", userBlocks[0]["content"])
@@ -525,6 +595,113 @@ func TestBuildMessagesRequestReplaysRunShellToolUse(t *testing.T) {
 	}
 	if input["command"] != "pwd" {
 		t.Fatalf("run_shell input = %#v, want normalized command", input)
+	}
+}
+
+func TestBuildMessagesRequestMarksErroredReplayToolResult(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			ActionName:     agent.ToolNameReadFile,
+			ActionToolKind: agent.ToolKindFunction,
+			ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+			Status:         agent.StepStatusPolicyError,
+			Error:          "denied by policy",
+			CWDAfter:       "/workspace",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+
+	userBlocks := mustAnthropicBlocks(t, payload.Messages[2].Content)
+	if got := userBlocks[0]["is_error"]; got != true {
+		t.Fatalf("userBlocks[0][is_error] = %#v, want true", got)
+	}
+}
+
+func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:          "claude-sonnet-4-6",
+		maxTokens:      DefaultMaxTokens,
+		promptCacheTTL: "5m",
+	}
+	largeOutput := strings.Repeat("x", anthropicReplayCacheMinOutputLen)
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 3"},
+		},
+		Steps: []agent.Step{
+			{
+				Index:          1,
+				ActionName:     agent.ToolNameReadFile,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"file_path":"/tmp/one.txt"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   largeOutput,
+			},
+			{
+				Index:          2,
+				ActionName:     agent.ToolNameGrepFiles,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"pattern":"needle","path":"/tmp"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   largeOutput,
+			},
+		},
+		Tools: []agent.ToolDefinition{
+			{
+				Name:       agent.ToolNameReadFile,
+				Kind:       agent.ToolKindFunction,
+				Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+			},
+			{
+				Name:       agent.ToolNameGrepFiles,
+				Kind:       agent.ToolKindFunction,
+				Parameters: map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}, "additionalProperties": false},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	if len(payload.Messages) != 6 {
+		t.Fatalf("len(payload.Messages) = %d, want 6", len(payload.Messages))
+	}
+
+	firstResult := mustAnthropicBlocks(t, payload.Messages[2].Content)
+	if _, ok := firstResult[0]["cache_control"]; ok {
+		t.Fatalf("first replay tool_result = %#v, want no cache_control", firstResult[0])
+	}
+	secondResult := mustAnthropicBlocks(t, payload.Messages[4].Content)
+	cacheControl, ok := secondResult[0]["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("second replay tool_result = %#v, want cache_control block", secondResult[0])
+	}
+	if cacheControl["type"] != "ephemeral" {
+		t.Fatalf("second replay cache_control[type] = %#v, want ephemeral", cacheControl["type"])
+	}
+	if cacheControl["ttl"] != "5m" {
+		t.Fatalf("second replay cache_control[ttl] = %#v, want %q", cacheControl["ttl"], "5m")
 	}
 }
 

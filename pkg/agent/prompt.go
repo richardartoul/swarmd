@@ -186,21 +186,13 @@ func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps 
 	req.Messages = []Message{
 		{Role: MessageRoleSystem, Content: a.systemPrompt},
 	}
-	if availability := toolAvailabilityPrompt(req.Tools, a.networkEnabled, a.customCommands); availability != "" {
-		req.Messages = append(req.Messages, Message{
-			Role:    MessageRoleSystem,
-			Content: availability,
-		})
-	}
+	triggerContext := formatTriggerContext(prompt, req.Trigger)
 	if history := a.historySnapshot(); history != "" {
-		req.Messages = append(req.Messages, Message{
-			Role:    MessageRoleSystem,
-			Content: history,
-		})
+		triggerContext = history + "\n\n" + triggerContext
 	}
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
-		Content: formatTriggerContext(prompt, req.Trigger),
+		Content: triggerContext,
 	})
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
@@ -357,12 +349,17 @@ func toolExpandedGuidancePrompt(prompt string, req Request) string {
 	}
 	lines := []string{"Focused tool details for this turn:"}
 	for _, tool := range selected {
-		lines = append(lines, formatExpandedToolGuidance(tool))
+		lines = append(lines, formatExpandedToolGuidance(tool.Tool, tool.Full))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func selectExpandedTools(prompt string, req Request) []ToolDefinition {
+type expandedToolGuidance struct {
+	Tool ToolDefinition
+	Full bool
+}
+
+func selectExpandedTools(prompt string, req Request) []expandedToolGuidance {
 	if len(req.Tools) == 0 {
 		return nil
 	}
@@ -371,10 +368,12 @@ func selectExpandedTools(prompt string, req Request) []ToolDefinition {
 	type scoredTool struct {
 		Tool  ToolDefinition
 		Score int
+		Full  bool
 	}
 	scored := make([]scoredTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		score := 0
+		full := retryTool != "" && tool.Name == retryTool
 		if retryTool != "" && tool.Name == retryTool {
 			score += 100
 		}
@@ -387,7 +386,7 @@ func selectExpandedTools(prompt string, req Request) []ToolDefinition {
 			}
 		}
 		if score > 0 {
-			scored = append(scored, scoredTool{Tool: tool, Score: score})
+			scored = append(scored, scoredTool{Tool: tool, Score: score, Full: full})
 		}
 	}
 	if len(scored) == 0 {
@@ -404,9 +403,12 @@ func selectExpandedTools(prompt string, req Request) []ToolDefinition {
 		}
 	})
 	limit := min(3, len(scored))
-	selected := make([]ToolDefinition, 0, limit)
+	selected := make([]expandedToolGuidance, 0, limit)
 	for _, item := range scored[:limit] {
-		selected = append(selected, item.Tool)
+		selected = append(selected, expandedToolGuidance{
+			Tool: item.Tool,
+			Full: item.Full,
+		})
 	}
 	return selected
 }
@@ -440,7 +442,7 @@ func toolPromptKeywords(name string) []string {
 	case ToolNameHTTPRequest:
 		return []string{"http", "https", "api", "request", "headers", "json"}
 	case ToolNameApplyPatch:
-		return []string{"patch", "edit", "modify", "update", "change"}
+		return []string{"patch", "diff", "*** begin patch"}
 	case ToolNameRunShell:
 		return []string{"shell", "bash", "terminal", "command"}
 	default:
@@ -448,7 +450,7 @@ func toolPromptKeywords(name string) []string {
 	}
 }
 
-func formatExpandedToolGuidance(tool ToolDefinition) string {
+func formatExpandedToolGuidance(tool ToolDefinition, full bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "- %s\n", tool.Name)
 	fmt.Fprintf(&b, "  Description: %s\n", tool.Description)
@@ -458,11 +460,11 @@ func formatExpandedToolGuidance(tool ToolDefinition) string {
 	switch {
 	case tool.CustomFormat != nil:
 		fmt.Fprintf(&b, "  Format: %s/%s\n", tool.CustomFormat.Type, tool.CustomFormat.Syntax)
-		if strings.TrimSpace(tool.CustomFormat.Definition) != "" {
+		if full && strings.TrimSpace(tool.CustomFormat.Definition) != "" {
 			fmt.Fprintf(&b, "  Definition:\n%s\n", indentLines(tool.CustomFormat.Definition, "    "))
 		}
 	default:
-		if len(tool.Parameters) > 0 {
+		if full && len(tool.Parameters) > 0 {
 			if schema, err := json.MarshalIndent(tool.Parameters, "", "  "); err == nil {
 				fmt.Fprintf(&b, "  Schema:\n%s\n", indentLines(string(schema), "    "))
 			}
@@ -471,10 +473,38 @@ func formatExpandedToolGuidance(tool ToolDefinition) string {
 	if tool.OutputNotes != "" {
 		fmt.Fprintf(&b, "  Output notes: %s\n", tool.OutputNotes)
 	}
-	for idx, example := range tool.Examples {
+	for idx, example := range limitedToolExamples(tool.Examples, toolExampleLimit(full)) {
 		fmt.Fprintf(&b, "  Example %d: %s\n", idx+1, example)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func toolExampleLimit(full bool) int {
+	if full {
+		return -1
+	}
+	return 1
+}
+
+func limitedToolExamples(examples []string, limit int) []string {
+	if len(examples) == 0 || limit == 0 {
+		return nil
+	}
+	if limit < 0 {
+		limit = len(examples)
+	}
+	trimmed := make([]string, 0, min(limit, len(examples)))
+	for _, example := range examples {
+		example = strings.TrimSpace(example)
+		if example == "" {
+			continue
+		}
+		trimmed = append(trimmed, example)
+		if len(trimmed) == limit {
+			break
+		}
+	}
+	return trimmed
 }
 
 func indentLines(text, prefix string) string {

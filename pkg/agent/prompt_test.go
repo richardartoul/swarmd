@@ -210,11 +210,34 @@ func TestToolExpandedGuidancePromptIncludesRelevantDetails(t *testing.T) {
 	if !strings.Contains(got, "Format: grammar/lark") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want custom format guidance", got)
 	}
-	if !strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
-		t.Fatalf("toolExpandedGuidancePrompt() = %q, want custom format definition", got)
+	if strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want routine guidance without full custom format definition", got)
 	}
 	if !strings.Contains(got, "Example 1: *** Begin Patch") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch example", got)
+	}
+}
+
+func TestToolExpandedGuidancePromptKeepsFullApplyPatchGuidanceOnRetry(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Tools: []ToolDefinition{
+			builtInToolDefinitions[ToolNameApplyPatch],
+		},
+		Steps: []Step{{
+			Index:      1,
+			ActionName: ToolNameApplyPatch,
+			Status:     StepStatusPolicyError,
+			Error:      "patch did not match grammar",
+		}},
+	}
+	got := toolExpandedGuidancePrompt("try again", req)
+	if !strings.Contains(got, "- apply_patch") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch details", got)
+	}
+	if !strings.Contains(got, "Definition:\n    start: begin_patch hunk end_patch") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want full custom format definition on retry", got)
 	}
 }
 
@@ -238,6 +261,46 @@ func TestToolExpandedGuidancePromptExpandsLastFailedTool(t *testing.T) {
 	}
 	if !strings.Contains(got, "Schema:") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want schema details", got)
+	}
+}
+
+func TestToolExpandedGuidancePromptAvoidsApplyPatchOnGenericEditVerb(t *testing.T) {
+	t.Parallel()
+
+	req := Request{
+		Tools: []ToolDefinition{
+			builtInToolDefinitions[ToolNameApplyPatch],
+			builtInToolDefinitions[ToolNameReadFile],
+		},
+	}
+	got := toolExpandedGuidancePrompt("edit the file carefully", req)
+	if strings.Contains(got, "- apply_patch") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want generic edit prompt to avoid apply_patch expansion", got)
+	}
+	if !strings.Contains(got, "- read_file") {
+		t.Fatalf("toolExpandedGuidancePrompt() = %q, want another relevant tool to remain selectable", got)
+	}
+}
+
+func TestFormatExpandedToolGuidanceLimitsRoutineExamples(t *testing.T) {
+	t.Parallel()
+
+	tool := ToolDefinition{
+		Name:         ToolNameApplyPatch,
+		Description:  "Apply a structured patch.",
+		Kind:         ToolKindCustom,
+		CustomFormat: &ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
+		Examples: []string{
+			"first example",
+			"second example",
+		},
+	}
+	got := formatExpandedToolGuidance(tool, false)
+	if !strings.Contains(got, "Example 1: first example") {
+		t.Fatalf("formatExpandedToolGuidance() = %q, want first example", got)
+	}
+	if strings.Contains(got, "second example") {
+		t.Fatalf("formatExpandedToolGuidance() = %q, want routine guidance capped to one example", got)
 	}
 }
 

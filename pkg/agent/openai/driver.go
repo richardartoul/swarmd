@@ -55,6 +55,7 @@ type responsesRequest struct {
 	Model                string               `json:"model"`
 	Reasoning            *responsesReasoning  `json:"reasoning,omitempty"`
 	Input                []responsesInputItem `json:"input"`
+	Text                 *responsesTextConfig `json:"text,omitempty"`
 	Tools                []responsesTool      `json:"tools,omitempty"`
 	ToolChoice           string               `json:"tool_choice,omitempty"`
 	ParallelToolCalls    *bool                `json:"parallel_tool_calls,omitempty"`
@@ -64,6 +65,18 @@ type responsesRequest struct {
 
 type responsesReasoning struct {
 	Effort string `json:"effort,omitempty"`
+}
+
+type responsesTextConfig struct {
+	Format *responsesTextFormat `json:"format,omitempty"`
+}
+
+type responsesTextFormat struct {
+	Type        string         `json:"type"`
+	Name        string         `json:"name,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Schema      map[string]any `json:"schema,omitempty"`
+	Strict      bool           `json:"strict,omitempty"`
 }
 
 type responsesInputItem struct {
@@ -117,8 +130,9 @@ type responsesOutputItem struct {
 }
 
 type responsesOutputContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Refusal string `json:"refusal"`
 }
 
 type apiErrorResponse struct {
@@ -225,9 +239,15 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 }
 
 func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
+	requestBody := d.buildResponsesRequest(req, caps)
+	return d.completeResponses(ctx, requestBody, req.Tools, caps)
+}
+
+func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapabilities) responsesRequest {
 	requestBody := responsesRequest{
 		Model:                d.model,
 		Input:                buildResponsesInput(req, caps),
+		Text:                 d.responsesTextConfig(req),
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: responsesPromptCacheRetention(d.promptCacheRetention),
 	}
@@ -239,7 +259,7 @@ func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps open
 		requestBody.ToolChoice = "auto"
 		requestBody.ParallelToolCalls = boolPtr(false)
 	}
-	return d.completeResponses(ctx, requestBody, req.Tools, caps)
+	return requestBody
 }
 
 func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -254,6 +274,7 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 	}
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	req.Header.Set("Content-Type", "application/json")
+	agent.MaybeWriteDebugPrompt(body.Bytes())
 
 	resp, err := d.client.Do(req)
 	if err != nil {
@@ -288,6 +309,11 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 }
 
 func parseResponsesDecision(response responsesResponse, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
+	if refusal := extractResponsesRefusal(response.Output); refusal != "" {
+		return agent.Decision{
+			Finish: &agent.FinishAction{Value: refusal},
+		}, nil
+	}
 	thought := strings.TrimSpace(response.OutputText)
 	if thought == "" {
 		thought = strings.TrimSpace(extractResponsesOutputText(response.Output))
@@ -367,12 +393,10 @@ func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (a
 		}
 		decision.Tool = toolAction
 	case "finish":
-		var value any
-		if len(raw.Result) > 0 && string(raw.Result) != "null" {
-			if err := json.Unmarshal(raw.Result, &value); err != nil {
-				return agent.Decision{}, true, fmt.Errorf("could not decode finish result: %w", err)
+			value, err := parseFinishResult(raw.Result)
+			if err != nil {
+				return agent.Decision{}, true, err
 			}
-		}
 		decision.Finish = &agent.FinishAction{Value: value}
 	default:
 		return agent.Decision{}, true, fmt.Errorf(`openai response must set "type" to "shell", "tool", or "finish"`)
@@ -424,6 +448,34 @@ func parseFinishValue(content string) any {
 		return value
 	}
 	return content
+}
+
+func parseFinishResult(raw json.RawMessage) (any, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+
+	// Structured-output responses may encode the final value inside a string
+	// because strict response_format schemas require a concrete property type.
+	var encoded string
+	if err := json.Unmarshal(raw, &encoded); err == nil {
+		encoded = strings.TrimSpace(encoded)
+		if encoded == "" {
+			return "", nil
+		}
+		var value any
+		if err := json.Unmarshal([]byte(encoded), &value); err == nil {
+			return value, nil
+		}
+		return encoded, nil
+	}
+
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("could not decode finish result: %w", err)
+	}
+	return value, nil
 }
 
 func parseToolCallDecision(call openAIFunctionCall, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -876,6 +928,110 @@ func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
 	}
 }
 
+func (d *Driver) responsesTextConfig(req agent.Request) *responsesTextConfig {
+	if !supportsResponsesStructuredTextFormat(d.model, d.baseURL) {
+		return nil
+	}
+	if len(req.Tools) == 0 {
+		return &responsesTextConfig{
+			Format: responsesJSONSchemaFormat(
+				"agent_shell_or_finish",
+				"Return either a shell action or a terminal finish object.",
+				responsesShellOrFinishSchema(),
+			),
+		}
+	}
+	return &responsesTextConfig{
+		Format: responsesJSONSchemaFormat(
+			"agent_finish",
+			"Return the final finish object when no tool call is needed.",
+			responsesFinishSchema(),
+		),
+	}
+}
+
+func responsesJSONSchemaFormat(name, description string, schema map[string]any) *responsesTextFormat {
+	return &responsesTextFormat{
+		Type:        "json_schema",
+		Name:        name,
+		Description: description,
+		Schema:      schema,
+		Strict:      true,
+	}
+}
+
+func responsesShellOrFinishSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type": "string",
+				"enum": []string{"shell", "finish"},
+			},
+			"thought": map[string]any{
+				"type": "string",
+			},
+			"shell": map[string]any{
+				"type": "string",
+			},
+			"result": map[string]any{
+				"type":        "string",
+				"description": "Final user-facing result for finish responses. When returning non-string values, serialize valid JSON into this string.",
+			},
+		},
+		"required":             []string{"type", "thought"},
+		"additionalProperties": false,
+	}
+}
+
+func responsesFinishSchema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type": map[string]any{
+				"type": "string",
+				"enum": []string{"finish"},
+			},
+			"thought": map[string]any{
+				"type": "string",
+			},
+			"result": map[string]any{
+				"type":        "string",
+				"description": "Final user-facing result. When returning non-string values, serialize valid JSON into this string.",
+			},
+		},
+		"required":             []string{"type", "thought", "result"},
+		"additionalProperties": false,
+	}
+}
+
+func supportsResponsesStructuredTextFormat(model, baseURL string) bool {
+	if strings.TrimRight(strings.TrimSpace(baseURL), "/") != DefaultBaseURL {
+		return false
+	}
+	model = strings.TrimSpace(model)
+	switch {
+	case strings.HasPrefix(model, "gpt-5"),
+		strings.HasPrefix(model, "gpt-4.1"),
+		strings.HasPrefix(model, "o1"),
+		strings.HasPrefix(model, "o3"),
+		strings.HasPrefix(model, "o4"):
+		return true
+	case model == "chatgpt-4o-latest",
+		model == "gpt-4o",
+		model == "gpt-4o-mini":
+		return true
+	case model == "gpt-4o-2024-05-13":
+		return false
+	case strings.HasPrefix(model, "gpt-4o-"):
+		return model >= "gpt-4o-2024-08-06"
+	case strings.HasPrefix(model, "gpt-4o-mini-"):
+		return model >= "gpt-4o-mini-2024-07-18"
+	default:
+		return false
+	}
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }
@@ -919,6 +1075,26 @@ func extractResponsesOutputText(items []responsesOutputItem) string {
 		}
 	}
 	return b.String()
+}
+
+func extractResponsesRefusal(items []responsesOutputItem) string {
+	for _, item := range items {
+		if item.Type != "message" {
+			continue
+		}
+		for _, content := range item.Content {
+			if content.Type != "refusal" {
+				continue
+			}
+			if strings.TrimSpace(content.Refusal) != "" {
+				return strings.TrimSpace(content.Refusal)
+			}
+			if strings.TrimSpace(content.Text) != "" {
+				return strings.TrimSpace(content.Text)
+			}
+		}
+	}
+	return ""
 }
 
 func unwrapCodeFence(content string) string {
