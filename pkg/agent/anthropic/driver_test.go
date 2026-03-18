@@ -65,6 +65,17 @@ func TestNewRejectsInvalidPromptCacheTTL(t *testing.T) {
 	}
 }
 
+func TestNewRejectsUnsupportedModelForStructuredOutputs(t *testing.T) {
+	t.Parallel()
+
+	if _, err := New(Config{
+		APIKey: "test-key",
+		Model:  "claude-3-5-sonnet-latest",
+	}); err == nil {
+		t.Fatal("New() error = nil, want unsupported model rejection")
+	}
+}
+
 func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	t.Parallel()
 
@@ -72,7 +83,7 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: "done",
+				Text: strictFinalText("done", "done"),
 			}},
 			StopReason: "end_turn",
 		},
@@ -141,7 +152,7 @@ func TestDriverNextSendsAdaptiveThinkingFromModelSuffix(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: "done",
+				Text: strictFinalText("done", "done"),
 			}},
 			StopReason: "end_turn",
 		},
@@ -179,6 +190,9 @@ func TestDriverNextSendsAdaptiveThinkingFromModelSuffix(t *testing.T) {
 	if snapshot[0].Request.OutputConfig == nil || snapshot[0].Request.OutputConfig.Effort != "medium" {
 		t.Fatalf("request output_config = %#v, want medium effort", snapshot[0].Request.OutputConfig)
 	}
+	if snapshot[0].Request.OutputConfig.Format == nil || snapshot[0].Request.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("request output_config.format = %#v, want json_schema strict final format", snapshot[0].Request.OutputConfig.Format)
+	}
 }
 
 func TestDriverNextDefaultsPromptCacheTTLTo5m(t *testing.T) {
@@ -188,7 +202,7 @@ func TestDriverNextDefaultsPromptCacheTTLTo5m(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: "done",
+				Text: strictFinalText("done", "done"),
 			}},
 			StopReason: "end_turn",
 		},
@@ -235,7 +249,7 @@ func TestDriverNextForwardsPromptCacheTTL(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: "done",
+				Text: strictFinalText("done", "done"),
 			}},
 			StopReason: "end_turn",
 		},
@@ -341,6 +355,12 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	}
 	if !snapshot[0].Request.ToolChoice.DisableParallelToolUse {
 		t.Fatal("request tool_choice.disable_parallel_tool_use = false, want true")
+	}
+	if snapshot[0].Request.OutputConfig == nil || snapshot[0].Request.OutputConfig.Format == nil {
+		t.Fatalf("request output_config = %#v, want strict final format", snapshot[0].Request.OutputConfig)
+	}
+	if snapshot[0].Request.OutputConfig.Format.Type != "json_schema" {
+		t.Fatalf("request output_config.format.type = %q, want %q", snapshot[0].Request.OutputConfig.Format.Type, "json_schema")
 	}
 	if len(snapshot[0].Request.Tools) != 2 {
 		t.Fatalf("len(request tools) = %d, want 2", len(snapshot[0].Request.Tools))
@@ -876,94 +896,71 @@ func TestParseToolUseDecisionExtractsCustomInput(t *testing.T) {
 	}
 }
 
-func TestParseDecisionAcceptsFunctionCallJSON(t *testing.T) {
+func TestParseStrictFinalDecisionDecodesStructuredObject(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseDecision(`{"type":"function_call","name":"read_file","arguments":"{\"file_path\":\"/tmp/demo.txt\"}","call_id":"call_1"}`, []agent.ToolDefinition{{
-		Name: agent.ToolNameReadFile,
-		Kind: agent.ToolKindFunction,
-	}})
+	decision, err := parseStrictFinalDecision(strictFinalText("all work is complete", map[string]any{
+		"status": "done",
+		"count":  2,
+	}))
 	if err != nil {
-		t.Fatalf("parseDecision() error = %v", err)
+		t.Fatalf("parseStrictFinalDecision() error = %v", err)
 	}
-	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
-		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
 	}
-	if decision.Tool.Input != `{"file_path":"/tmp/demo.txt"}` {
-		t.Fatalf("decision.Tool.Input = %q, want read_file arguments", decision.Tool.Input)
+	value, ok := decision.Finish.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("decision.Finish.Value = %#v, want object", decision.Finish.Value)
+	}
+	if value["status"] != "done" {
+		t.Fatalf("decision.Finish.Value[status] = %#v, want %q", value["status"], "done")
+	}
+	if value["count"] != float64(2) {
+		t.Fatalf("decision.Finish.Value[count] = %#v, want %v", value["count"], 2)
 	}
 }
 
-func TestParseDecisionAcceptsCustomToolCallJSON(t *testing.T) {
+func TestParseStrictFinalDecisionRejectsLegacyFunctionCallJSON(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseDecision(`{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** End Patch","call_id":"call_2"}`, []agent.ToolDefinition{{
-		Name: agent.ToolNameApplyPatch,
-		Kind: agent.ToolKindCustom,
-	}})
-	if err != nil {
-		t.Fatalf("parseDecision() error = %v", err)
-	}
-	if decision.Tool == nil || decision.Tool.Kind != agent.ToolKindCustom {
-		t.Fatalf("decision.Tool = %#v, want custom apply_patch tool", decision.Tool)
-	}
-}
-
-func TestParseDecisionAcceptsLocalShellCallJSON(t *testing.T) {
-	t.Parallel()
-
-	decision, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, []agent.ToolDefinition{{
-		Name: agent.ToolNameRunShell,
-		Kind: agent.ToolKindFunction,
-	}})
-	if err != nil {
-		t.Fatalf("parseDecision() error = %v", err)
-	}
-	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameRunShell {
-		t.Fatalf("decision.Tool = %#v, want run_shell", decision.Tool)
-	}
-	if !strings.Contains(decision.Tool.Input, `"command":"ls -la"`) {
-		t.Fatalf("decision.Tool.Input = %q, want shell command payload", decision.Tool.Input)
-	}
-	if !strings.Contains(decision.Tool.Input, `"workdir":"/workspace"`) {
-		t.Fatalf("decision.Tool.Input = %q, want working directory payload", decision.Tool.Input)
-	}
-}
-
-func TestParseDecisionRejectsUnavailableLocalShellCallJSON(t *testing.T) {
-	t.Parallel()
-
-	_, err := parseDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`, nil)
+	_, err := parseStrictFinalDecision(`{"type":"function_call","name":"read_file","arguments":"{\"file_path\":\"/tmp/demo.txt\"}","call_id":"call_1"}`)
 	if err == nil {
-		t.Fatal("parseDecision() error = nil, want unavailable tool rejection")
-	}
-	if !strings.Contains(err.Error(), `unavailable tool "run_shell"`) {
-		t.Fatalf("parseDecision() error = %v, want unavailable tool rejection", err)
+		t.Fatal("parseStrictFinalDecision() error = nil, want legacy wrapper rejection")
 	}
 }
 
-func TestParseDecisionAcceptsLegacyToolJSON(t *testing.T) {
+func TestParseStrictFinalDecisionRejectsLegacyCustomToolCallJSON(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseDecision(`{"type":"tool","name":"apply_patch","args":{"patch":"*** Begin Patch\n*** End Patch"},"thought":"patch it"}`, []agent.ToolDefinition{{
-		Name: agent.ToolNameApplyPatch,
-		Kind: agent.ToolKindCustom,
-	}})
-	if err != nil {
-		t.Fatalf("parseDecision() error = %v", err)
-	}
-	if decision.Thought != "patch it" {
-		t.Fatalf("decision.Thought = %q, want %q", decision.Thought, "patch it")
-	}
-	if decision.Tool == nil || decision.Tool.Input != "*** Begin Patch\n*** End Patch" {
-		t.Fatalf("decision.Tool = %#v, want unwrapped custom tool input", decision.Tool)
+	_, err := parseStrictFinalDecision(`{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** End Patch","call_id":"call_2"}`)
+	if err == nil {
+		t.Fatal("parseStrictFinalDecision() error = nil, want legacy wrapper rejection")
 	}
 }
 
-func TestParseMessageDecisionAcceptsTextualFunctionCallFallback(t *testing.T) {
+func TestParseStrictFinalDecisionRejectsLegacyLocalShellCallJSON(t *testing.T) {
 	t.Parallel()
 
-	decision, err := parseMessageDecision(messagesResponse{
+	_, err := parseStrictFinalDecision(`{"type":"local_shell_call","call_id":"call_3","action":{"type":"exec","command":["bash","-lc","ls -la"],"working_directory":"/workspace","timeout_ms":30000}}`)
+	if err == nil {
+		t.Fatal("parseStrictFinalDecision() error = nil, want legacy wrapper rejection")
+	}
+}
+
+func TestParseStrictFinalDecisionRejectsLegacyToolWrapperJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseStrictFinalDecision(`{"type":"tool","name":"apply_patch","args":{"patch":"*** Begin Patch\n*** End Patch"},"thought":"patch it"}`)
+	if err == nil {
+		t.Fatal("parseStrictFinalDecision() error = nil, want legacy wrapper rejection")
+	}
+}
+
+func TestParseMessageDecisionRejectsTextualFunctionCallFallback(t *testing.T) {
+	t.Parallel()
+
+	_, err := parseMessageDecision(messagesResponse{
 		Content: []anthropicContentBlock{{
 			Type: "text",
 			Text: `{"type":"function_call","name":"read_file","arguments":"{\"file_path\":\"/tmp/demo.txt\"}","call_id":"call_1"}`,
@@ -973,11 +970,8 @@ func TestParseMessageDecisionAcceptsTextualFunctionCallFallback(t *testing.T) {
 		Name: agent.ToolNameReadFile,
 		Kind: agent.ToolKindFunction,
 	}})
-	if err != nil {
-		t.Fatalf("parseMessageDecision() error = %v", err)
-	}
-	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
-		t.Fatalf("decision.Tool = %#v, want read_file fallback", decision.Tool)
+	if err == nil {
+		t.Fatal("parseMessageDecision() error = nil, want strict final rejection")
 	}
 }
 
@@ -988,7 +982,7 @@ func TestDriverNextCapturesCachedTokensFromUsage(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: "done",
+				Text: strictFinalText("done", "done"),
 			}},
 			StopReason:   "end_turn",
 			CachedTokens: 1536,
@@ -1010,7 +1004,7 @@ func TestDriverNextCapturesCachedTokensFromUsage(t *testing.T) {
 	}
 }
 
-func TestDriverNextTreatsTextAsFinish(t *testing.T) {
+func TestDriverNextRejectsPlainTextOutsideStrictSchema(t *testing.T) {
 	t.Parallel()
 
 	server, _ := newTestServer(t, []testServerResponse{
@@ -1025,19 +1019,13 @@ func TestDriverNextTreatsTextAsFinish(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
 	})
-	if err != nil {
-		t.Fatalf("Next() error = %v", err)
-	}
-	if decision.Finish == nil {
-		t.Fatal("decision.Finish = nil, want finish decision")
-	}
-	if got := decision.Finish.Value; got != "done" {
-		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	if err == nil {
+		t.Fatal("Next() error = nil, want strict final parser rejection")
 	}
 }
 
@@ -1048,7 +1036,7 @@ func TestDriverNextParsesStructuredFinishThought(t *testing.T) {
 		{
 			Content: []anthropicContentBlock{{
 				Type: "text",
-				Text: `{"type":"finish","thought":"all work is complete","result":"done"}`,
+				Text: strictFinalText("all work is complete", "done"),
 			}},
 			StopReason: "end_turn",
 		},
@@ -1217,6 +1205,10 @@ func newTestDriver(t *testing.T, baseURL string) *Driver {
 		t.Fatalf("New() error = %v", err)
 	}
 	return driver
+}
+
+func strictFinalText(thought string, value any) string {
+	return agent.StrictFinalResponseExample(thought, value)
 }
 
 func mustAnthropicStringContent(t *testing.T, content any) string {

@@ -23,7 +23,11 @@ func ExampleAgent_HandleTrigger() {
 			switch req.Step {
 			case 1:
 				return agent.Decision{
-					Shell: &agent.ShellAction{Source: "echo hello"},
+					Tool: &agent.ToolAction{
+						Name:  agent.ToolNameRunShell,
+						Kind:  agent.ToolKindFunction,
+						Input: `{"command":"echo hello"}`,
+					},
 				}, nil
 			default:
 				return agent.Decision{

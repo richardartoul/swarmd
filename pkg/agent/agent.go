@@ -261,21 +261,10 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			return a.finishResult(result), nil
 		}
 
-		var (
-			step   Step
-			runErr error
-		)
 		stepIndex := nextStepIndex + len(turnSteps)
-		switch {
-		case decision.Tool != nil:
-			step, runErr = a.runToolStep(ctx, input.Trigger, stepIndex, decision)
-		default:
-			step, runErr = a.runShellStep(ctx, input.Trigger, stepIndex, decision)
-		}
+		step, runErr := a.runToolStep(ctx, input.Trigger, stepIndex, decision)
 		turnSteps = append(turnSteps, step)
-		if decision.Tool != nil {
-			requestContext = requestContext.withStepReplayData(StepCallID(step), decision.ReplayData)
-		}
+		requestContext = requestContext.withStepReplayData(StepCallID(step), decision.ReplayData)
 		if a.onStep != nil {
 			if stepErr := a.onStep.HandleStep(ctx, input.Trigger, step); stepErr != nil {
 				return a.finishResult(Result{
@@ -314,56 +303,6 @@ func (a *Agent) handleResult(ctx context.Context, result Result) error {
 		return nil
 	}
 	return a.onResult.HandleResult(ctx, result)
-}
-
-func (a *Agent) runShellStep(ctx context.Context, trigger Trigger, stepIndex int, decision Decision) (Step, error) {
-	step := Step{
-		Index:      stepIndex,
-		Type:       StepTypeShell,
-		Thought:    decision.Thought,
-		ActionName: ToolNameRunShell,
-		Shell:      decision.Shell.Source,
-		Usage:      decision.Usage,
-		CWDBefore:  a.runner.Dir,
-		CWDAfter:   a.runner.Dir,
-		StartedAt:  time.Now(),
-	}
-	defer finishStep(&step)
-
-	prog, err := a.parser.Parse(strings.NewReader(decision.Shell.Source), fmt.Sprintf("agent-step-%d", stepIndex))
-	if err != nil {
-		step.Status = StepStatusParseError
-		step.Error = err.Error()
-		return step, nil
-	}
-	if err := validateProgram(prog); err != nil {
-		step.Status = StepStatusPolicyError
-		step.Error = err.Error()
-		return step, nil
-	}
-
-	stdoutCapture := newCaptureWriter(a.maxOutputBytes, a.liveStdout)
-	stderrCapture := newCaptureWriter(a.maxOutputBytes, a.liveStderr)
-	a.stdout.Set(stdoutCapture)
-	a.stderr.Set(stderrCapture)
-	defer func() {
-		a.stdout.Set(io.Discard)
-		a.stderr.Set(io.Discard)
-	}()
-
-	runCtx := ctx
-	cancel := func() {}
-	if a.stepTimeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, a.stepTimeout)
-	}
-	defer cancel()
-	runCtx = contextWithTrigger(runCtx, trigger)
-
-	err = a.runner.Run(runCtx, prog)
-	step.CWDAfter = a.runner.Dir
-	step.Stdout, step.StdoutTruncated = stdoutCapture.Snapshot()
-	step.Stderr, step.StderrTruncated = stderrCapture.Snapshot()
-	return classifyRunResult(step, err)
 }
 
 func classifyRunResult(step Step, err error) (Step, error) {
@@ -408,13 +347,9 @@ func classifyRunResult(step Step, err error) (Step, error) {
 }
 
 func validateDecision(decision Decision) error {
-	hasShell := decision.Shell != nil
 	hasTool := decision.Tool != nil
 	hasFinish := decision.Finish != nil
 	count := 0
-	if hasShell {
-		count++
-	}
 	if hasTool {
 		count++
 	}
@@ -423,9 +358,7 @@ func validateDecision(decision Decision) error {
 	}
 	switch {
 	case count != 1:
-		return fmt.Errorf("decision must set exactly one of Shell, Tool, or Finish")
-	case hasShell && strings.TrimSpace(decision.Shell.Source) == "":
-		return fmt.Errorf("decision shell source must not be empty")
+		return fmt.Errorf("decision must set exactly one of Tool or Finish")
 	case hasTool && strings.TrimSpace(decision.Tool.Name) == "":
 		return fmt.Errorf("decision tool name must not be empty")
 	case hasTool && strings.TrimSpace(decision.Tool.Input) == "" && decision.Tool.Kind == ToolKindCustom:

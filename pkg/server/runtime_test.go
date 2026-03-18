@@ -33,7 +33,7 @@ func TestRuntimeManagerProcessesMailboxAndOutbox(t *testing.T) {
 	drivers := map[string]*scriptedDriver{
 		namespace.ID + ":worker-a": {
 			decisions: []agent.Decision{
-				{Thought: "emit output", Shell: &agent.ShellAction{Source: `printf 'hello from a'`}},
+				withThought(shell(`printf 'hello from a'`), "emit output"),
 				{Finish: &agent.FinishAction{Value: map[string]any{
 					"reply": "done",
 					"outbox": []map[string]any{{
@@ -912,7 +912,7 @@ func TestRuntimeManagerMemoryFilesPersistAcrossRestarts(t *testing.T) {
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "write memory files", Shell: &agent.ShellAction{Source: "mkdir -p .memory/topics && printf '## URN Index\n- urn:test:topic -> topics/test.md\n' > .memory/ROOT.md && printf 'first note\n' > .memory/topics/test.md"}},
+					withThought(shell("mkdir -p .memory/topics && printf '## URN Index\n- urn:test:topic -> topics/test.md\n' > .memory/ROOT.md && printf 'first note\n' > .memory/topics/test.md"), "write memory files"),
 					{Finish: &agent.FinishAction{Value: "seeded"}},
 				},
 			}, nil
@@ -954,7 +954,7 @@ func TestRuntimeManagerMemoryFilesPersistAcrossRestarts(t *testing.T) {
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "read root index and update topic", Shell: &agent.ShellAction{Source: "cat .memory/ROOT.md .memory/topics/test.md > .memory/readback.txt && printf 'second note\n' >> .memory/topics/test.md"}},
+					withThought(shell("cat .memory/ROOT.md .memory/topics/test.md > .memory/readback.txt && printf 'second note\n' >> .memory/topics/test.md"), "read root index and update topic"),
 					{Finish: &agent.FinishAction{Value: "updated"}},
 				},
 			}, nil
@@ -1037,7 +1037,7 @@ func TestRuntimeManagerMaterializesMountedFilesBeforeRun(t *testing.T) {
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "read mounted files", Shell: &agent.ShellAction{Source: "cat mounted/message.txt > mounted/from-direct.txt && sh mounted/show.sh > mounted/from-nested.txt"}},
+					withThought(shell("cat mounted/message.txt > mounted/from-direct.txt && sh mounted/show.sh > mounted/from-nested.txt"), "read mounted files"),
 					{Finish: &agent.FinishAction{Value: "mounted"}},
 				},
 			}, nil
@@ -1112,7 +1112,7 @@ func TestRuntimeManagerMaterializesEnvBackedMountsBeforeRun(t *testing.T) {
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "read mounted secret", Shell: &agent.ShellAction{Source: "cat mounted/secret.txt > mounted/readback.txt"}},
+					withThought(shell("cat mounted/secret.txt > mounted/readback.txt"), "read mounted secret"),
 					{Finish: &agent.FinishAction{Value: "mounted"}},
 				},
 			}, nil
@@ -1204,7 +1204,7 @@ func TestRuntimeManagerMaterializesMountedDirectoriesAndOverwritesExistingTarget
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "read mounted directory and file", Shell: &agent.ShellAction{Source: "cat mounted/file.txt mounted/assets/notes.txt mounted/assets/templates/base.txt > mounted/combined.txt"}},
+					withThought(shell("cat mounted/file.txt mounted/assets/notes.txt mounted/assets/templates/base.txt > mounted/combined.txt"), "read mounted directory and file"),
 					{Finish: &agent.FinishAction{Value: "mounted"}},
 				},
 			}, nil

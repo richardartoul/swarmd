@@ -20,15 +20,15 @@ const (
 	// DefaultBaseURL is the default Anthropic API base URL.
 	DefaultBaseURL = "https://api.anthropic.com/v1"
 
-	// DefaultSystemPrompt is kept for backward compatibility.
-	DefaultSystemPrompt = agent.DefaultSystemPrompt
-
 	// DefaultMaxTokens is the built-in Anthropic output budget used by this driver.
 	DefaultMaxTokens = 64000
 
 	anthropicVersion                 = "2023-06-01"
 	anthropicReplayCacheMinOutputLen = 1024
 )
+
+// DefaultSystemPrompt is kept for backward compatibility.
+var DefaultSystemPrompt = agent.DefaultSystemPrompt
 
 // Config configures a new Anthropic-backed driver.
 type Config struct {
@@ -75,7 +75,13 @@ type anthropicThinking struct {
 }
 
 type anthropicOutputConfig struct {
-	Effort string `json:"effort,omitempty"`
+	Effort string                 `json:"effort,omitempty"`
+	Format *anthropicOutputFormat `json:"format,omitempty"`
+}
+
+type anthropicOutputFormat struct {
+	Type   string         `json:"type"`
+	Schema map[string]any `json:"schema,omitempty"`
 }
 
 type anthropicCacheControl struct {
@@ -205,39 +211,6 @@ type apiErrorResponse struct {
 	} `json:"error"`
 }
 
-type structuredFinishResponse struct {
-	Type    string          `json:"type"`
-	Thought string          `json:"thought"`
-	Result  json.RawMessage `json:"result"`
-}
-
-type decisionResponse struct {
-	Type    string          `json:"type"`
-	Thought string          `json:"thought"`
-	Shell   string          `json:"shell"`
-	Tool    string          `json:"tool"`
-	Name    string          `json:"name"`
-	Args    json.RawMessage `json:"args"`
-	Input   string          `json:"input"`
-	Result  json.RawMessage `json:"result"`
-}
-
-type boundaryToolCallResponse struct {
-	Type      string                 `json:"type"`
-	Name      string                 `json:"name"`
-	Arguments string                 `json:"arguments"`
-	Input     string                 `json:"input"`
-	CallID    string                 `json:"call_id"`
-	Action    *boundaryLocalShellRun `json:"action"`
-}
-
-type boundaryLocalShellRun struct {
-	Type             string   `json:"type"`
-	Command          []string `json:"command"`
-	WorkingDirectory string   `json:"working_directory"`
-	TimeoutMS        int      `json:"timeout_ms"`
-}
-
 // New constructs an Anthropic-backed driver.
 func New(cfg Config) (*Driver, error) {
 	if strings.TrimSpace(cfg.APIKey) == "" {
@@ -258,6 +231,9 @@ func New(cfg Config) (*Driver, error) {
 		baseURL = DefaultBaseURL
 	}
 	model, reasoning := parseModelAndReasoningLevel(cfg.Model)
+	if !supportsAnthropicStructuredOutputs(model) {
+		return nil, fmt.Errorf("anthropic model %q must support structured outputs", model)
+	}
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Minute}
@@ -289,13 +265,19 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 	payload := messagesRequest{
 		Model:     d.model,
 		MaxTokens: d.maxTokens,
+		OutputConfig: &anthropicOutputConfig{
+			Format: &anthropicOutputFormat{
+				Type:   "json_schema",
+				Schema: agent.StrictFinalResponseSchema(),
+			},
+		},
 	}
 	if d.promptCacheTTL != "" {
 		payload.CacheControl = anthropicPromptCacheControl(d.promptCacheTTL)
 	}
 	if d.reasoning != "" {
 		payload.Thinking = &anthropicThinking{Type: "adaptive"}
-		payload.OutputConfig = &anthropicOutputConfig{Effort: d.reasoning}
+		payload.OutputConfig.Effort = d.reasoning
 	}
 	system, messages, err := buildAnthropicMessages(req, d.promptCacheTTL)
 	if err != nil {
@@ -576,7 +558,7 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 		return decision, nil
 	}
 	if text != "" {
-		return parseDecision(text, allowedTools)
+		return parseStrictFinalDecision(text)
 	}
 	stopReason := strings.TrimSpace(response.StopReason)
 	if stopReason == "" {
@@ -585,188 +567,14 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 	return agent.Decision{}, fmt.Errorf("anthropic response with stop_reason %q did not include text or tool use", stopReason)
 }
 
-func parseDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
-	content = unwrapCodeFence(strings.TrimSpace(content))
-	if content == "" {
-		return agent.Decision{}, fmt.Errorf("anthropic response content was empty")
-	}
-	if decision, ok, err := parseBoundaryToolDecision(content, allowedTools); ok || err != nil {
-		return decision, err
-	}
-	if decision, ok, err := parseLegacyDecision(content, allowedTools); ok || err != nil {
-		return decision, err
-	}
-	if decision, ok, err := parseStructuredFinishDecision(content); ok || err != nil {
-		return decision, err
+func parseStrictFinalDecision(content string) (agent.Decision, error) {
+	thought, value, err := agent.ParseStrictFinalResponse(unwrapCodeFence(strings.TrimSpace(content)))
+	if err != nil {
+		return agent.Decision{}, err
 	}
 	return agent.Decision{
-		Finish: &agent.FinishAction{Value: parseFinishValue(content)},
-	}, nil
-}
-
-func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
-	var raw decisionResponse
-	decoder := json.NewDecoder(strings.NewReader(content))
-	if err := decoder.Decode(&raw); err != nil {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) == "" {
-		return agent.Decision{}, false, nil
-	}
-	decision := agent.Decision{
-		Thought: strings.TrimSpace(raw.Thought),
-	}
-	switch strings.TrimSpace(raw.Type) {
-	case "shell":
-		shell := strings.TrimSpace(raw.Shell)
-		if shell == "" {
-			return agent.Decision{}, true, fmt.Errorf(`anthropic response type "shell" must include non-empty "shell"`)
-		}
-		decision.Shell = &agent.ShellAction{Source: shell}
-	case "tool":
-		toolAction, err := parseLegacyToolAction(raw, allowedTools)
-		if err != nil {
-			return agent.Decision{}, true, err
-		}
-		decision.Tool = toolAction
-	case "finish":
-		var value any
-		if len(raw.Result) > 0 && string(raw.Result) != "null" {
-			if err := json.Unmarshal(raw.Result, &value); err != nil {
-				return agent.Decision{}, true, fmt.Errorf("could not decode finish result: %w", err)
-			}
-		}
-		decision.Finish = &agent.FinishAction{Value: value}
-	default:
-		return agent.Decision{}, true, fmt.Errorf(`anthropic response must set "type" to "shell", "tool", or "finish"`)
-	}
-	return decision, true, nil
-}
-
-func parseLegacyToolAction(raw decisionResponse, allowedTools []agent.ToolDefinition) (*agent.ToolAction, error) {
-	name := strings.TrimSpace(raw.Name)
-	if name == "" {
-		name = strings.TrimSpace(raw.Tool)
-	}
-	if name == "" {
-		return nil, fmt.Errorf(`anthropic response type "tool" must include non-empty "name"`)
-	}
-	def, ok := allowedToolDefinition(allowedTools, name)
-	if !ok {
-		return nil, fmt.Errorf("anthropic response called unavailable tool %q", name)
-	}
-	if def.Kind == agent.ToolKindCustom {
-		input, err := extractLegacyCustomToolInput(strings.TrimSpace(raw.Input), raw.Args)
-		if err != nil {
-			return nil, err
-		}
-		return &agent.ToolAction{
-			Name:  def.Name,
-			Kind:  agent.ToolKindCustom,
-			Input: input,
-		}, nil
-	}
-	input := strings.TrimSpace(raw.Input)
-	if len(raw.Args) > 0 && string(raw.Args) != "null" {
-		input = strings.TrimSpace(string(raw.Args))
-	}
-	if input == "" {
-		input = "{}"
-	}
-	return &agent.ToolAction{
-		Name:  def.Name,
-		Kind:  agent.ToolKindFunction,
-		Input: input,
-	}, nil
-}
-
-func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
-	var raw boundaryToolCallResponse
-	decoder := json.NewDecoder(strings.NewReader(content))
-	if err := decoder.Decode(&raw); err != nil {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) == "" {
-		return agent.Decision{}, false, nil
-	}
-	switch strings.TrimSpace(raw.Type) {
-	case "function_call":
-		decision, err := parseTextFunctionCall(strings.TrimSpace(raw.Name), strings.TrimSpace(raw.Arguments), allowedTools)
-		return decision, true, err
-	case "custom_tool_call":
-		name := strings.TrimSpace(raw.Name)
-		if name == "" {
-			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "name"`)
-		}
-		def, ok := allowedToolDefinition(allowedTools, name)
-		if !ok {
-			return agent.Decision{}, true, fmt.Errorf("anthropic response called unavailable tool %q", name)
-		}
-		if def.Kind != agent.ToolKindCustom {
-			return agent.Decision{}, true, fmt.Errorf("anthropic response used custom_tool_call for non-custom tool %q", name)
-		}
-		input := strings.TrimSpace(raw.Input)
-		if input == "" {
-			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "input"`)
-		}
-		return agent.Decision{
-			Tool: &agent.ToolAction{
-				Name:  def.Name,
-				Kind:  agent.ToolKindCustom,
-				Input: input,
-			},
-		}, true, nil
-	case "local_shell_call":
-		if _, ok := allowedToolDefinition(allowedTools, agent.ToolNameRunShell); !ok {
-			return agent.Decision{}, true, fmt.Errorf("anthropic response called unavailable tool %q", agent.ToolNameRunShell)
-		}
-		input, err := parseLocalShellInput(raw.Action)
-		if err != nil {
-			return agent.Decision{}, true, err
-		}
-		return agent.Decision{
-			Tool: &agent.ToolAction{
-				Name:  agent.ToolNameRunShell,
-				Kind:  agent.ToolKindFunction,
-				Input: input,
-			},
-		}, true, nil
-	default:
-		return agent.Decision{}, false, nil
-	}
-}
-
-func parseTextFunctionCall(name, arguments string, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
-	if name == "" {
-		return agent.Decision{}, fmt.Errorf(`function_call must include non-empty "name"`)
-	}
-	def, ok := allowedToolDefinition(allowedTools, name)
-	if !ok {
-		return agent.Decision{}, fmt.Errorf("anthropic response called unavailable tool %q", name)
-	}
-	if def.Kind == agent.ToolKindCustom {
-		input, err := extractCustomToolInputString(arguments)
-		if err != nil {
-			return agent.Decision{}, err
-		}
-		return agent.Decision{
-			Tool: &agent.ToolAction{
-				Name:  def.Name,
-				Kind:  agent.ToolKindCustom,
-				Input: input,
-			},
-		}, nil
-	}
-	input := strings.TrimSpace(arguments)
-	if input == "" {
-		input = "{}"
-	}
-	return agent.Decision{
-		Tool: &agent.ToolAction{
-			Name:  def.Name,
-			Kind:  agent.ToolKindFunction,
-			Input: input,
-		},
+		Thought: thought,
+		Finish:  &agent.FinishAction{Value: value},
 	}, nil
 }
 
@@ -1012,35 +820,6 @@ func extractAnthropicReplayPreamble(blocks []anthropicContentBlock) string {
 	return compactJSON(preamble)
 }
 
-func parseStructuredFinishDecision(content string) (agent.Decision, bool, error) {
-	content = unwrapCodeFence(strings.TrimSpace(content))
-	if content == "" {
-		return agent.Decision{}, false, nil
-	}
-
-	var raw structuredFinishResponse
-	if err := json.Unmarshal([]byte(content), &raw); err != nil {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) == "" {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) != "finish" {
-		return agent.Decision{}, true, fmt.Errorf(`anthropic structured finish must set "type" to "finish"`)
-	}
-
-	var value any
-	if len(raw.Result) > 0 && string(raw.Result) != "null" {
-		if err := json.Unmarshal(raw.Result, &value); err != nil {
-			return agent.Decision{}, true, fmt.Errorf("could not decode finish result: %w", err)
-		}
-	}
-	return agent.Decision{
-		Thought: strings.TrimSpace(raw.Thought),
-		Finish:  &agent.FinishAction{Value: value},
-	}, true, nil
-}
-
 func compactRawJSON(raw json.RawMessage) (string, error) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -1065,18 +844,6 @@ func extractCustomToolInput(raw json.RawMessage) (string, error) {
 	return extractCustomToolInputPayload(payload)
 }
 
-func extractCustomToolInputString(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", fmt.Errorf("custom tool input must not be empty")
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		return "", fmt.Errorf("could not decode custom tool input: %w", err)
-	}
-	return extractCustomToolInputPayload(payload)
-}
-
 func extractCustomToolInputPayload(payload map[string]any) (string, error) {
 	for _, key := range []string{"patch", "input"} {
 		if value, ok := payload[key].(string); ok && strings.TrimSpace(value) != "" {
@@ -1084,61 +851,6 @@ func extractCustomToolInputPayload(payload map[string]any) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("custom tool input must include non-empty string field \"patch\" or \"input\"")
-}
-
-func extractLegacyCustomToolInput(input string, args json.RawMessage) (string, error) {
-	input = strings.TrimSpace(input)
-	if input != "" {
-		return input, nil
-	}
-	args = bytes.TrimSpace(args)
-	if len(args) == 0 || string(args) == "null" {
-		return "", fmt.Errorf(`anthropic response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
-	}
-	if payload, err := extractCustomToolInput(args); err == nil {
-		return payload, nil
-	}
-	var direct string
-	if err := json.Unmarshal(args, &direct); err == nil && strings.TrimSpace(direct) != "" {
-		return strings.TrimSpace(direct), nil
-	}
-	return "", fmt.Errorf(`anthropic response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
-}
-
-func parseLocalShellInput(action *boundaryLocalShellRun) (string, error) {
-	if action == nil {
-		return "", fmt.Errorf("local_shell_call must include action")
-	}
-	if strings.TrimSpace(action.Type) != "" && strings.TrimSpace(action.Type) != "exec" {
-		return "", fmt.Errorf(`local_shell_call action.type must be "exec"`)
-	}
-	command, err := extractShellCommand(action.Command)
-	if err != nil {
-		return "", err
-	}
-	payload := map[string]any{
-		"command": command,
-	}
-	if strings.TrimSpace(action.WorkingDirectory) != "" {
-		payload["workdir"] = strings.TrimSpace(action.WorkingDirectory)
-	}
-	if action.TimeoutMS > 0 {
-		payload["timeout_ms"] = action.TimeoutMS
-	}
-	return compactJSON(payload), nil
-}
-
-func extractShellCommand(command []string) (string, error) {
-	switch {
-	case len(command) == 0:
-		return "", fmt.Errorf("local_shell_call action.command must not be empty")
-	case len(command) == 1:
-		return strings.TrimSpace(command[0]), nil
-	case len(command) == 3 && (command[0] == "bash" || command[0] == "sh" || command[0] == "/bin/bash" || command[0] == "/bin/sh") && command[1] == "-lc":
-		return strings.TrimSpace(command[2]), nil
-	default:
-		return "", fmt.Errorf("local_shell_call action.command must be a single command string or a [bash, -lc, snippet] style exec")
-	}
 }
 
 func allowedToolDefinition(allowedTools []agent.ToolDefinition, name string) (agent.ToolDefinition, bool) {
@@ -1171,14 +883,6 @@ func normalizePromptCacheTTL(value string) (string, error) {
 	}
 }
 
-func parseFinishValue(content string) any {
-	var value any
-	if err := json.Unmarshal([]byte(content), &value); err == nil {
-		return value
-	}
-	return content
-}
-
 func unwrapCodeFence(content string) string {
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "```") {
@@ -1206,5 +910,19 @@ func parseModelAndReasoningLevel(model string) (string, string) {
 		return base, level
 	default:
 		return model, ""
+	}
+}
+
+func supportsAnthropicStructuredOutputs(model string) bool {
+	model = strings.TrimSpace(model)
+	switch {
+	case strings.HasPrefix(model, "claude-opus-4-6"),
+		strings.HasPrefix(model, "claude-sonnet-4-6"),
+		strings.HasPrefix(model, "claude-opus-4-5"),
+		strings.HasPrefix(model, "claude-sonnet-4-5"),
+		strings.HasPrefix(model, "claude-haiku-4-5"):
+		return true
+	default:
+		return false
 	}
 }

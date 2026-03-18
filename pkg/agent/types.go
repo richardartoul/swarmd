@@ -213,17 +213,11 @@ type Usage = toolscore.Usage
 type Decision struct {
 	Thought string
 	Usage   Usage
-	Shell   *ShellAction
 	Tool    *ToolAction
 	Finish  *FinishAction
 	// ReplayData carries opaque provider-specific metadata for the action
 	// represented by this decision so later requests can replay native context.
 	ReplayData string
-}
-
-// ShellAction asks the agent to run shell source in the sandbox.
-type ShellAction struct {
-	Source string
 }
 
 type ToolAction = toolscore.ToolAction

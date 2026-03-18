@@ -19,10 +19,10 @@ import (
 const (
 	// DefaultBaseURL is the default OpenAI API base URL.
 	DefaultBaseURL = "https://api.openai.com/v1"
-
-	// DefaultSystemPrompt is kept for backward compatibility.
-	DefaultSystemPrompt = agent.DefaultSystemPrompt
 )
+
+// DefaultSystemPrompt is kept for backward compatibility.
+var DefaultSystemPrompt = agent.DefaultSystemPrompt
 
 // Config configures a new OpenAI-backed driver.
 type Config struct {
@@ -140,34 +140,6 @@ type apiErrorResponse struct {
 	} `json:"error"`
 }
 
-type decisionResponse struct {
-	Type       string          `json:"type"`
-	Thought    string          `json:"thought"`
-	Shell      string          `json:"shell"`
-	Tool       string          `json:"tool"`
-	Name       string          `json:"name"`
-	Args       json.RawMessage `json:"args"`
-	Input      string          `json:"input"`
-	Result     json.RawMessage `json:"result"`
-	ResultJSON string          `json:"result_json"`
-}
-
-type boundaryToolCallResponse struct {
-	Type      string                 `json:"type"`
-	Name      string                 `json:"name"`
-	Arguments string                 `json:"arguments"`
-	Input     string                 `json:"input"`
-	CallID    string                 `json:"call_id"`
-	Action    *boundaryLocalShellRun `json:"action"`
-}
-
-type boundaryLocalShellRun struct {
-	Type             string   `json:"type"`
-	Command          []string `json:"command"`
-	WorkingDirectory string   `json:"working_directory"`
-	TimeoutMS        int      `json:"timeout_ms"`
-}
-
 type openAIFunctionCall struct {
 	Name      string
 	Arguments string
@@ -209,6 +181,9 @@ func New(cfg Config) (*Driver, error) {
 		baseURL = DefaultBaseURL
 	}
 	model, reasoningEffort := parseModelAndReasoningEffort(cfg.Model)
+	if !supportsResponsesStructuredTextFormat(model) {
+		return nil, fmt.Errorf("openai model %q must support structured outputs", model)
+	}
 	client := cfg.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 2 * time.Minute}
@@ -307,9 +282,7 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 
 func parseResponsesDecision(response responsesResponse, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	if refusal := extractResponsesRefusal(response.Output); refusal != "" {
-		return agent.Decision{
-			Finish: &agent.FinishAction{Value: refusal},
-		}, nil
+		return agent.Decision{}, fmt.Errorf("openai response refused request: %s", refusal)
 	}
 	thought := strings.TrimSpace(response.OutputText)
 	if thought == "" {
@@ -339,162 +312,18 @@ func parseResponsesDecision(response responsesResponse, allowedTools []agent.Too
 	if text == "" {
 		return agent.Decision{}, fmt.Errorf("openai responses output did not include text or tool calls")
 	}
-	return parseDecision(text, allowedTools, caps)
+	return parseStrictFinalDecision(text)
 }
 
-func parseDecision(content string, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	content = unwrapCodeFence(strings.TrimSpace(content))
-	if content == "" {
-		return agent.Decision{}, fmt.Errorf("openai response content was empty")
+func parseStrictFinalDecision(content string) (agent.Decision, error) {
+	thought, value, err := agent.ParseStrictFinalResponse(unwrapCodeFence(strings.TrimSpace(content)))
+	if err != nil {
+		return agent.Decision{}, err
 	}
-
-	if decision, ok, err := parseBoundaryToolDecision(content, allowedTools, caps); ok || err != nil {
-		return decision, err
-	}
-
-	if decision, ok, err := parseLegacyDecision(content, allowedTools); ok || err != nil {
-		return decision, err
-	}
-
-	value := parseFinishValue(content)
 	return agent.Decision{
-		Finish: &agent.FinishAction{Value: value},
+		Thought: thought,
+		Finish:  &agent.FinishAction{Value: value},
 	}, nil
-}
-
-func parseLegacyDecision(content string, allowedTools []agent.ToolDefinition) (agent.Decision, bool, error) {
-	var raw decisionResponse
-	decoder := json.NewDecoder(strings.NewReader(content))
-	if err := decoder.Decode(&raw); err != nil {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) == "" {
-		return agent.Decision{}, false, nil
-	}
-
-	decision := agent.Decision{
-		Thought: strings.TrimSpace(raw.Thought),
-	}
-
-	switch strings.TrimSpace(raw.Type) {
-	case "shell":
-		shell := strings.TrimSpace(raw.Shell)
-		if shell == "" {
-			return agent.Decision{}, true, fmt.Errorf(`openai response type "shell" must include non-empty "shell"`)
-		}
-		decision.Shell = &agent.ShellAction{Source: shell}
-	case "tool":
-		toolAction, err := parseLegacyToolAction(raw, allowedTools)
-		if err != nil {
-			return agent.Decision{}, true, err
-		}
-		decision.Tool = toolAction
-	case "finish":
-		value, err := parseLegacyFinishValue(raw)
-		if err != nil {
-			return agent.Decision{}, true, err
-		}
-		decision.Finish = &agent.FinishAction{Value: value}
-	default:
-		return agent.Decision{}, true, fmt.Errorf(`openai response must set "type" to "shell", "tool", or "finish"`)
-	}
-
-	return decision, true, nil
-}
-
-func parseLegacyToolAction(raw decisionResponse, allowedTools []agent.ToolDefinition) (*agent.ToolAction, error) {
-	name := strings.TrimSpace(raw.Name)
-	if name == "" {
-		name = strings.TrimSpace(raw.Tool)
-	}
-	if name == "" {
-		return nil, fmt.Errorf(`openai response type "tool" must include non-empty "name"`)
-	}
-	def, ok := allowedToolDefinition(allowedTools, name)
-	if !ok {
-		return nil, fmt.Errorf("openai response called unavailable tool %q", name)
-	}
-	if def.Kind == agent.ToolKindCustom {
-		input, err := extractLegacyCustomToolInput(strings.TrimSpace(raw.Input), raw.Args)
-		if err != nil {
-			return nil, err
-		}
-		return &agent.ToolAction{
-			Name:  def.Name,
-			Kind:  agent.ToolKindCustom,
-			Input: input,
-		}, nil
-	}
-	input := strings.TrimSpace(raw.Input)
-	if len(raw.Args) > 0 && string(raw.Args) != "null" {
-		input = strings.TrimSpace(string(raw.Args))
-	}
-	if input == "" {
-		input = "{}"
-	}
-	return &agent.ToolAction{
-		Name:  def.Name,
-		Kind:  agent.ToolKindFunction,
-		Input: input,
-	}, nil
-}
-
-func parseFinishValue(content string) any {
-	var value any
-	if err := json.Unmarshal([]byte(content), &value); err == nil {
-		return value
-	}
-	return content
-}
-
-func parseFinishResult(raw json.RawMessage) (any, error) {
-	raw = bytes.TrimSpace(raw)
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil
-	}
-
-	// Structured-output responses may encode the final value inside a string
-	// because strict response_format schemas require a concrete property type.
-	var encoded string
-	if err := json.Unmarshal(raw, &encoded); err == nil {
-		encoded = strings.TrimSpace(encoded)
-		if encoded == "" {
-			return "", nil
-		}
-		var value any
-		if err := json.Unmarshal([]byte(encoded), &value); err == nil {
-			return value, nil
-		}
-		return encoded, nil
-	}
-
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, fmt.Errorf("could not decode finish result: %w", err)
-	}
-	return value, nil
-}
-
-func parseFinishJSONString(encoded string) (any, error) {
-	encoded = strings.TrimSpace(encoded)
-	if encoded == "" {
-		return nil, fmt.Errorf(`openai response type "finish" must include non-empty "result_json"`)
-	}
-	var value any
-	if err := json.Unmarshal([]byte(encoded), &value); err == nil {
-		return value, nil
-	}
-	return encoded, nil
-}
-
-func parseLegacyFinishValue(raw decisionResponse) (any, error) {
-	if strings.TrimSpace(raw.ResultJSON) != "" {
-		return parseFinishJSONString(raw.ResultJSON)
-	}
-	if len(bytes.TrimSpace(raw.Result)) == 0 {
-		return nil, fmt.Errorf(`openai response type "finish" must include "result_json"`)
-	}
-	return parseFinishResult(raw.Result)
 }
 
 func parseToolCallDecision(call openAIFunctionCall, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -572,102 +401,6 @@ func parseResponsesToolCallDecision(item responsesOutputItem, allowedTools []age
 	}
 }
 
-func parseBoundaryToolDecision(content string, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, bool, error) {
-	var raw boundaryToolCallResponse
-	decoder := json.NewDecoder(strings.NewReader(content))
-	if err := decoder.Decode(&raw); err != nil {
-		return agent.Decision{}, false, nil
-	}
-	if strings.TrimSpace(raw.Type) == "" {
-		return agent.Decision{}, false, nil
-	}
-	switch strings.TrimSpace(raw.Type) {
-	case "function_call":
-		call := openAIFunctionCall{
-			Name:      strings.TrimSpace(raw.Name),
-			Arguments: strings.TrimSpace(raw.Arguments),
-		}
-		decision, err := parseToolCallDecision(call, allowedTools, caps)
-		return decision, true, err
-	case "custom_tool_call":
-		name := strings.TrimSpace(raw.Name)
-		if name == "" {
-			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "name"`)
-		}
-		adapter, ok := allowedOpenAIToolAdapter(allowedTools, caps, name)
-		if !ok {
-			return agent.Decision{}, true, fmt.Errorf("openai response called unavailable tool %q", name)
-		}
-		if adapter.Tool.Kind != agent.ToolKindCustom {
-			return agent.Decision{}, true, fmt.Errorf("openai response used custom_tool_call for non-custom tool %q", name)
-		}
-		input := strings.TrimSpace(raw.Input)
-		if input == "" {
-			return agent.Decision{}, true, fmt.Errorf(`custom_tool_call must include non-empty "input"`)
-		}
-		return agent.Decision{
-			Tool: &agent.ToolAction{
-				Name:  adapter.Tool.Name,
-				Kind:  agent.ToolKindCustom,
-				Input: input,
-			},
-		}, true, nil
-	case "local_shell_call":
-		if _, ok := allowedToolDefinition(allowedTools, agent.ToolNameRunShell); !ok {
-			return agent.Decision{}, true, fmt.Errorf("openai response called unavailable tool %q", agent.ToolNameRunShell)
-		}
-		input, err := parseLocalShellInput(raw.Action)
-		if err != nil {
-			return agent.Decision{}, true, err
-		}
-		return agent.Decision{
-			Tool: &agent.ToolAction{
-				Name:  agent.ToolNameRunShell,
-				Kind:  agent.ToolKindFunction,
-				Input: input,
-			},
-		}, true, nil
-	default:
-		return agent.Decision{}, false, nil
-	}
-}
-
-func parseLocalShellInput(action *boundaryLocalShellRun) (string, error) {
-	if action == nil {
-		return "", fmt.Errorf("local_shell_call must include action")
-	}
-	if strings.TrimSpace(action.Type) != "" && strings.TrimSpace(action.Type) != "exec" {
-		return "", fmt.Errorf("local_shell_call action.type must be \"exec\"")
-	}
-	command, err := extractShellCommand(action.Command)
-	if err != nil {
-		return "", err
-	}
-	payload := map[string]any{
-		"command": command,
-	}
-	if strings.TrimSpace(action.WorkingDirectory) != "" {
-		payload["workdir"] = strings.TrimSpace(action.WorkingDirectory)
-	}
-	if action.TimeoutMS > 0 {
-		payload["timeout_ms"] = action.TimeoutMS
-	}
-	return compactJSON(payload), nil
-}
-
-func extractShellCommand(command []string) (string, error) {
-	switch {
-	case len(command) == 0:
-		return "", fmt.Errorf("local_shell_call action.command must not be empty")
-	case len(command) == 1:
-		return strings.TrimSpace(command[0]), nil
-	case len(command) == 3 && (command[0] == "bash" || command[0] == "sh" || command[0] == "/bin/bash" || command[0] == "/bin/sh") && command[1] == "-lc":
-		return strings.TrimSpace(command[2]), nil
-	default:
-		return "", fmt.Errorf("local_shell_call action.command must be a single command string or a [bash, -lc, snippet] style exec")
-	}
-}
-
 func extractCustomToolInput(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -683,25 +416,6 @@ func extractCustomToolInput(raw string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("custom tool arguments must include non-empty string field \"patch\"")
-}
-
-func extractLegacyCustomToolInput(input string, args json.RawMessage) (string, error) {
-	input = strings.TrimSpace(input)
-	if input != "" {
-		return input, nil
-	}
-	args = bytes.TrimSpace(args)
-	if len(args) == 0 || string(args) == "null" {
-		return "", fmt.Errorf(`openai response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
-	}
-	if payload, err := extractCustomToolInput(string(args)); err == nil {
-		return payload, nil
-	}
-	var direct string
-	if err := json.Unmarshal(args, &direct); err == nil && strings.TrimSpace(direct) != "" {
-		return strings.TrimSpace(direct), nil
-	}
-	return "", fmt.Errorf(`openai response type "tool" must include non-empty "input" or wrapped "args" for custom tools`)
 }
 
 func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabilities) []responsesTool {
@@ -968,23 +682,11 @@ func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
 }
 
 func (d *Driver) responsesTextConfig(req agent.Request) *responsesTextConfig {
-	if !supportsResponsesStructuredTextFormat(d.model) {
-		return nil
-	}
-	if len(req.Tools) == 0 {
-		return &responsesTextConfig{
-			Format: responsesJSONSchemaFormat(
-				"agent_shell_or_finish",
-				"Return either a shell action or a terminal finish object.",
-				responsesShellOrFinishSchema(),
-			),
-		}
-	}
 	return &responsesTextConfig{
 		Format: responsesJSONSchemaFormat(
-			"agent_finish",
-			"Return the final finish object when no tool call is needed.",
-			responsesFinishSchema(),
+			"agent_final_response",
+			"Return the final response object when no tool call is needed.",
+			agent.StrictFinalResponseSchema(),
 		),
 	}
 }
@@ -996,56 +698,6 @@ func responsesJSONSchemaFormat(name, description string, schema map[string]any) 
 		Description: description,
 		Schema:      schema,
 		Strict:      true,
-	}
-}
-
-func responsesShellOrFinishSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"type": map[string]any{
-				"type": "string",
-				"enum": []string{"shell", "finish"},
-			},
-			"thought": map[string]any{
-				"type": "string",
-			},
-			"shell": map[string]any{
-				"type":        "string",
-				"description": `For type="shell", the shell command to execute. For type="finish", return an empty string.`,
-			},
-			"result_json": map[string]any{
-				"type":        "string",
-				"description": `For type="finish", serialize the final user-facing result as valid JSON inside this string. For type="shell", return an empty string.`,
-			},
-		},
-		"required":             []string{"type", "thought", "shell", "result_json"},
-		"additionalProperties": false,
-	}
-}
-
-func responsesFinishSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"type": map[string]any{
-				"type": "string",
-				"enum": []string{"finish"},
-			},
-			"thought": map[string]any{
-				"type": "string",
-			},
-			"shell": map[string]any{
-				"type":        "string",
-				"description": `Return an empty string when finishing without a shell action.`,
-			},
-			"result_json": map[string]any{
-				"type":        "string",
-				"description": "Serialize the final user-facing result as valid JSON inside this string.",
-			},
-		},
-		"required":             []string{"type", "thought", "shell", "result_json"},
-		"additionalProperties": false,
 	}
 }
 

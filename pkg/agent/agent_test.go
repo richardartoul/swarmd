@@ -3,6 +3,7 @@ package agent_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -769,7 +770,7 @@ func TestHandleTriggerCallsOnStep(t *testing.T) {
 		Root: t.TempDir(),
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
-				{Thought: "look around", Shell: &agent.ShellAction{Source: "pwd"}},
+				withThought(shell("pwd"), "look around"),
 				finish("done"),
 			},
 		},
@@ -1302,7 +1303,13 @@ func newAgent(t *testing.T, cfg agent.Config) *agent.Agent {
 }
 
 func shell(src string) agent.Decision {
-	return agent.Decision{Shell: &agent.ShellAction{Source: src}}
+	return agent.Decision{
+		Tool: &agent.ToolAction{
+			Name:  agent.ToolNameRunShell,
+			Kind:  agent.ToolKindFunction,
+			Input: mustJSON(map[string]any{"command": src}),
+		},
+	}
 }
 
 func finish(value any) agent.Decision {
@@ -1321,8 +1328,21 @@ func withCachedTokens(decision agent.Decision, cachedTokens int) agent.Decision 
 	return decision
 }
 
+func withThought(decision agent.Decision, thought string) agent.Decision {
+	decision.Thought = thought
+	return decision
+}
+
 func osWriteFile(path string, data []byte) error {
 	return os.WriteFile(path, data, 0o644)
+}
+
+func mustJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
 
 func resolveRoot(t *testing.T, path string) string {

@@ -30,7 +30,7 @@ func TestRuntimeManagerMaterializesMountedFilesInMemFS(t *testing.T) {
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "read mounted file", Shell: &agent.ShellAction{Source: "cat mounted/message.txt"}},
+					withThought(shell("cat mounted/message.txt"), "read mounted file"),
 					{Finish: &agent.FinishAction{Value: "mounted"}},
 				},
 			}, nil
@@ -88,9 +88,9 @@ func TestRuntimeManagerMemFSPersistsWarmStateAndResetsAfterRestart(t *testing.T)
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "write warm state", Shell: &agent.ShellAction{Source: "printf 'warm data\n' > note.txt"}},
+					withThought(shell("printf 'warm data\n' > note.txt"), "write warm state"),
 					{Finish: &agent.FinishAction{Value: "seeded"}},
-					{Thought: "read warm state", Shell: &agent.ShellAction{Source: "cat note.txt"}},
+					withThought(shell("cat note.txt"), "read warm state"),
 					{Finish: &agent.FinishAction{Value: "read"}},
 				},
 			}, nil
@@ -139,7 +139,7 @@ func TestRuntimeManagerMemFSPersistsWarmStateAndResetsAfterRestart(t *testing.T)
 		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 			return &scriptedDriver{
 				decisions: []agent.Decision{
-					{Thought: "check reset state", Shell: &agent.ShellAction{Source: "if test -f note.txt; then echo stale; else echo reset; fi"}},
+					withThought(shell("if test -f note.txt; then echo stale; else echo reset; fi"), "check reset state"),
 					{Finish: &agent.FinishAction{Value: "checked"}},
 				},
 			}, nil

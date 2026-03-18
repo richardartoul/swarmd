@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -69,6 +70,29 @@ func (d *scriptedDriver) Next(context.Context, agent.Request) (agent.Decision, e
 	decision := d.decisions[d.index]
 	d.index++
 	return decision, nil
+}
+
+func shell(command string) agent.Decision {
+	return agent.Decision{
+		Tool: &agent.ToolAction{
+			Name:  agent.ToolNameRunShell,
+			Kind:  agent.ToolKindFunction,
+			Input: mustJSON(map[string]any{"command": command}),
+		},
+	}
+}
+
+func withThought(decision agent.Decision, thought string) agent.Decision {
+	decision.Thought = thought
+	return decision
+}
+
+func mustJSON(value any) string {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(data)
 }
 
 func newServerStore(t *testing.T) *cpstore.Store {

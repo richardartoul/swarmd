@@ -294,13 +294,6 @@ func (m *agentTUIModel) handleDecision(msg tuiDecisionMsg) {
 			body:  msg.thought,
 		})
 	}
-	if msg.shell != "" {
-		m.appendEntry(transcriptEntry{
-			kind:  transcriptKindCommand,
-			title: fmt.Sprintf("step %d running", msg.step),
-			body:  msg.shell,
-		})
-	}
 	if msg.tool != "" {
 		m.appendEntry(transcriptEntry{
 			kind:  transcriptKindCommand,

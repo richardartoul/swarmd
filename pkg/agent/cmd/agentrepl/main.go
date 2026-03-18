@@ -268,10 +268,6 @@ func (d verboseDriver) Next(ctx context.Context, req agent.Request) (agent.Decis
 		fmt.Fprint(d.stdout, prefixLines(fmt.Sprintf("step %d thinking> ", req.Step), decision.Thought))
 		fmt.Fprintln(d.stdout)
 	}
-	if decision.Shell != nil {
-		fmt.Fprint(d.stdout, prefixLines(fmt.Sprintf("step %d running> ", req.Step), decision.Shell.Source))
-		fmt.Fprintln(d.stdout)
-	}
 	if decision.Tool != nil {
 		label := decision.Tool.Name
 		if label == "" {

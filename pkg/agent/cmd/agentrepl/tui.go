@@ -181,7 +181,6 @@ func waitForTUIEvent(events <-chan tea.Msg) tea.Cmd {
 type tuiDecisionMsg struct {
 	step    int
 	thought string
-	shell   string
 	tool    string
 	input   string
 }
@@ -215,9 +214,6 @@ func (d tuiDriver) Next(ctx context.Context, req agent.Request) (agent.Decision,
 		msg := tuiDecisionMsg{
 			step:    req.Step,
 			thought: decision.Thought,
-		}
-		if decision.Shell != nil {
-			msg.shell = decision.Shell.Source
 		}
 		if decision.Tool != nil {
 			msg.tool = strings.TrimSpace(decision.Tool.Name)

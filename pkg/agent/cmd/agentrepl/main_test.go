@@ -15,7 +15,7 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
-func TestVerboseDriverPrintsThoughtAndShell(t *testing.T) {
+func TestVerboseDriverPrintsThoughtAndRunShellToolDecision(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
@@ -23,7 +23,11 @@ func TestVerboseDriverPrintsThoughtAndShell(t *testing.T) {
 		next: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
 			return agent.Decision{
 				Thought: "inspect the directory",
-				Shell:   &agent.ShellAction{Source: "ls -la"},
+				Tool: &agent.ToolAction{
+					Name:  agent.ToolNameRunShell,
+					Kind:  agent.ToolKindFunction,
+					Input: `{"command":"ls -la"}`,
+				},
 			}, nil
 		}),
 		stdout: &stdout,
@@ -33,16 +37,19 @@ func TestVerboseDriverPrintsThoughtAndShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if decision.Shell == nil || decision.Shell.Source != "ls -la" {
-		t.Fatalf("decision.Shell = %#v, want ls -la", decision.Shell)
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameRunShell {
+		t.Fatalf("decision.Tool = %#v, want run_shell", decision.Tool)
 	}
 
 	got := stdout.String()
 	if !strings.Contains(got, "step 2 thinking> inspect the directory") {
 		t.Fatalf("stdout = %q, want thought line", got)
 	}
-	if !strings.Contains(got, "step 2 running> ls -la") {
-		t.Fatalf("stdout = %q, want running line", got)
+	if !strings.Contains(got, "step 2 tool> run_shell") {
+		t.Fatalf("stdout = %q, want run_shell tool line", got)
+	}
+	if !strings.Contains(got, `step 2 input> {"command":"ls -la"}`) {
+		t.Fatalf("stdout = %q, want run_shell input line", got)
 	}
 }
 
@@ -362,7 +369,8 @@ func TestAgentTUIModelHandlesSubmissionAndResultFlow(t *testing.T) {
 	model.handleDecision(tuiDecisionMsg{
 		step:    1,
 		thought: "list the directory contents",
-		shell:   "ls -la",
+		tool:    "run_shell",
+		input:   `{"command":"ls -la"}`,
 	})
 	model.handleLiveOutput(tuiLiveOutputMsg{
 		stream: transcriptKindStdout,
@@ -396,8 +404,9 @@ func TestAgentTUIModelHandlesSubmissionAndResultFlow(t *testing.T) {
 		"inspect the directory",
 		"step 1 thinking",
 		"list the directory contents",
-		"step 1 running",
-		"ls -la",
+		"step 1 tool",
+		"run_shell",
+		`{"command":"ls -la"}`,
 		"stdout",
 		"file.txt",
 		"assistant",
