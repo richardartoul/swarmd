@@ -50,7 +50,7 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	if !strings.Contains(got, `Use at most one tool call per response.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want tool-call limit guidance", got)
 	}
-	if !strings.Contains(got, `either emit exactly one tool call or emit no tool call and finish with a structured finish object.`) {
+	if !strings.Contains(got, `either emit exactly one tool call or emit no tool call and return the final response envelope.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want explicit single-tool-call guidance", got)
 	}
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response; do additional tool work in later turns.`) {
@@ -62,6 +62,12 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	if !strings.Contains(got, StrictFinalResponseShape()) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want structured finish guidance", got)
 	}
+	if !strings.Contains(got, `result_json should usually contain a JSON string, not an object.`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want string-first finish guidance", got)
+	}
+	if !strings.Contains(got, `Use an object or array inside result_json only when the user asked for structured or machine-readable output`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want structured-output exception guidance", got)
+	}
 }
 
 func TestFormatCurrentStateIncludesSingleToolCallReminder(t *testing.T) {
@@ -71,11 +77,14 @@ func TestFormatCurrentStateIncludesSingleToolCallReminder(t *testing.T) {
 		CWD:  "/workspace",
 		Step: 1,
 	})
-	if !strings.Contains(got, `Use exactly one tool call when more work is needed, or no tool call when you are ready to finish with a structured finish object.`) {
+	if !strings.Contains(got, `Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.`) {
 		t.Fatalf("formatCurrentState() = %q, want explicit single-tool-call reminder", got)
 	}
 	if !strings.Contains(got, StrictFinalResponseShape()) {
 		t.Fatalf("formatCurrentState() = %q, want structured finish reminder", got)
+	}
+	if !strings.Contains(got, `For normal answers, put the user-facing reply in result_json as a JSON string`) {
+		t.Fatalf("formatCurrentState() = %q, want string-first finish reminder", got)
 	}
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response.`) {
 		t.Fatalf("formatCurrentState() = %q, want no-multiple-tool-calls reminder", got)

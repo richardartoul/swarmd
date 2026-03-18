@@ -18,7 +18,7 @@ Use the structured tools provided by the runtime as the source of truth for what
 Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
-- When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
+- When tools are available, either emit exactly one tool call or emit no tool call and return the final response envelope.
 - When a tool is needed, use the runtime's native tool-calling interface instead of writing text JSON wrappers for actions.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
@@ -32,10 +32,12 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
-- When the task is complete, finish without another tool call by emitting JSON in the form {{strict_final_shape}}.
-- Keep "thought" concise and encode the final user-facing payload as valid JSON inside "result_json".
-- Example string finish: {{strict_final_string_example}}
-- Example structured finish: {{strict_final_object_example}}`
+- When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
+- Keep "thought" concise.
+- For ordinary answers, explanations, and conversational replies, result_json should usually contain a JSON string, not an object.
+- Use an object or array inside result_json only when the user asked for structured or machine-readable output, or when the runtime expects structured data.
+- Example ordinary answer: {{strict_final_string_example}}
+- Example structured result when explicitly needed: {{strict_final_object_example}}`
 
 const defaultSystemPromptWithNetworkTemplate = `You are a sandboxed local agent.
 
@@ -44,7 +46,7 @@ Use the structured tools provided by the runtime as the source of truth for what
 Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
-- When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
+- When tools are available, either emit exactly one tool call or emit no tool call and return the final response envelope.
 - When a tool is needed, use the runtime's native tool-calling interface instead of writing text JSON wrappers for actions.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
@@ -58,10 +60,12 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
-- When the task is complete, finish without another tool call by emitting JSON in the form {{strict_final_shape}}.
-- Keep "thought" concise and encode the final user-facing payload as valid JSON inside "result_json".
-- Example string finish: {{strict_final_string_example}}
-- Example structured finish: {{strict_final_object_example}}`
+- When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
+- Keep "thought" concise.
+- For ordinary answers, explanations, and conversational replies, result_json should usually contain a JSON string, not an object.
+- Use an object or array inside result_json only when the user asked for structured or machine-readable output, or when the runtime expects structured data.
+- Example ordinary answer: {{strict_final_string_example}}
+- Example structured result when explicitly needed: {{strict_final_object_example}}`
 
 var DefaultSystemPrompt = renderDefaultSystemPrompt(defaultSystemPromptTemplate)
 var defaultSystemPromptWithNetwork = renderDefaultSystemPrompt(defaultSystemPromptWithNetworkTemplate)
@@ -292,10 +296,10 @@ func formatCurrentStateForPromptWithContext(prompt string, req Request, requestC
 		b.WriteString(expanded)
 		b.WriteString("\n")
 	}
-	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish with a structured finish object.\n")
+	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.\n")
 	fmt.Fprintf(&b, "When finishing, return %s.\n", StrictFinalResponseShape())
-	fmt.Fprintf(&b, "For string results, use a JSON string inside result_json, like %s.\n", StrictFinalResponseExample("all work is complete", "done"))
-	fmt.Fprintf(&b, "For structured results, encode the object inside result_json, like %s.\n", StrictFinalResponseExample("return the structured result", map[string]any{"reply": "done"}))
+	fmt.Fprintf(&b, "For normal answers, put the user-facing reply in result_json as a JSON string, like %s.\n", StrictFinalResponseExample("all work is complete", "done"))
+	fmt.Fprintf(&b, "Use an object or array inside result_json only for explicitly structured output or runtime-required data, like %s.\n", StrictFinalResponseExample("return the structured result", map[string]any{"reply": "done"}))
 	b.WriteString("Never emit multiple tool calls in a single response.\n")
 	return b.String()
 }
