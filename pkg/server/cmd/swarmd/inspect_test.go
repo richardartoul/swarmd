@@ -70,6 +70,34 @@ tools:
 	}
 }
 
+func TestRunConfigValidateRejectsMissingSlackHistoryToolEnv(t *testing.T) {
+	configRoot := filepath.Join(t.TempDir(), "config")
+	writeCommandSpec(t, filepath.Join(configRoot, "namespaces", "default", "agents", "worker-a.yaml"), `
+version: 1
+model:
+  name: test-model
+prompt: hello
+network:
+  reachable_hosts:
+    - glob: "*"
+tools:
+  - slack_channel_history
+`)
+	t.Setenv("SLACK_USER_TOKEN", "")
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"config", "validate", "-config-root", configRoot}, commandIO{
+		stdout: &stdout,
+		stderr: &stdout,
+	})
+	if err == nil {
+		t.Fatal("run(config validate) error = nil, want missing tool env failure")
+	}
+	if !strings.Contains(err.Error(), "SLACK_USER_TOKEN") {
+		t.Fatalf("run(config validate) error = %v, want missing SLACK_USER_TOKEN", err)
+	}
+}
+
 func TestRunSyncPlanDoesNotMutateState(t *testing.T) {
 	t.Parallel()
 

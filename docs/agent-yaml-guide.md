@@ -213,18 +213,46 @@ The stock swarmd binary currently exposes these custom tools:
 | `server_log` | No | none | Writes a message to the server logs with namespace and agent context attached automatically. |
 | `slack_post` | Yes | `default_channel` | Posts a new Slack message or thread reply. |
 | `slack_replies` | Yes | `default_channel` | Reads replies from one Slack thread, optionally after a cursor timestamp. |
+| `slack_channel_history` | Yes | `default_channel` | Reads channel timeline messages newer than a timestamp without expanding thread replies automatically. |
 | `datadog_read` | Yes | none | Reads incidents, monitors, dashboards, metrics, log search results, log aggregates, and events through the server-owned Datadog client. |
 
 Tool notes:
 
 - `slack_post` requires a `text` argument and accepts optional `channel` and `thread_ts`
 - `slack_replies` requires a `thread_ts` argument and accepts optional `channel` and `after_ts`
+- `slack_channel_history` requires an `after_ts` argument and accepts optional `channel`, `before_ts`, and `max_messages`
 - if `channel` is omitted at call time, Slack tools fall back to `tools[].config.default_channel`
-- `slack_post`, `slack_replies`, and `datadog_read` all require `network.reachable_hosts`
+- `slack_channel_history` returns chronological timeline entries from oldest to newest, preserves message `type` and `subtype`, and exposes `truncated` plus `next_cursor` when `max_messages` stops pagination early
+- `slack_channel_history` is timeline-only; if a returned message has thread metadata and you need the replies, call `slack_replies` separately
+- Slack read tools require a token with the relevant `*:history` scopes plus access to the target conversation; a user token can read public channels and any private conversation the user is a member of
+- `slack_post`, `slack_replies`, `slack_channel_history`, and `datadog_read` all require `network.reachable_hosts`
 - `datadog_read` is a curated read-only tool, not a generic Datadog API proxy
 - `query_metrics`, `search_logs`, and `aggregate_logs` require a `query` argument
 - `search_logs` and `aggregate_logs` both accept optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
 - `aggregate_logs` also accepts optional `indexes`, `compute`, `group_by`, and `page_cursor` inputs for Datadog log analytics queries
+
+Example:
+
+```yaml
+version: 1
+model:
+  name: gpt-5
+prompt: |
+  Watch the release channel for new deployment messages and summarize anything that looks risky.
+network:
+  reachable_hosts:
+    - glob: slack.com
+tools:
+  - id: slack_channel_history
+    config:
+      default_channel: C12345678
+```
+
+Example tool call payload:
+
+```json
+{"after_ts":"1700.000001","max_messages":25}
+```
 
 Rules:
 
@@ -421,5 +449,5 @@ Some YAML features depend on environment variables provided to the server proces
 
 - built-in structured tools are always available unless gated by capabilities such as networking; use `tools` only to add custom structured tools compiled into your fork
 - when `network.reachable_hosts` is configured, the agent is told that `curl` and the HTTP tool surface can use the runtime-owned network dialer, limited to the configured hosts
-- `server_log`, `slack_post`, and `slack_replies` are normal structured tools; they appear in the model-facing tool surface rather than as shell commands
+- `server_log`, `slack_post`, `slack_replies`, and `slack_channel_history` are normal structured tools; they appear in the model-facing tool surface rather than as shell commands
 - during sync, schedules for an agent are deleted and recreated from YAML, so set `schedules[].id` explicitly if you rely on stable schedule IDs

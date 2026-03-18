@@ -87,6 +87,45 @@ func availableTUIActions(page tuiPage, item tuiItem) []string {
 	return labels
 }
 
+type tuiTriggerTarget struct {
+	NamespaceID string
+	AgentID     string
+	Label       string
+	ActionLabel string
+}
+
+func triggerTarget(page tuiPage, item tuiItem) (tuiTriggerTarget, bool) {
+	namespaceID := strings.TrimSpace(item.namespaceID)
+	agentID := strings.TrimSpace(item.agentID)
+	if namespaceID == "" || agentID == "" {
+		return tuiTriggerTarget{}, false
+	}
+	switch page.kind {
+	case tuiPageAgents:
+		if item.kind != tuiItemAgent {
+			return tuiTriggerTarget{}, false
+		}
+		return tuiTriggerTarget{
+			NamespaceID: namespaceID,
+			AgentID:     agentID,
+			Label:       namespaceID + "/" + agentID,
+			ActionLabel: "Trigger Agent",
+		}, true
+	case tuiPageRuns:
+		if item.kind != tuiItemRun {
+			return tuiTriggerTarget{}, false
+		}
+		return tuiTriggerTarget{
+			NamespaceID: namespaceID,
+			AgentID:     agentID,
+			Label:       namespaceID + "/" + agentID,
+			ActionLabel: "Trigger Run Manually",
+		}, true
+	default:
+		return tuiTriggerTarget{}, false
+	}
+}
+
 func linkedAgentID(item tuiItem) string {
 	if strings.TrimSpace(item.agentID) != "" {
 		return item.agentID

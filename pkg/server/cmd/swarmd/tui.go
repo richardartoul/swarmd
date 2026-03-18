@@ -28,7 +28,7 @@ func runTUICommand(ctx context.Context, args []string, streams commandIO) error 
 		return fmt.Errorf("tui requires an interactive terminal")
 	}
 
-	store, resolvedDBPath, err := openReadOnlyStore(ctx, fs, dbPath)
+	store, resolvedDBPath, err := openWritableStore(ctx, fs, dbPath)
 	if err != nil {
 		return err
 	}

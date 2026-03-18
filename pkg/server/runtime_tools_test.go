@@ -271,6 +271,7 @@ func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 				{ID: "server_log"},
 				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
 				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_channel_history", Config: map[string]any{"default_channel": "C12345678"}},
 			},
 		},
 	}); err != nil {
@@ -332,6 +333,9 @@ func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 	}
 	if !hasToolNamed(captured, "slack_replies") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")
+	}
+	if !hasToolNamed(captured, "slack_channel_history") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_channel_history")
 	}
 }
 
@@ -458,6 +462,154 @@ func TestRuntimeManagerExecutesDatadogReadTool(t *testing.T) {
 	}
 }
 
+func TestRuntimeManagerExecutesSlackChannelHistoryTool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-slack-history-tool")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{
+					Glob: "*",
+				}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID:     "slack_channel_history",
+				Config: map[string]any{"default_channel": "C12345678"},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/conversations.history" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/conversations.history")
+		}
+		if got := r.URL.Query().Get("channel"); got != "C12345678" {
+			t.Fatalf("query channel = %q, want %q", got, "C12345678")
+		}
+		if got := r.URL.Query().Get("oldest"); got != "1700.000001" {
+			t.Fatalf("query oldest = %q, want %q", got, "1700.000001")
+		}
+		if got := r.URL.Query().Get("inclusive"); got != "false" {
+			t.Fatalf("query inclusive = %q, want %q", got, "false")
+		}
+		if got := r.URL.Query().Get("limit"); got != "1" {
+			t.Fatalf("query limit = %q, want %q", got, "1")
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer slack-token" {
+			t.Fatalf("Authorization header = %q, want bearer token", got)
+		}
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"messages": []map[string]any{{
+				"ts":   "1700.000005",
+				"type": "message",
+				"text": "hello from history",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			if record.NamespaceID != namespace.ID || record.ID != "worker" {
+				return nil, fmt.Errorf("unexpected worker %s/%s", record.NamespaceID, record.ID)
+			}
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "slack_channel_history",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"after_ts":"1700.000001","max_messages":1}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "SLACK_USER_TOKEN":
+				return "slack-token"
+			case "SLACK_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-slack-history-tool",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		return requests == 1, nil
+	})
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	requestsMu.Lock()
+	got := requests
+	requestsMu.Unlock()
+	if got != 1 {
+		t.Fatalf("request count = %d, want 1", got)
+	}
+	_, step := latestRunStepByPrompt(t, ctx, s, namespace.ID, "start")
+	if step.ActionName != "slack_channel_history" {
+		t.Fatalf("step.ActionName = %q, want %q", step.ActionName, "slack_channel_history")
+	}
+	if !strings.Contains(step.ActionOutput, "hello from history") {
+		t.Fatalf("step.ActionOutput = %q, want Slack history response payload", step.ActionOutput)
+	}
+}
+
 func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 	t.Parallel()
 
@@ -500,6 +652,7 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 			Tools: []agent.ConfiguredTool{
 				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
 				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_channel_history", Config: map[string]any{"default_channel": "C12345678"}},
 			},
 		},
 	}); err != nil {
@@ -523,6 +676,11 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 						Name:  "slack_replies",
 						Kind:  agent.ToolKindFunction,
 						Input: `{"thread_ts":"1700.000001"}`,
+					}},
+					{Tool: &agent.ToolAction{
+						Name:  "slack_channel_history",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"after_ts":"1700.000001","max_messages":1}`,
 					}},
 					{Finish: &agent.FinishAction{Value: "ok"}},
 				},
@@ -590,6 +748,9 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 	}
 	if !hasToolNamed(captured, "slack_replies") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")
+	}
+	if !hasToolNamed(captured, "slack_channel_history") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_channel_history")
 	}
 }
 

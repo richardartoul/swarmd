@@ -10,12 +10,13 @@ import (
 	"github.com/richardartoul/swarmd/pkg/server"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
+	"github.com/richardartoul/swarmd/pkg/tools/slackcommon"
 )
 
 const (
 	toolName              = "slack_post"
-	SlackUserTokenEnvVar  = "SLACK_USER_TOKEN"
-	slackAPIBaseURLEnvVar = "SLACK_API_BASE_URL"
+	SlackUserTokenEnvVar  = slackcommon.SlackUserTokenEnvVar
+	slackAPIBaseURLEnvVar = slackcommon.SlackAPIBaseURLEnvVar
 )
 
 var registerOnce sync.Once

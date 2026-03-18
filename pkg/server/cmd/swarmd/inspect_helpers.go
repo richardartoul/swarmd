@@ -14,7 +14,7 @@ import (
 )
 
 func openReadOnlyStore(ctx context.Context, fs *flag.FlagSet, dbPath string) (*cpstore.Store, string, error) {
-	resolvedDBPath, err := resolveReadOnlyDBPath(fs, dbPath)
+	resolvedDBPath, err := resolveSQLiteDBPath(fs, dbPath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -25,7 +25,19 @@ func openReadOnlyStore(ctx context.Context, fs *flag.FlagSet, dbPath string) (*c
 	return store, resolvedDBPath, nil
 }
 
-func resolveReadOnlyDBPath(fs *flag.FlagSet, dbPath string) (string, error) {
+func openWritableStore(ctx context.Context, fs *flag.FlagSet, dbPath string) (*cpstore.Store, string, error) {
+	resolvedDBPath, err := resolveSQLiteDBPath(fs, dbPath)
+	if err != nil {
+		return nil, "", err
+	}
+	store, err := cpstore.Open(ctx, resolvedDBPath)
+	if err != nil {
+		return nil, "", err
+	}
+	return store, resolvedDBPath, nil
+}
+
+func resolveSQLiteDBPath(fs *flag.FlagSet, dbPath string) (string, error) {
 	dbPath = strings.TrimSpace(dbPath)
 	if dbPath == "" {
 		return "", fmt.Errorf("missing sqlite database path")

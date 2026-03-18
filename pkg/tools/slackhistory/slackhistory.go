@@ -1,4 +1,4 @@
-package slackreplies
+package slackhistory
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	toolName              = "slack_replies"
+	toolName              = "slack_channel_history"
 	SlackUserTokenEnvVar  = slackcommon.SlackUserTokenEnvVar
 	slackAPIBaseURLEnvVar = slackcommon.SlackAPIBaseURLEnvVar
 )
@@ -26,9 +26,10 @@ type config struct {
 }
 
 type input struct {
-	Channel  string `json:"channel"`
-	ThreadTS string `json:"thread_ts"`
-	AfterTS  string `json:"after_ts"`
+	Channel     string `json:"channel"`
+	AfterTS     string `json:"after_ts"`
+	BeforeTS    string `json:"before_ts"`
+	MaxMessages *int   `json:"max_messages"`
 }
 
 type plugin struct {
@@ -50,24 +51,27 @@ func Register() {
 }
 
 func (plugin) Definition() toolscore.ToolDefinition {
+	maxMessagesSchema := toolscommon.IntegerSchema("Optional maximum number of timeline messages to return before truncating the result.")
+	maxMessagesSchema["minimum"] = 1
 	return toolscore.ToolDefinition{
 		Name:        toolName,
-		Description: "List Slack replies for one thread through the tool-owned Slack client.",
+		Description: "List Slack channel timeline messages newer than a given timestamp through the tool-owned Slack client.",
 		Kind:        toolscore.ToolKindFunction,
 		Parameters: toolscommon.ObjectSchema(
 			map[string]any{
-				"channel":   toolscommon.StringSchema("Slack conversation ID. Optional when tools[].config.default_channel is set."),
-				"thread_ts": toolscommon.StringSchema("Slack thread ts to read replies from."),
-				"after_ts":  toolscommon.StringSchema("Optional cursor. Only replies newer than this ts are returned."),
+				"channel":      toolscommon.StringSchema("Slack conversation ID. Optional when tools[].config.default_channel is set."),
+				"after_ts":     toolscommon.StringSchema("Exclusive lower bound. Only messages newer than this Slack timestamp are returned."),
+				"before_ts":    toolscommon.StringSchema("Optional exclusive upper bound. Only messages older than this Slack timestamp are returned."),
+				"max_messages": maxMessagesSchema,
 			},
-			"thread_ts",
+			"after_ts",
 		),
-		RequiredArguments: []string{"thread_ts"},
+		RequiredArguments: []string{"after_ts"},
 		Examples: []string{
-			`{"channel":"C12345678","thread_ts":"1700.000001"}`,
-			`{"thread_ts":"1700.000001","after_ts":"1700.000002"}`,
+			`{"channel":"C12345678","after_ts":"1700.000001"}`,
+			`{"after_ts":"1700.000001","before_ts":"1700.000100","max_messages":25}`,
 		},
-		OutputNotes:     "Returns JSON with the channel, thread_ts, and reply messages newer than any provided cursor.",
+		OutputNotes:     "Returns chronological channel timeline messages with truncation metadata when max_messages stops pagination early.",
 		SafetyTags:      []string{"network", "read_only"},
 		RequiresNetwork: true,
 		ReadOnly:        true,
@@ -95,16 +99,31 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", toolName))
 		return nil
 	}
+
 	channel := toolscommon.FirstNonEmptyString(input.Channel, cfg.DefaultChannel)
 	if channel == "" {
 		toolCtx.SetPolicyError(step, fmt.Errorf(`channel must be provided via "channel" or tools[].config.default_channel`))
 		return nil
 	}
-	threadTS := strings.TrimSpace(input.ThreadTS)
-	if threadTS == "" {
-		toolCtx.SetPolicyError(step, fmt.Errorf("thread_ts must not be empty"))
+	afterTS := strings.TrimSpace(input.AfterTS)
+	if afterTS == "" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("after_ts must not be empty"))
 		return nil
 	}
+	beforeTS := strings.TrimSpace(input.BeforeTS)
+	if beforeTS != "" && slackcommon.CompareTimestamp(beforeTS, afterTS) <= 0 {
+		toolCtx.SetPolicyError(step, fmt.Errorf("before_ts must be greater than after_ts"))
+		return nil
+	}
+	maxMessages := 0
+	if input.MaxMessages != nil {
+		if *input.MaxMessages <= 0 {
+			toolCtx.SetPolicyError(step, fmt.Errorf("max_messages must be greater than 0"))
+			return nil
+		}
+		maxMessages = *input.MaxMessages
+	}
+
 	runtime, err := p.host.Runtime(toolCtx)
 	if err != nil {
 		return err
@@ -121,10 +140,12 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 		toolCtx.SetPolicyError(step, err)
 		return nil
 	}
-	result, err := client.ListThreadReplies(ctx, SlackListThreadRepliesParams{
-		Channel:  channel,
-		ThreadTS: threadTS,
-		AfterTS:  strings.TrimSpace(input.AfterTS),
+
+	result, err := client.ListChannelHistory(ctx, SlackListChannelHistoryParams{
+		Channel:     channel,
+		AfterTS:     afterTS,
+		BeforeTS:    beforeTS,
+		MaxMessages: maxMessages,
 	})
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
