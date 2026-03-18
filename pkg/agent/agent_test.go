@@ -632,8 +632,8 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if req.Step != 1 {
 		t.Fatalf("req.Step = %d, want 1", req.Step)
 	}
-	if len(req.Messages) != 5 {
-		t.Fatalf("len(req.Messages) = %d, want 5", len(req.Messages))
+	if len(req.Messages) != 4 {
+		t.Fatalf("len(req.Messages) = %d, want 4", len(req.Messages))
 	}
 	if req.Messages[0].Role != agent.MessageRoleSystem || req.Messages[0].Content != "test prompt" {
 		t.Fatalf("req.Messages[0] = %#v, want system prompt", req.Messages[0])
@@ -644,29 +644,29 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if !strings.Contains(req.Messages[1].Content, "run_shell") {
 		t.Fatalf("req.Messages[1] = %#v, want run_shell tool in availability message", req.Messages[1])
 	}
-	if req.Messages[2].Role != agent.MessageRoleSystem || !strings.Contains(req.Messages[2].Content, "Focused tool details for this turn:") {
-		t.Fatalf("req.Messages[2] = %#v, want focused tool detail system message", req.Messages[2])
+	if req.Messages[2].Role != agent.MessageRoleUser {
+		t.Fatalf("req.Messages[2].Role = %q, want %q", req.Messages[2].Role, agent.MessageRoleUser)
+	}
+	if !strings.Contains(req.Messages[2].Content, "Trigger context") {
+		t.Fatalf("trigger context = %q, want heading", req.Messages[2].Content)
+	}
+	if !strings.Contains(req.Messages[2].Content, `"source": "test"`) {
+		t.Fatalf("trigger context = %q, want rendered metadata", req.Messages[2].Content)
+	}
+	if !strings.Contains(req.Messages[2].Content, "User prompt:\nlist files") {
+		t.Fatalf("trigger context = %q, want rendered prompt", req.Messages[2].Content)
 	}
 	if req.Messages[3].Role != agent.MessageRoleUser {
 		t.Fatalf("req.Messages[3].Role = %q, want %q", req.Messages[3].Role, agent.MessageRoleUser)
 	}
-	if !strings.Contains(req.Messages[3].Content, "Trigger context") {
-		t.Fatalf("trigger context = %q, want heading", req.Messages[3].Content)
+	if !strings.Contains(req.Messages[3].Content, "Current step number: 1") {
+		t.Fatalf("current state = %q, want step number", req.Messages[3].Content)
 	}
-	if !strings.Contains(req.Messages[3].Content, `"source": "test"`) {
-		t.Fatalf("trigger context = %q, want rendered metadata", req.Messages[3].Content)
+	if !strings.Contains(req.Messages[3].Content, "No prior steps have been run for this trigger.") {
+		t.Fatalf("current state = %q, want empty-step note", req.Messages[3].Content)
 	}
-	if !strings.Contains(req.Messages[3].Content, "User prompt:\nlist files") {
-		t.Fatalf("trigger context = %q, want rendered prompt", req.Messages[3].Content)
-	}
-	if req.Messages[4].Role != agent.MessageRoleUser {
-		t.Fatalf("req.Messages[4].Role = %q, want %q", req.Messages[4].Role, agent.MessageRoleUser)
-	}
-	if !strings.Contains(req.Messages[4].Content, "Current step number: 1") {
-		t.Fatalf("current state = %q, want step number", req.Messages[4].Content)
-	}
-	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this trigger.") {
-		t.Fatalf("current state = %q, want empty-step note", req.Messages[4].Content)
+	if !strings.Contains(req.Messages[3].Content, "Focused tool details for this turn:") {
+		t.Fatalf("current state = %q, want focused tool detail guidance in current state", req.Messages[3].Content)
 	}
 }
 

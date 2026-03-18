@@ -20,6 +20,7 @@ Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
 - When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
+- When a tool is needed, use the runtime's native tool-calling interface instead of writing text JSON wrappers like {"type":"tool"}, {"type":"function_call"}, or {"type":"custom_tool_call"}.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
 - Do not invent tools or arguments that are not provided.
@@ -43,6 +44,7 @@ Rules:
 - Prefer structured tools over shell whenever a built-in tool fits the task.
 - Use at most one tool call per response.
 - When tools are available, either emit exactly one tool call or emit no tool call and finish with a structured finish object.
+- When a tool is needed, use the runtime's native tool-calling interface instead of writing text JSON wrappers like {"type":"tool"}, {"type":"function_call"}, or {"type":"custom_tool_call"}.
 - Never emit multiple tool calls in a single response; do additional tool work in later turns.
 - Use run_shell only as a fallback when no structured tool is a good fit.
 - Do not invent tools or arguments that are not provided.
@@ -190,12 +192,6 @@ func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps 
 			Content: availability,
 		})
 	}
-	if expanded := toolExpandedGuidancePrompt(prompt, req); expanded != "" {
-		req.Messages = append(req.Messages, Message{
-			Role:    MessageRoleSystem,
-			Content: expanded,
-		})
-	}
 	if history := a.historySnapshot(); history != "" {
 		req.Messages = append(req.Messages, Message{
 			Role:    MessageRoleSystem,
@@ -208,7 +204,7 @@ func (a *Agent) buildDriverRequest(trigger Trigger, step int, cwd string, steps 
 	})
 	req.Messages = append(req.Messages, Message{
 		Role:    MessageRoleUser,
-		Content: formatCurrentState(req),
+		Content: formatCurrentStateForPrompt(prompt, req),
 	})
 	return req, prompt, nil
 }
@@ -291,6 +287,10 @@ func formatTriggerContext(prompt string, trigger Trigger) string {
 }
 
 func formatCurrentState(req Request) string {
+	return formatCurrentStateForPrompt("", req)
+}
+
+func formatCurrentStateForPrompt(prompt string, req Request) string {
 	var b strings.Builder
 	b.WriteString("Current execution state\n")
 	if strings.TrimSpace(req.SandboxRoot) != "" {
@@ -309,7 +309,12 @@ func formatCurrentState(req Request) string {
 	if len(req.Steps) == 0 {
 		b.WriteString("No prior steps have been run for this trigger.\n")
 	}
-	b.WriteString("\nCompact tool metadata is always included. Focused details appear only for likely relevant or recently failed actions.\n")
+	b.WriteString("\nCompact tool metadata is always included elsewhere in this request. Focused details for likely relevant or recently failed actions appear below when helpful.\n")
+	if expanded := toolExpandedGuidancePrompt(prompt, req); expanded != "" {
+		b.WriteString("\n")
+		b.WriteString(expanded)
+		b.WriteString("\n")
+	}
 	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish with a structured finish object.\n")
 	b.WriteString("When finishing, prefer {\"type\":\"finish\",\"thought\":\"...\",\"result\":...} so the runtime can record the final thought separately.\n")
 	b.WriteString("Never emit multiple tool calls in a single response.\n")

@@ -56,6 +56,9 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response; do additional tool work in later turns.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want no-multiple-tool-calls guidance", got)
 	}
+	if !strings.Contains(got, `use the runtime's native tool-calling interface instead of writing text JSON wrappers`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want native tool-call guidance", got)
+	}
 	if !strings.Contains(got, `{"type":"finish","thought":"<brief reason for finishing>","result":<user-facing final value>}`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want structured finish guidance", got)
 	}
@@ -235,6 +238,62 @@ func TestToolExpandedGuidancePromptExpandsLastFailedTool(t *testing.T) {
 	}
 	if !strings.Contains(got, "Schema:") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want schema details", got)
+	}
+}
+
+func TestFormatCurrentStateForPromptIncludesFocusedToolGuidance(t *testing.T) {
+	t.Parallel()
+
+	got := formatCurrentStateForPrompt("patch the file carefully", Request{
+		CWD:  "/workspace",
+		Step: 1,
+		Tools: []ToolDefinition{
+			builtInToolDefinitions[ToolNameApplyPatch],
+			builtInToolDefinitions[ToolNameReadFile],
+		},
+	})
+	if !strings.Contains(got, "Focused tool details for this turn:") {
+		t.Fatalf("formatCurrentStateForPrompt() = %q, want focused tool detail heading", got)
+	}
+	if !strings.Contains(got, "- apply_patch") {
+		t.Fatalf("formatCurrentStateForPrompt() = %q, want apply_patch details", got)
+	}
+}
+
+func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *testing.T) {
+	t.Parallel()
+
+	a := &Agent{
+		sandboxRoot:  "/workspace",
+		systemPrompt: DefaultSystemPrompt,
+		toolDefinitions: []ToolDefinition{
+			builtInToolDefinitions[ToolNameApplyPatch],
+			builtInToolDefinitions[ToolNameReadFile],
+		},
+	}
+	req, _, err := a.buildDriverRequest(Trigger{
+		ID:      "trigger-1",
+		Kind:    "user",
+		Payload: "patch the file carefully",
+	}, 1, "/workspace", nil)
+	if err != nil {
+		t.Fatalf("buildDriverRequest() error = %v", err)
+	}
+
+	for idx, message := range req.Messages {
+		if message.Role == MessageRoleSystem && strings.Contains(message.Content, "Focused tool details for this turn:") {
+			t.Fatalf("req.Messages[%d] = %#v, want focused tool guidance outside system messages", idx, message)
+		}
+	}
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != MessageRoleUser {
+		t.Fatalf("last message role = %q, want user", last.Role)
+	}
+	if !strings.Contains(last.Content, "Focused tool details for this turn:") {
+		t.Fatalf("last message = %#v, want focused tool guidance in current-state message", last)
+	}
+	if !strings.Contains(last.Content, "- apply_patch") {
+		t.Fatalf("last message = %#v, want apply_patch details in current-state message", last)
 	}
 }
 
