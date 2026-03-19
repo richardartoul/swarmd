@@ -962,6 +962,50 @@ func TestHandleTriggerCarriesPriorStepsWithoutConversationReplayMessages(t *test
 	assertRunStartLines(t, second.Messages[3].Content)
 }
 
+func TestHandleTriggerKeepsRunStartTimeStableAcrossSteps(t *testing.T) {
+	t.Parallel()
+
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			shell("pwd"),
+			finish("done"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:         t.TempDir(),
+		Driver:       driver,
+		SystemPrompt: "test prompt",
+	})
+
+	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
+		ID:      "prompt-1",
+		Kind:    "repl.prompt",
+		Payload: "where am i",
+	}); err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+
+	firstCurrentState := driver.requests[0].Messages[len(driver.requests[0].Messages)-1].Content
+	secondCurrentState := driver.requests[1].Messages[len(driver.requests[1].Messages)-1].Content
+	assertRunStartLines(t, firstCurrentState)
+	assertRunStartLines(t, secondCurrentState)
+
+	firstRFC3339 := extractLineValue(t, firstCurrentState, "Current time at start of this run: ")
+	secondRFC3339 := extractLineValue(t, secondCurrentState, "Current time at start of this run: ")
+	if firstRFC3339 != secondRFC3339 {
+		t.Fatalf("RFC3339 run-start time changed across steps: first=%q second=%q", firstRFC3339, secondRFC3339)
+	}
+
+	firstUnix := extractLineValue(t, firstCurrentState, "Current Unix time at start of this run: ")
+	secondUnix := extractLineValue(t, secondCurrentState, "Current Unix time at start of this run: ")
+	if firstUnix != secondUnix {
+		t.Fatalf("Unix run-start time changed across steps: first=%q second=%q", firstUnix, secondUnix)
+	}
+}
+
 func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
 	t.Parallel()
 
