@@ -23,7 +23,7 @@ import (
 var (
 	apiKey               = flag.String("api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key (or OPENAI_API_KEY)")
 	baseURL              = flag.String("base-url", envOr("OPENAI_BASE_URL", agentopenai.DefaultBaseURL), "OpenAI API base URL (or OPENAI_BASE_URL)")
-	model                = flag.String("model", os.Getenv("OPENAI_MODEL"), "OpenAI model name (or OPENAI_MODEL). Suffixes like -xnone, -xlow, -xmedium, and -xhigh infer reasoning effort.")
+	model                = flag.String("model", os.Getenv("OPENAI_MODEL"), "OpenAI model name (or OPENAI_MODEL). Suffixes like -xnone, -xlow, -xmedium, and -xhigh infer reasoning effort. Supported reasoning models request reasoning summaries automatically.")
 	promptCacheKey       = flag.String("prompt-cache-key", "", "OpenAI prompt cache routing key. Empty lets agentrepl choose a default for the OpenAI API.")
 	promptCacheRetention = flag.String("prompt-cache-retention", "", "OpenAI prompt cache retention policy. Supported values are in_memory and 24h. Empty lets agentrepl choose a default for supported OpenAI models.")
 	rootDir              = flag.String("root", ".", "sandbox root directory, or logical root when -memfs is set")
@@ -37,7 +37,7 @@ var (
 	maxOutputBytes = flag.Int("max-output-bytes", agent.DefaultMaxOutputBytes, "maximum captured bytes per stream per step")
 
 	preserveState = flag.Bool("preserve-state", true, "preserve shell state between prompts")
-	verbose       = flag.Bool("verbose", true, "show per-step thought, chosen shell command, and step completion lines")
+	verbose       = flag.Bool("verbose", true, "show per-step thought or provider reasoning summary, chosen shell command, and step completion lines")
 )
 
 const (
@@ -58,18 +58,18 @@ func main() {
 }
 
 type runtimeOptions struct {
-	rootDir         string
-	useMemFS        bool
-	networkDialer   interp.NetworkDialer
-	systemPrompt    string
-	baseDriver      agent.Driver
-	modelName       string
-	singlePrompt    string
-	maxSteps        int
-	stepTimeout     time.Duration
-	maxOutputBytes  int
-	preserveState   bool
-	verbose         bool
+	rootDir        string
+	useMemFS       bool
+	networkDialer  interp.NetworkDialer
+	systemPrompt   string
+	baseDriver     agent.Driver
+	modelName      string
+	singlePrompt   string
+	maxSteps       int
+	stepTimeout    time.Duration
+	maxOutputBytes int
+	preserveState  bool
+	verbose        bool
 }
 
 func runAll() error {
@@ -131,18 +131,18 @@ func buildRuntimeOptions() (runtimeOptions, error) {
 	}
 
 	return runtimeOptions{
-		rootDir:         *rootDir,
-		useMemFS:        *useMemFS,
-		networkDialer:   networkDialer,
-		systemPrompt:    systemPrompt,
-		baseDriver:      openaiDriver,
-		modelName:       *model,
-		singlePrompt:    *prompt,
-		maxSteps:        *maxSteps,
-		stepTimeout:     *stepTimeout,
-		maxOutputBytes:  *maxOutputBytes,
-		preserveState:   *preserveState,
-		verbose:         *verbose,
+		rootDir:        *rootDir,
+		useMemFS:       *useMemFS,
+		networkDialer:  networkDialer,
+		systemPrompt:   systemPrompt,
+		baseDriver:     openaiDriver,
+		modelName:      *model,
+		singlePrompt:   *prompt,
+		maxSteps:       *maxSteps,
+		stepTimeout:    *stepTimeout,
+		maxOutputBytes: *maxOutputBytes,
+		preserveState:  *preserveState,
+		verbose:        *verbose,
 	}, nil
 }
 

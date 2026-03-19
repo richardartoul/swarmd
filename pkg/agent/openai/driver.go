@@ -62,7 +62,8 @@ type responsesRequest struct {
 }
 
 type responsesReasoning struct {
-	Effort string `json:"effort,omitempty"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type responsesTextConfig struct {
@@ -125,6 +126,7 @@ type responsesOutputItem struct {
 	Input     string                   `json:"input"`
 	Role      string                   `json:"role"`
 	Content   []responsesOutputContent `json:"content"`
+	Summary   []responsesOutputContent `json:"summary"`
 }
 
 type responsesOutputContent struct {
@@ -223,8 +225,8 @@ func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapa
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: responsesPromptCacheRetention(d.promptCacheRetention),
 	}
-	if d.reasoningEffort != "" {
-		requestBody.Reasoning = &responsesReasoning{Effort: d.reasoningEffort}
+	if reasoning := responsesReasoningConfig(d.model, d.reasoningEffort); reasoning != nil {
+		requestBody.Reasoning = reasoning
 	}
 	if len(req.Tools) > 0 {
 		requestBody.Tools = buildResponsesTools(req.Tools, caps)
@@ -284,9 +286,9 @@ func parseResponsesDecision(response responsesResponse, allowedTools []agent.Too
 	if refusal := extractResponsesRefusal(response.Output); refusal != "" {
 		return agent.Decision{}, fmt.Errorf("openai response refused request: %s", refusal)
 	}
-	thought := strings.TrimSpace(response.OutputText)
-	if thought == "" {
-		thought = strings.TrimSpace(extractResponsesOutputText(response.Output))
+	finalText := strings.TrimSpace(response.OutputText)
+	if finalText == "" {
+		finalText = strings.TrimSpace(extractResponsesOutputText(response.Output))
 	}
 	var toolItems []responsesOutputItem
 	for _, item := range response.Output {
@@ -303,12 +305,16 @@ func parseResponsesDecision(response responsesResponse, allowedTools []agent.Too
 		if err != nil {
 			return agent.Decision{}, err
 		}
+		thought := extractResponsesToolThought(response.Output)
+		if thought == "" {
+			thought = finalText
+		}
 		if thought != "" {
 			decision.Thought = thought
 		}
 		return decision, nil
 	}
-	text := thought
+	text := finalText
 	if text == "" {
 		return agent.Decision{}, fmt.Errorf("openai responses output did not include text or tool calls")
 	}
@@ -725,6 +731,19 @@ func supportsResponsesStructuredTextFormat(model string) bool {
 	}
 }
 
+func supportsResponsesReasoningSummary(model string) bool {
+	model = strings.TrimSpace(model)
+	switch {
+	case strings.HasPrefix(model, "gpt-5"),
+		strings.HasPrefix(model, "o1"),
+		strings.HasPrefix(model, "o3"),
+		strings.HasPrefix(model, "o4"):
+		return true
+	default:
+		return false
+	}
+}
+
 func openAIToolDescription(tool agent.ToolDefinition) string {
 	sections := make([]string, 0, 3)
 	if description := strings.TrimSpace(tool.Description); description != "" {
@@ -750,6 +769,20 @@ func responsesPromptCacheRetention(value string) string {
 	default:
 		return strings.TrimSpace(value)
 	}
+}
+
+func responsesReasoningConfig(model, effort string) *responsesReasoning {
+	config := &responsesReasoning{}
+	if strings.TrimSpace(effort) != "" {
+		config.Effort = strings.TrimSpace(effort)
+	}
+	if supportsResponsesReasoningSummary(model) {
+		config.Summary = "auto"
+	}
+	if config.Effort == "" && config.Summary == "" {
+		return nil
+	}
+	return config
 }
 
 func compactJSON(value any) string {
@@ -780,6 +813,63 @@ func extractResponsesOutputText(items []responsesOutputItem) string {
 				b.WriteString(content.Text)
 			}
 		}
+	}
+	return b.String()
+}
+
+func extractResponsesToolThought(items []responsesOutputItem) string {
+	var b strings.Builder
+	appendText := func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(text)
+	}
+	for _, item := range items {
+		switch item.Type {
+		case "function_call", "custom_tool_call":
+			return b.String()
+		case "reasoning":
+			appendText(extractResponsesReasoningSummaryText(item))
+		case "message":
+			appendText(extractResponsesMessageText(item))
+		}
+	}
+	return b.String()
+}
+
+func extractResponsesReasoningSummaryText(item responsesOutputItem) string {
+	if text := extractResponsesContentText(item.Summary, "summary_text", "text"); text != "" {
+		return text
+	}
+	return extractResponsesContentText(item.Content, "reasoning_text", "text")
+}
+
+func extractResponsesMessageText(item responsesOutputItem) string {
+	return extractResponsesContentText(item.Content, "output_text", "text")
+}
+
+func extractResponsesContentText(content []responsesOutputContent, allowedTypes ...string) string {
+	if len(content) == 0 {
+		return ""
+	}
+	allowed := make(map[string]struct{}, len(allowedTypes))
+	for _, value := range allowedTypes {
+		allowed[value] = struct{}{}
+	}
+	var b strings.Builder
+	for _, block := range content {
+		if _, ok := allowed[block.Type]; !ok || strings.TrimSpace(block.Text) == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(block.Text)
 	}
 	return b.String()
 }

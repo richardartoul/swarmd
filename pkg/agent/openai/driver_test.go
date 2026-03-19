@@ -115,8 +115,14 @@ func TestDriverNextParsesStrictFinalDecision(t *testing.T) {
 	if got.Model != "gpt-5.4" {
 		t.Fatalf("request model = %q, want %q", got.Model, "gpt-5.4")
 	}
-	if got.Reasoning != nil {
-		t.Fatalf("request reasoning = %#v, want nil", got.Reasoning)
+	if got.Reasoning == nil {
+		t.Fatal("request reasoning = nil, want summary config")
+	}
+	if got.Reasoning.Effort != "" {
+		t.Fatalf("request reasoning effort = %q, want empty by default", got.Reasoning.Effort)
+	}
+	if got.Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", got.Reasoning.Summary, "auto")
 	}
 	if got.ToolChoice != "" {
 		t.Fatalf("request tool_choice = %q, want empty without tools", got.ToolChoice)
@@ -174,6 +180,9 @@ func TestDriverNextSendsReasoningEffortFromModelSuffix(t *testing.T) {
 	if snapshot[0].Reasoning.Effort != "none" {
 		t.Fatalf("request reasoning effort = %q, want %q", snapshot[0].Reasoning.Effort, "none")
 	}
+	if snapshot[0].Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", snapshot[0].Reasoning.Summary, "auto")
+	}
 }
 
 func TestDriverNextCapturesCachedTokens(t *testing.T) {
@@ -225,6 +234,12 @@ func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *
 	if !request.Text.Format.Strict {
 		t.Fatal("request text.format.strict = false, want true")
 	}
+	if request.Reasoning == nil {
+		t.Fatal("request reasoning = nil, want summary config")
+	}
+	if request.Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", request.Reasoning.Summary, "auto")
+	}
 	properties, ok := request.Text.Format.Schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("request text.format.schema.properties = %#v, want object", request.Text.Format.Schema["properties"])
@@ -249,6 +264,23 @@ func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *
 	}
 	if resultSchema["type"] != "string" {
 		t.Fatalf("request text.format.schema.properties[result_json][type] = %#v, want %q", resultSchema["type"], "string")
+	}
+}
+
+func TestBuildResponsesRequestLeavesReasoningNilForUnsupportedSummaryModel(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-4.1",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "list the current directory"},
+		},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	if request.Reasoning != nil {
+		t.Fatalf("request reasoning = %#v, want nil for unsupported summary model", request.Reasoning)
 	}
 }
 
@@ -282,6 +314,12 @@ func TestBuildResponsesRequestAddsStructuredTextFormatWhenToolsAvailable(t *test
 	}
 	if len(required) != 2 || required[0] != "thought" || required[1] != "result_json" {
 		t.Fatalf("request text.format schema required = %#v, want [thought result_json]", required)
+	}
+	if request.Reasoning == nil {
+		t.Fatal("request reasoning = nil, want summary config")
+	}
+	if request.Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", request.Reasoning.Summary, "auto")
 	}
 	properties, ok := request.Text.Format.Schema["properties"].(map[string]any)
 	if !ok {
@@ -718,8 +756,11 @@ func TestDriverNextSendsToolsAndParsesToolCalls(t *testing.T) {
 	if *snapshot[0].ParallelToolCalls {
 		t.Fatal("request parallel_tool_calls = true, want false")
 	}
-	if snapshot[0].Reasoning != nil {
-		t.Fatalf("request reasoning = %#v, want nil", snapshot[0].Reasoning)
+	if snapshot[0].Reasoning == nil {
+		t.Fatal("request reasoning = nil, want summary config")
+	}
+	if snapshot[0].Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", snapshot[0].Reasoning.Summary, "auto")
 	}
 	if len(snapshot[0].Tools) != 2 {
 		t.Fatalf("len(request tools) = %d, want 2", len(snapshot[0].Tools))
@@ -760,6 +801,81 @@ func TestParseResponsesDecisionPreservesAssistantTextForToolCalls(t *testing.T) 
 	}
 	if decision.Thought != "inspect the config before reading it" {
 		t.Fatalf("decision.Thought = %q, want assistant text thought", decision.Thought)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+}
+
+func TestParseResponsesDecisionPreservesReasoningSummaryForToolCalls(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseResponsesDecision(responsesResponse{
+		Output: []responsesOutputItem{
+			{
+				Type: "reasoning",
+				Summary: []responsesOutputContent{{
+					Type: "summary_text",
+					Text: "inspect the config before reading it",
+				}},
+			},
+			{
+				Type:      "function_call",
+				CallID:    "call_1",
+				Name:      agent.ToolNameReadFile,
+				Arguments: `{"file_path":"/tmp/demo.txt"}`,
+			},
+		},
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}}, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseResponsesDecision() error = %v", err)
+	}
+	if decision.Thought != "inspect the config before reading it" {
+		t.Fatalf("decision.Thought = %q, want reasoning summary", decision.Thought)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+}
+
+func TestParseResponsesDecisionMergesReasoningSummaryAndAssistantTextForToolCalls(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseResponsesDecision(responsesResponse{
+		Output: []responsesOutputItem{
+			{
+				Type: "reasoning",
+				Summary: []responsesOutputContent{{
+					Type: "summary_text",
+					Text: "inspect the config before reading it",
+				}},
+			},
+			{
+				Type: "message",
+				Content: []responsesOutputContent{{
+					Type: "output_text",
+					Text: "read the config file next",
+				}},
+			},
+			{
+				Type:      "function_call",
+				CallID:    "call_1",
+				Name:      agent.ToolNameReadFile,
+				Arguments: `{"file_path":"/tmp/demo.txt"}`,
+			},
+		},
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}}, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseResponsesDecision() error = %v", err)
+	}
+	if got := decision.Thought; got != "inspect the config before reading it\nread the config file next" {
+		t.Fatalf("decision.Thought = %q, want merged reasoning summary and assistant text", got)
 	}
 	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
 		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
@@ -831,6 +947,9 @@ func TestDriverNextSendsResponsesReasoningObjectForToolRequests(t *testing.T) {
 	}
 	if snapshot[0].Reasoning.Effort != "high" {
 		t.Fatalf("request reasoning effort = %q, want %q", snapshot[0].Reasoning.Effort, "high")
+	}
+	if snapshot[0].Reasoning.Summary != "auto" {
+		t.Fatalf("request reasoning summary = %q, want %q", snapshot[0].Reasoning.Summary, "auto")
 	}
 }
 
@@ -944,6 +1063,40 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	}
 	if got := decision.Thought; got != "all work is complete" {
 		t.Fatalf("decision.Thought = %q, want %q", got, "all work is complete")
+	}
+	if got := decision.Finish.Value; got != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
+func TestDriverNextAcceptsStructuredResponsesFinishWithoutThought(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
+		{OutputText: `{"result_json":"\"done\""}`},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:        agent.ToolNameReadFile,
+			Description: "Reads a file.",
+			Kind:        agent.ToolKindFunction,
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	if got := decision.Thought; got != "" {
+		t.Fatalf("decision.Thought = %q, want empty thought", got)
 	}
 	if got := decision.Finish.Value; got != "done" {
 		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")

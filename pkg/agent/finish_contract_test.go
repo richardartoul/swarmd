@@ -47,13 +47,42 @@ func TestParseStrictFinalResponseDecodesPayloads(t *testing.T) {
 			t.Fatalf("value[count] = %#v, want %v", payload["count"], 2)
 		}
 	})
+
+	t.Run("empty thought", func(t *testing.T) {
+		t.Parallel()
+
+		thought, value, err := ParseStrictFinalResponse(`{"thought":"","result_json":"\"done\""}`)
+		if err != nil {
+			t.Fatalf("ParseStrictFinalResponse() error = %v", err)
+		}
+		if thought != "" {
+			t.Fatalf("thought = %q, want empty thought", thought)
+		}
+		if value != "done" {
+			t.Fatalf("value = %#v, want %q", value, "done")
+		}
+	})
+
+	t.Run("missing thought", func(t *testing.T) {
+		t.Parallel()
+
+		thought, value, err := ParseStrictFinalResponse(`{"result_json":"\"done\""}`)
+		if err != nil {
+			t.Fatalf("ParseStrictFinalResponse() error = %v", err)
+		}
+		if thought != "" {
+			t.Fatalf("thought = %q, want empty thought", thought)
+		}
+		if value != "done" {
+			t.Fatalf("value = %#v, want %q", value, "done")
+		}
+	})
 }
 
 func TestParseStrictFinalResponseRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
 	for name, content := range map[string]string{
-		"empty thought":       `{"thought":"","result_json":"\"done\""}`,
 		"empty result_json":   `{"thought":"done","result_json":""}`,
 		"invalid result_json": `{"thought":"done","result_json":"not-json"}`,
 		"extra field":         `{"thought":"done","result_json":"\"ok\"","extra":true}`,
@@ -79,6 +108,11 @@ func TestStrictFinalResponseSchema(t *testing.T) {
 	}
 	if _, ok := properties["thought"]; !ok {
 		t.Fatalf("schema.properties = %#v, want thought property", properties)
+	}
+	if thoughtSchema, ok := properties["thought"].(map[string]any); !ok {
+		t.Fatalf("schema.properties[thought] = %#v, want object", properties["thought"])
+	} else if !strings.Contains(thoughtSchema["description"].(string), "empty string") {
+		t.Fatalf("schema.properties[thought].description = %#v, want empty-string guidance", thoughtSchema["description"])
 	}
 	if resultJSON, ok := properties["result_json"].(map[string]any); !ok {
 		t.Fatalf("schema.properties[result_json] = %#v, want object", properties["result_json"])

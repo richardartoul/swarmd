@@ -34,7 +34,8 @@ Rules:
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
 - When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
-- Keep "thought" concise.
+- If you include "thought", keep it concise.
+- In the final response envelope, "thought" is optional metadata. Use an empty string when you have nothing useful to add.
 - For ordinary answers, explanations, and conversational replies, result_json should usually contain a JSON string, not an object.
 - Use an object or array inside result_json only when the user asked for structured or machine-readable output, or when the runtime expects structured data.
 - Example ordinary answer: {{strict_final_string_example}}
@@ -62,7 +63,8 @@ Rules:
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
 - When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
-- Keep "thought" concise.
+- If you include "thought", keep it concise.
+- In the final response envelope, "thought" is optional metadata. Use an empty string when you have nothing useful to add.
 - For ordinary answers, explanations, and conversational replies, result_json should usually contain a JSON string, not an object.
 - Use an object or array inside result_json only when the user asked for structured or machine-readable output, or when the runtime expects structured data.
 - Example ordinary answer: {{strict_final_string_example}}
@@ -313,6 +315,7 @@ func formatCurrentStateForPromptWithContext(prompt string, req Request, requestC
 	}
 	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.\n")
 	fmt.Fprintf(&b, "When finishing, return %s.\n", StrictFinalResponseShape())
+	b.WriteString("A final thought is optional metadata; use an empty string when it adds no value.\n")
 	fmt.Fprintf(&b, "For normal answers, put the user-facing reply in result_json as a JSON string, like %s.\n", StrictFinalResponseExample("all work is complete", "done"))
 	fmt.Fprintf(&b, "Use an object or array inside result_json only for explicitly structured output or runtime-required data, like %s.\n", StrictFinalResponseExample("return the structured result", map[string]any{"reply": "done"}))
 	b.WriteString("Never emit multiple tool calls in a single response.\n")

@@ -54,6 +54,8 @@ See [Agent YAML](#agent-yaml) for the short version and [docs/agent-yaml-guide.m
 
 The stock `swarmd` binary supports both OpenAI and Anthropic worker drivers. The bundled example configs still default to OpenAI, so the commands below use `OPENAI_API_KEY`. Anthropic-backed configs should set `model.provider: anthropic` and provide `ANTHROPIC_API_KEY`.
 
+When provider-native reasoning is available, the REPL/TUI surfaces it as per-step thinking before tool calls. OpenAI reasoning summaries are requested automatically on supported reasoning models, while Anthropic summarized thinking appears when the API returns visible `thinking` blocks. Final-response `thought` metadata is best-effort and no longer required for a successful finish.
+
 ### Install The Binary
 
 If you want a local config root to start from, install `swarmd` directly and let `swarmd init` create the default directory structure plus a sample heartbeat agent:

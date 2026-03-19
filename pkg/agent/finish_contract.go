@@ -20,7 +20,8 @@ func StrictFinalResponseSchema() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"thought": map[string]any{
-				"type": "string",
+				"type":        "string",
+				"description": "Brief completion reason metadata. Use an empty string when no thought is needed.",
 			},
 			"result_json": map[string]any{
 				"type":        "string",
@@ -34,7 +35,7 @@ func StrictFinalResponseSchema() map[string]any {
 
 // StrictFinalResponseShape returns the canonical prompt-facing JSON shape.
 func StrictFinalResponseShape() string {
-	return `{"thought":"<brief completion reason>","result_json":"<valid JSON string>"}`
+	return `{"thought":"<optional brief completion reason, or empty string>","result_json":"<valid JSON string>"}`
 }
 
 // StrictFinalResponseExample returns one concrete prompt example.
@@ -51,7 +52,7 @@ func StrictFinalResponseExample(thought string, result any) string {
 }
 
 // ParseStrictFinalResponse decodes one strict final response envelope and
-// returns the finish thought plus the decoded payload value.
+// returns the optional finish thought plus the decoded payload value.
 func ParseStrictFinalResponse(content string) (string, any, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -73,9 +74,6 @@ func ParseStrictFinalResponse(content string) (string, any, error) {
 	}
 
 	thought := strings.TrimSpace(envelope.Thought)
-	if thought == "" {
-		return "", nil, fmt.Errorf(`strict final response must include non-empty "thought"`)
-	}
 	encoded := strings.TrimSpace(envelope.ResultJSON)
 	if encoded == "" {
 		return "", nil, fmt.Errorf(`strict final response must include non-empty "result_json"`)

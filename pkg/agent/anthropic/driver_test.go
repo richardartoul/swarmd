@@ -841,6 +841,74 @@ func TestParseMessageDecisionPreservesAssistantTextForToolUse(t *testing.T) {
 	}
 }
 
+func TestParseMessageDecisionPreservesThinkingForToolUse(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseMessageDecision(messagesResponse{
+		Content: []anthropicContentBlock{
+			{
+				Type:     "thinking",
+				Thinking: "inspect the config before reading it",
+			},
+			{
+				Type:  "tool_use",
+				ID:    "toolu_1",
+				Name:  agent.ToolNameReadFile,
+				Input: json.RawMessage(`{"file_path":"/tmp/demo.txt"}`),
+			},
+		},
+		StopReason: "tool_use",
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseMessageDecision() error = %v", err)
+	}
+	if decision.Thought != "inspect the config before reading it" {
+		t.Fatalf("decision.Thought = %q, want summarized thinking", decision.Thought)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+}
+
+func TestParseMessageDecisionMergesThinkingAndTextForToolUse(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseMessageDecision(messagesResponse{
+		Content: []anthropicContentBlock{
+			{
+				Type:     "thinking",
+				Thinking: "inspect the config before reading it",
+			},
+			{
+				Type: "text",
+				Text: "read the config file next",
+			},
+			{
+				Type:  "tool_use",
+				ID:    "toolu_1",
+				Name:  agent.ToolNameReadFile,
+				Input: json.RawMessage(`{"file_path":"/tmp/demo.txt"}`),
+			},
+		},
+		StopReason: "tool_use",
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}})
+	if err != nil {
+		t.Fatalf("parseMessageDecision() error = %v", err)
+	}
+	if got := decision.Thought; got != "inspect the config before reading it\nread the config file next" {
+		t.Fatalf("decision.Thought = %q, want merged thinking and text", got)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+}
+
 func TestParseMessageDecisionCapturesReplayPreambleForToolUse(t *testing.T) {
 	t.Parallel()
 
@@ -1069,6 +1137,40 @@ func TestDriverNextParsesStructuredFinishThought(t *testing.T) {
 	}
 	if got := decision.Thought; got != "all work is complete" {
 		t.Fatalf("decision.Thought = %q, want %q", got, "all work is complete")
+	}
+	if got := decision.Finish.Value; got != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
+func TestDriverNextAcceptsStructuredFinishWithoutThought(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: `{"result_json":"\"done\""}`,
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	if got := decision.Thought; got != "" {
+		t.Fatalf("decision.Thought = %q, want empty thought", got)
 	}
 	if got := decision.Finish.Value; got != "done" {
 		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")

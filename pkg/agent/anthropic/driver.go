@@ -537,6 +537,7 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 
 func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
 	text := extractAnthropicText(response.Content)
+	toolThought := extractAnthropicToolThought(response.Content)
 	var toolUses []anthropicContentBlock
 	for _, block := range response.Content {
 		if block.Type == "tool_use" {
@@ -552,8 +553,8 @@ func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDe
 			return agent.Decision{}, err
 		}
 		decision.ReplayData = extractAnthropicReplayPreamble(response.Content)
-		if text != "" {
-			decision.Thought = text
+		if toolThought != "" {
+			decision.Thought = toolThought
 		}
 		return decision, nil
 	}
@@ -795,6 +796,32 @@ func extractAnthropicText(blocks []anthropicContentBlock) string {
 			b.WriteString("\n")
 		}
 		b.WriteString(block.Text)
+	}
+	return b.String()
+}
+
+func extractAnthropicToolThought(blocks []anthropicContentBlock) string {
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type == "tool_use" {
+			break
+		}
+		var content string
+		switch block.Type {
+		case "thinking":
+			content = strings.TrimSpace(block.Thinking)
+		case "text":
+			content = strings.TrimSpace(block.Text)
+		default:
+			continue
+		}
+		if content == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(content)
 	}
 	return b.String()
 }
