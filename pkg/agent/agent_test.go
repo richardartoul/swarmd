@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,39 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 )
+
+func assertRunStartLines(t *testing.T, content string) {
+	t.Helper()
+
+	rawTime := extractLineValue(t, content, "Current time at start of this run: ")
+	rawUnix := extractLineValue(t, content, "Current Unix time at start of this run: ")
+	parsedTime, err := time.Parse(time.RFC3339, rawTime)
+	if err != nil {
+		t.Fatalf("time line = %q, want RFC3339 timestamp: %v", rawTime, err)
+	}
+	if parsedTime.IsZero() {
+		t.Fatalf("time line = %q, want non-zero run-start time", rawTime)
+	}
+	unixSeconds, err := strconv.ParseInt(rawUnix, 10, 64)
+	if err != nil {
+		t.Fatalf("unix time line = %q, want integer seconds: %v", rawUnix, err)
+	}
+	if parsedTime.Unix() != unixSeconds {
+		t.Fatalf("run-start lines disagree: RFC3339=%q Unix=%q", rawTime, rawUnix)
+	}
+}
+
+func extractLineValue(t *testing.T, content, prefix string) string {
+	t.Helper()
+
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimPrefix(line, prefix)
+		}
+	}
+	t.Fatalf("content = %q, want line with prefix %q", content, prefix)
+	return ""
+}
 
 func TestHandleTriggerKeepsStateWithinTrigger(t *testing.T) {
 	t.Parallel()
@@ -863,6 +897,7 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if !strings.Contains(req.Messages[3].Content, "No prior steps have been run for this trigger.") {
 		t.Fatalf("current state = %q, want empty-step note", req.Messages[3].Content)
 	}
+	assertRunStartLines(t, req.Messages[3].Content)
 	if strings.Contains(req.Messages[3].Content, "Focused retry guidance for the last failed tool:") {
 		t.Fatalf("current state = %q, want no retry guidance on first turn", req.Messages[3].Content)
 	}
@@ -924,6 +959,7 @@ func TestHandleTriggerCarriesPriorStepsWithoutConversationReplayMessages(t *test
 	if !strings.Contains(second.Messages[3].Content, "Current step number: 2") {
 		t.Fatalf("current state = %q, want updated step number", second.Messages[3].Content)
 	}
+	assertRunStartLines(t, second.Messages[3].Content)
 }
 
 func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
@@ -1109,6 +1145,7 @@ func TestHandleTriggerDoesNotReplayConversationAcrossTriggers(t *testing.T) {
 	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Current step number: 1") {
 		t.Fatalf("second.Messages[3] = %#v, want current state", second.Messages[3])
 	}
+	assertRunStartLines(t, second.Messages[3].Content)
 }
 
 func TestHandleTriggerAccumulatesDriverUsage(t *testing.T) {

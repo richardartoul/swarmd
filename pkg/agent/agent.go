@@ -212,7 +212,7 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		nextStepIndex = 1
 	}
 	priorSteps := cloneSteps(input.PriorSteps)
-	requestContext := input.RequestContext
+	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
 	turnSteps := make([]Step, 0, a.maxSteps)
 	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
 		if err := ctx.Err(); err != nil {

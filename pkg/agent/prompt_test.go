@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 )
@@ -107,6 +109,22 @@ func TestFormatCurrentStateIncludesSandboxRootGuidance(t *testing.T) {
 	}
 	if !strings.Contains(got, "Current working directory: /workspace/demo") {
 		t.Fatalf("formatCurrentState() = %q, want cwd line", got)
+	}
+}
+
+func TestFormatCurrentStateIncludesRunStartTimes(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, time.March, 18, 8, 4, 5, 0, time.FixedZone("PDT", -7*60*60))
+	got := formatCurrentStateForPromptWithContext("", Request{
+		CWD:  "/workspace",
+		Step: 1,
+	}, newTriggerDriverRequestContext().withRunStartedAt(startedAt))
+	if !strings.Contains(got, "Current time at start of this run: "+startedAt.UTC().Format(time.RFC3339)) {
+		t.Fatalf("formatCurrentStateForPromptWithContext() = %q, want RFC3339 run-start line", got)
+	}
+	if !strings.Contains(got, fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.UTC().Unix())) {
+		t.Fatalf("formatCurrentStateForPromptWithContext() = %q, want Unix-seconds run-start line", got)
 	}
 }
 
@@ -364,6 +382,7 @@ func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *tes
 func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testing.T) {
 	t.Parallel()
 
+	startedAt := time.Date(2026, time.March, 18, 15, 4, 5, 0, time.UTC)
 	a := &Agent{
 		sandboxRoot:  "/workspace",
 		systemPrompt: DefaultSystemPrompt,
@@ -375,7 +394,7 @@ func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testi
 	}, 1, "/workspace", nil, newSessionDriverRequestContext([]Message{
 		{Role: MessageRoleUser, Content: "first question"},
 		{Role: MessageRoleAssistant, Content: "first answer"},
-	}))
+	}).withRunStartedAt(startedAt))
 	if err != nil {
 		t.Fatalf("buildDriverRequestWithContext() error = %v", err)
 	}
@@ -397,6 +416,12 @@ func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testi
 	}
 	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this turn.") {
 		t.Fatalf("current-state message = %#v, want turn-scoped footer wording", req.Messages[4])
+	}
+	if !strings.Contains(req.Messages[4].Content, "Current time at start of this run: "+startedAt.Format(time.RFC3339)) {
+		t.Fatalf("current-state message = %#v, want RFC3339 run-start line", req.Messages[4])
+	}
+	if !strings.Contains(req.Messages[4].Content, fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.Unix())) {
+		t.Fatalf("current-state message = %#v, want Unix-seconds run-start line", req.Messages[4])
 	}
 }
 

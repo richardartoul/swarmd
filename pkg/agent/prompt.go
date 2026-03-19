@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/richardartoul/swarmd/pkg/sh/moreinterp/coreutils"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
@@ -140,6 +141,7 @@ type driverRequestContext struct {
 	Mode           driverRequestMode
 	PriorMessages  []Message
 	StepReplayData map[string]string
+	RunStartedAt   time.Time
 }
 
 func newTriggerDriverRequestContext() driverRequestContext {
@@ -163,6 +165,14 @@ func (c driverRequestContext) withStepReplayData(callID, replayData string) driv
 		c.StepReplayData = make(map[string]string, 1)
 	}
 	c.StepReplayData[callID] = replayData
+	return c
+}
+
+func (c driverRequestContext) withRunStartedAt(startedAt time.Time) driverRequestContext {
+	if startedAt.IsZero() {
+		return c
+	}
+	c.RunStartedAt = startedAt
 	return c
 }
 
@@ -287,6 +297,11 @@ func formatCurrentStateForPromptWithContext(prompt string, req Request, requestC
 	}
 	fmt.Fprintf(&b, "Current working directory: %s\n", req.CWD)
 	fmt.Fprintf(&b, "Current step number: %d\n", req.Step)
+	if !requestContext.RunStartedAt.IsZero() {
+		runStartedAtUTC := requestContext.RunStartedAt.UTC()
+		fmt.Fprintf(&b, "Current time at start of this run: %s\n", runStartedAtUTC.Format(time.RFC3339))
+		fmt.Fprintf(&b, "Current Unix time at start of this run: %d\n", runStartedAtUTC.Unix())
+	}
 	if len(req.Steps) == 0 {
 		fmt.Fprintf(&b, "No prior steps have been run for this %s.\n", requestContext.currentStateTarget())
 	}

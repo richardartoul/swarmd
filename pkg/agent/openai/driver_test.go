@@ -3,14 +3,26 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
+
+func testCurrentStateMessage(step int) string {
+	startedAt := time.Date(2026, time.March, 18, 15, 4, 5, 0, time.UTC)
+	return strings.Join([]string{
+		"Current execution state",
+		fmt.Sprintf("Current step number: %d", step),
+		"Current time at start of this run: " + startedAt.Format(time.RFC3339),
+		fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.Unix()),
+	}, "\n")
+}
 
 func TestNewRequiresAPIKeyAndModel(t *testing.T) {
 	t.Parallel()
@@ -384,7 +396,7 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{
 			{
@@ -455,7 +467,7 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 	if input[5].Type != "custom_tool_call_output" || input[5].CallID != "step_2" {
 		t.Fatalf("input[5] = %#v, want custom_tool_call_output replay", input[5])
 	}
-	if input[6].Content != "Current execution state\nCurrent step number: 2" {
+	if input[6].Content != testCurrentStateMessage(2) {
 		t.Fatalf("input[6].Content = %q, want current-state footer last", input[6].Content)
 	}
 }

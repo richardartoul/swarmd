@@ -3,14 +3,26 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
+
+func testCurrentStateMessage(step int) string {
+	startedAt := time.Date(2026, time.March, 18, 15, 4, 5, 0, time.UTC)
+	return strings.Join([]string{
+		"Current execution state",
+		fmt.Sprintf("Current step number: %d", step),
+		"Current time at start of this run: " + startedAt.Format(time.RFC3339),
+		fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.Unix()),
+	}, "\n")
+}
 
 func TestNewRequiresAPIKeyAndModel(t *testing.T) {
 	t.Parallel()
@@ -482,7 +494,7 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{{
 			Index:          1,
@@ -551,7 +563,7 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	if !strings.Contains(userBlocks[0]["content"].(string), "demo content") {
 		t.Fatalf("tool_result content = %#v, want observation output", userBlocks[0]["content"])
 	}
-	if mustAnthropicStringContent(t, payload.Messages[3].Content) != "Current execution state\nCurrent step number: 2" {
+	if mustAnthropicStringContent(t, payload.Messages[3].Content) != testCurrentStateMessage(2) {
 		t.Fatalf("payload.Messages[3].Content = %#v, want current-state footer", payload.Messages[3].Content)
 	}
 }
@@ -564,7 +576,7 @@ func TestBuildMessagesRequestReplaysStoredAssistantPreamble(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{{
 			Index:          1,
@@ -615,7 +627,7 @@ func TestBuildMessagesRequestReplaysCustomToolWrapperField(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{{
 			Index:          1,
@@ -655,7 +667,7 @@ func TestBuildMessagesRequestReplaysRunShellToolUse(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{{
 			Index:      1,
@@ -698,7 +710,7 @@ func TestBuildMessagesRequestMarksErroredReplayToolResult(t *testing.T) {
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 2"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
 		},
 		Steps: []agent.Step{{
 			Index:          1,
@@ -738,7 +750,7 @@ func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
-			{Role: agent.MessageRoleUser, Content: "Current execution state\nCurrent step number: 3"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(3)},
 		},
 		Steps: []agent.Step{
 			{
