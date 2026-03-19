@@ -21,7 +21,7 @@ func TestSandboxBlocksExternalCommands(t *testing.T) {
 	r, err := sandbox.NewRunner(mustSandboxFS(t, root), nil, &stdout, &stderr)
 	qt.Assert(t, qt.IsNil(err))
 
-	err = run(r, strings.NewReader("echo ok; date || true"), "")
+	err = run(r, strings.NewReader("echo ok; git || true"), "")
 	qt.Assert(t, qt.IsNil(err))
 	qt.Assert(t, qt.Equals(stdout.String(), "ok\n"))
 	qt.Assert(t, qt.Equals(strings.Contains(stderr.String(), "external commands disabled in sandbox"), true))
@@ -391,7 +391,7 @@ func TestSandboxBlocksExternalExecViaXargs(t *testing.T) {
 	r, err := sandbox.NewRunner(mustSandboxFS(t, root), strings.NewReader("hello\n"), &stdout, &stderr)
 	qt.Assert(t, qt.IsNil(err))
 
-	err = run(r, strings.NewReader("xargs date"), "")
+	err = run(r, strings.NewReader("xargs git"), "")
 	qt.Assert(t, qt.IsNotNil(err))
 	qt.Assert(t, qt.Equals(strings.Contains(stderr.String(), "external commands disabled in sandbox"), true))
 }

@@ -2,9 +2,9 @@
 // See LICENSE for licensing information
 
 // Package coreutils provides a middleware for the interpreter that handles
-// in-process core utils like awk, cat, chmod, comm, cp, curl, cut, diff, env,
-// find, grep, head, jq, ls, mkdir, mv, rm, sed, sort, tail, touch, tr, uname,
-// uniq, wc, xargs, zip, and unzip.
+// in-process core utils like awk, cat, chmod, comm, cp, curl, cut, date, diff,
+// env, find, grep, head, jq, ls, mkdir, mv, rm, sed, sort, tail, touch, tr,
+// uname, uniq, wc, xargs, zip, and unzip.
 //
 // This is particularly useful to keep the max compability on Windows where
 // these core utils are not available, unless when installed manually by the
@@ -37,6 +37,7 @@ var commandSpecs = []commandSpec{
 	{info: CommandInfo{Name: "cp"}, run: runCp},
 	{info: CommandInfo{Name: "curl", RequiresNetwork: true}, run: runCurl},
 	{info: CommandInfo{Name: "cut"}, run: runCut},
+	{info: CommandInfo{Name: "date"}, run: runDate},
 	{info: CommandInfo{Name: "diff"}, run: runDiff},
 	{info: CommandInfo{Name: "env"}, run: runEnv},
 	{info: CommandInfo{Name: "find"}, run: runFind},

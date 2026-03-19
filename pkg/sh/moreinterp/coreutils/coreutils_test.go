@@ -767,6 +767,167 @@ func TestTouchSupportsPosixTimestampOption(t *testing.T) {
 	}
 }
 
+func TestDateSupportsPosixDefaultOutput(t *testing.T) {
+	withDateNow(t, time.Date(2026, time.March, 18, 14, 5, 6, 0, time.UTC))
+
+	stdout, stderr, err := runCoreutilsScriptWithOptions(
+		t,
+		interp.OSFileSystem{},
+		t.TempDir(),
+		"",
+		"date",
+		interp.Env(expand.ListEnviron("LC_ALL=C", "TZ=UTC0")),
+	)
+	if err != nil {
+		t.Fatalf("run error: %v\nstderr=%s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if stdout != "Wed Mar 18 14:05:06 UTC 2026\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "Wed Mar 18 14:05:06 UTC 2026\n")
+	}
+}
+
+func TestDateSupportsNamedTimezoneAndUTCOverride(t *testing.T) {
+	withDateNow(t, time.Date(2026, time.January, 15, 15, 4, 5, 0, time.UTC))
+
+	stdout, stderr, err := runCoreutilsScriptWithOptions(
+		t,
+		interp.OSFileSystem{},
+		t.TempDir(),
+		"",
+		`date "+%Y-%m-%d %H:%M:%S %Z %z"`,
+		interp.Env(expand.ListEnviron("LC_ALL=C", "TZ=America/New_York")),
+	)
+	if err != nil {
+		t.Fatalf("run error: %v\nstderr=%s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if stdout != "2026-01-15 10:04:05 EST -0500\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "2026-01-15 10:04:05 EST -0500\n")
+	}
+
+	stdout, stderr, err = runCoreutilsScriptWithOptions(
+		t,
+		interp.OSFileSystem{},
+		t.TempDir(),
+		"",
+		`date -u "+%Y-%m-%d %H:%M:%S %Z %z"`,
+		interp.Env(expand.ListEnviron("LC_ALL=C", "TZ=America/New_York")),
+	)
+	if err != nil {
+		t.Fatalf("run error: %v\nstderr=%s", err, stderr)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty", stderr)
+	}
+	if stdout != "2026-01-15 15:04:05 UTC +0000\n" {
+		t.Fatalf("stdout = %q, want %q", stdout, "2026-01-15 15:04:05 UTC +0000\n")
+	}
+}
+
+func TestDateSupportsOptionTerminatorAndLiteralFormats(t *testing.T) {
+	withDateNow(t, time.Date(2026, time.March, 18, 14, 5, 6, 0, time.UTC))
+
+	tests := []struct {
+		name   string
+		script string
+		want   string
+	}{
+		{
+			name:   "empty format",
+			script: "date +",
+			want:   "\n",
+		},
+		{
+			name:   "literal percent",
+			script: `date "+%%"`,
+			want:   "%\n",
+		},
+		{
+			name:   "newline and tab escapes",
+			script: `date "+left%nright%tend"`,
+			want:   "left\nright\tend\n",
+		},
+		{
+			name:   "option terminator",
+			script: `date -- "+%Y"`,
+			want:   "2026\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, err := runCoreutilsScriptWithOptions(
+				t,
+				interp.OSFileSystem{},
+				t.TempDir(),
+				"",
+				tt.script,
+				interp.Env(expand.ListEnviron("LC_ALL=C", "TZ=UTC0")),
+			)
+			if err != nil {
+				t.Fatalf("run error: %v\nstderr=%s", err, stderr)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty", stderr)
+			}
+			if stdout != tt.want {
+				t.Fatalf("stdout = %q, want %q", stdout, tt.want)
+			}
+		})
+	}
+}
+
+func TestDateRejectsUnsupportedOperands(t *testing.T) {
+	tests := []struct {
+		name   string
+		script string
+	}{
+		{
+			name:   "numeric setter operand",
+			script: "date 01020304",
+		},
+		{
+			name:   "plain operand",
+			script: "date today",
+		},
+		{
+			name:   "extra operand",
+			script: `date "+%Y" extra`,
+		},
+		{
+			name:   "terminator with numeric operand",
+			script: "date -- 01020304",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, err := runCoreutilsScriptWithOptions(
+				t,
+				interp.OSFileSystem{},
+				t.TempDir(),
+				"",
+				tt.script,
+				interp.Env(expand.ListEnviron("LC_ALL=C", "TZ=UTC0")),
+			)
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty", stdout)
+			}
+			if stderr != "usage: date [-u] [+format]\n" {
+				t.Fatalf("stderr = %q, want %q", stderr, "usage: date [-u] [+format]\n")
+			}
+			if !errors.Is(err, interp.ExitStatus(1)) {
+				t.Fatalf("error = %v, want exit status 1", err)
+			}
+		})
+	}
+}
+
 func TestMkdirSupportsSymbolicModes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "created")
