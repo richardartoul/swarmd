@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,12 +26,17 @@ const (
 	testToolSlackRepliesID = "slack_replies"
 	testToolSlackHistoryID = "slack_channel_history"
 	testToolDatadogReadID  = "datadog_read"
+	testToolGitHubRepoID   = "github_read_repo"
+	testToolGitHubReviewID = "github_read_reviews"
+	testToolGitHubCIID     = "github_read_ci"
 
 	testToolSlackUserTokenEnv = "SLACK_USER_TOKEN"
 	testToolSlackBaseURLEnv   = "SLACK_API_BASE_URL"
 	testToolDatadogAPIKeyEnv  = "DD_API_KEY"
 	testToolDatadogAppKeyEnv  = "DD_APP_KEY"
 	testToolDatadogBaseURLEnv = "DD_BASE_URL"
+	testToolGitHubTokenEnv    = "GITHUB_TOKEN"
+	testToolGitHubBaseURLEnv  = "GITHUB_API_BASE_URL"
 )
 
 var registerServerTestToolsOnce sync.Once
@@ -61,6 +68,15 @@ func registerServerTestTools() {
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testDatadogReadToolPlugin{host: host}
 		}, ToolRegistrationOptions{RequiredEnv: []string{testToolDatadogAPIKeyEnv, testToolDatadogAppKeyEnv}})
+		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
+			return testGitHubRepoToolPlugin{host: host}
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
+		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
+			return testGitHubReviewsToolPlugin{host: host}
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
+		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
+			return testGitHubCIToolPlugin{host: host}
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
 	})
 }
 
@@ -554,6 +570,333 @@ func (p testSlackHistoryToolPlugin) handle(ctx context.Context, toolCtx toolscor
 		return nil
 	}
 	toolCtx.SetOutput(step, string(body))
+	return nil
+}
+
+func testGitHubRequestRuntime(host ToolHost, toolCtx toolscore.ToolContext, toolID string) (ToolRuntime, *http.Client, string, error) {
+	runtime, err := host.Runtime(toolCtx)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	baseURL := strings.TrimRight(runtime.LookupEnv(testToolGitHubBaseURLEnv), "/")
+	if baseURL == "" {
+		return nil, nil, "", fmt.Errorf("%s requires %s", toolID, testToolGitHubBaseURLEnv)
+	}
+	client := host.HTTPClient(toolCtx, toolscore.ToolHTTPClientOptions{
+		ConnectTimeout:  10 * time.Second,
+		FollowRedirects: true,
+	})
+	if client == nil {
+		return nil, nil, "", fmt.Errorf("HTTP client factory is not configured")
+	}
+	return runtime, client, baseURL, nil
+}
+
+func performTestGitHubRequest(ctx context.Context, client *http.Client, token, method, endpoint string) ([]byte, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, _, err := toolscommon.ReadHTTPBodyLimited(resp.Body, toolscommon.DefaultHTTPResponseBytes)
+	if err != nil {
+		return nil, false, err
+	}
+	redirected := resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() != endpoint
+	return bodyBytes, redirected, nil
+}
+
+func writeGitHubTestFile(toolCtx toolscore.ToolContext, relativePath string, data []byte) error {
+	resolved, err := toolCtx.ResolvePath(relativePath)
+	if err != nil {
+		return err
+	}
+	if err := toolCtx.FileSystem().MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+		return err
+	}
+	return toolCtx.FileSystem().WriteFile(resolved, data, 0o644)
+}
+
+func extractGitHubTestZIP(toolCtx toolscore.ToolContext, relativeRoot string, archive []byte) error {
+	reader, err := zip.NewReader(bytes.NewReader(archive), int64(len(archive)))
+	if err != nil {
+		return err
+	}
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		cleanName := filepath.Clean(file.Name)
+		if strings.HasPrefix(cleanName, "..") {
+			return fmt.Errorf("unsafe ZIP entry %q", file.Name)
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return err
+		}
+		if err := writeGitHubTestFile(toolCtx, filepath.ToSlash(filepath.Join(relativeRoot, cleanName)), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type testGitHubRepoToolPlugin struct {
+	host ToolHost
+}
+
+func (testGitHubRepoToolPlugin) Definition() toolscore.ToolDefinition {
+	return toolscore.ToolDefinition{
+		Name:        testToolGitHubRepoID,
+		Description: "Read GitHub repository metadata through a test-owned GitHub client.",
+		Kind:        toolscore.ToolKindFunction,
+		Parameters: toolscommon.ObjectSchema(
+			map[string]any{
+				"action": toolscommon.StringSchema("Read action."),
+				"owner":  toolscommon.StringSchema("Repository owner."),
+				"repo":   toolscommon.StringSchema("Repository name."),
+			},
+			"action",
+			"owner",
+			"repo",
+		),
+		RequiredArguments: []string{"action", "owner", "repo"},
+		RequiresNetwork:   true,
+		ReadOnly:          true,
+	}
+}
+
+func (p testGitHubRepoToolPlugin) NewHandler(config toolscore.ConfiguredTool) (toolscore.ToolHandler, error) {
+	_ = config
+	return toolscore.ToolHandlerFunc(p.handle), nil
+}
+
+func (p testGitHubRepoToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
+	if !p.host.NetworkEnabled(toolCtx) {
+		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubRepoID))
+		return nil
+	}
+	input, err := toolscore.DecodeToolInput[struct {
+		Action string `json:"action"`
+		Owner  string `json:"owner"`
+		Repo   string `json:"repo"`
+	}](call.Input)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	if strings.TrimSpace(input.Action) != "get_repo" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("unsupported action %q", strings.TrimSpace(input.Action)))
+		return nil
+	}
+	runtime, client, baseURL, err := testGitHubRequestRuntime(p.host, toolCtx, testToolGitHubRepoID)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	body, _, err := performTestGitHubRequest(
+		ctx,
+		client,
+		runtime.LookupEnv(testToolGitHubTokenEnv),
+		http.MethodGet,
+		baseURL+"/repos/"+url.PathEscape(strings.TrimSpace(input.Owner))+"/"+url.PathEscape(strings.TrimSpace(input.Repo)),
+	)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	toolCtx.SetOutput(step, string(body))
+	return nil
+}
+
+type testGitHubReviewsToolPlugin struct {
+	host ToolHost
+}
+
+func (testGitHubReviewsToolPlugin) Definition() toolscore.ToolDefinition {
+	return toolscore.ToolDefinition{
+		Name:        testToolGitHubReviewID,
+		Description: "Read GitHub issue and pull request data through a test-owned GitHub client.",
+		Kind:        toolscore.ToolKindFunction,
+		Parameters: toolscommon.ObjectSchema(
+			map[string]any{
+				"action":   toolscommon.StringSchema("Read action."),
+				"owner":    toolscommon.StringSchema("Repository owner."),
+				"repo":     toolscommon.StringSchema("Repository name."),
+				"query":    toolscommon.StringSchema("Search query."),
+				"page":     toolscommon.IntegerSchema("Page number."),
+				"per_page": toolscommon.IntegerSchema("Page size."),
+			},
+			"action",
+			"owner",
+			"repo",
+		),
+		RequiredArguments: []string{"action", "owner", "repo"},
+		RequiresNetwork:   true,
+		ReadOnly:          true,
+	}
+}
+
+func (p testGitHubReviewsToolPlugin) NewHandler(config toolscore.ConfiguredTool) (toolscore.ToolHandler, error) {
+	_ = config
+	return toolscore.ToolHandlerFunc(p.handle), nil
+}
+
+func (p testGitHubReviewsToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
+	if !p.host.NetworkEnabled(toolCtx) {
+		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubReviewID))
+		return nil
+	}
+	input, err := toolscore.DecodeToolInput[struct {
+		Action  string `json:"action"`
+		Owner   string `json:"owner"`
+		Repo    string `json:"repo"`
+		Query   string `json:"query"`
+		Page    int    `json:"page"`
+		PerPage int    `json:"per_page"`
+	}](call.Input)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	if strings.TrimSpace(input.Action) != "search_issues" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("unsupported action %q", strings.TrimSpace(input.Action)))
+		return nil
+	}
+	runtime, client, baseURL, err := testGitHubRequestRuntime(p.host, toolCtx, testToolGitHubReviewID)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	target, err := url.Parse(baseURL + "/search/issues")
+	if err != nil {
+		return err
+	}
+	query := target.Query()
+	page := input.Page
+	if page <= 0 {
+		page = 1
+	}
+	perPage := input.PerPage
+	if perPage <= 0 {
+		perPage = 20
+	}
+	query.Set("q", strings.TrimSpace(input.Query)+" repo:"+strings.TrimSpace(input.Owner)+"/"+strings.TrimSpace(input.Repo)+" is:issue")
+	query.Set("page", strconv.Itoa(page))
+	query.Set("per_page", strconv.Itoa(perPage))
+	target.RawQuery = query.Encode()
+	body, _, err := performTestGitHubRequest(ctx, client, runtime.LookupEnv(testToolGitHubTokenEnv), http.MethodGet, target.String())
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	toolCtx.SetOutput(step, string(body))
+	return nil
+}
+
+type testGitHubCIToolPlugin struct {
+	host ToolHost
+}
+
+func (testGitHubCIToolPlugin) Definition() toolscore.ToolDefinition {
+	return toolscore.ToolDefinition{
+		Name:        testToolGitHubCIID,
+		Description: "Read GitHub CI logs and artifacts through a test-owned GitHub client.",
+		Kind:        toolscore.ToolKindFunction,
+		Parameters: toolscommon.ObjectSchema(
+			map[string]any{
+				"action":      toolscommon.StringSchema("Read action."),
+				"owner":       toolscommon.StringSchema("Repository owner."),
+				"repo":        toolscommon.StringSchema("Repository name."),
+				"artifact_id": toolscommon.IntegerSchema("Artifact ID."),
+				"extract":     toolscommon.BooleanSchema("Whether to extract the archive."),
+			},
+			"action",
+			"owner",
+			"repo",
+		),
+		RequiredArguments: []string{"action", "owner", "repo"},
+		RequiresNetwork:   true,
+		ReadOnly:          true,
+	}
+}
+
+func (p testGitHubCIToolPlugin) NewHandler(config toolscore.ConfiguredTool) (toolscore.ToolHandler, error) {
+	_ = config
+	return toolscore.ToolHandlerFunc(p.handle), nil
+}
+
+func (p testGitHubCIToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
+	if !p.host.NetworkEnabled(toolCtx) {
+		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubCIID))
+		return nil
+	}
+	input, err := toolscore.DecodeToolInput[struct {
+		Action     string `json:"action"`
+		Owner      string `json:"owner"`
+		Repo       string `json:"repo"`
+		ArtifactID int64  `json:"artifact_id"`
+		Extract    bool   `json:"extract"`
+	}](call.Input)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	if strings.TrimSpace(input.Action) != "download_artifact" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("unsupported action %q", strings.TrimSpace(input.Action)))
+		return nil
+	}
+	if input.ArtifactID <= 0 {
+		toolCtx.SetPolicyError(step, fmt.Errorf("artifact_id must be a positive integer"))
+		return nil
+	}
+	runtime, client, baseURL, err := testGitHubRequestRuntime(p.host, toolCtx, testToolGitHubCIID)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	metadataURL := fmt.Sprintf("%s/repos/%s/%s/actions/artifacts/%d", baseURL, url.PathEscape(strings.TrimSpace(input.Owner)), url.PathEscape(strings.TrimSpace(input.Repo)), input.ArtifactID)
+	if _, _, err := performTestGitHubRequest(ctx, client, runtime.LookupEnv(testToolGitHubTokenEnv), http.MethodGet, metadataURL); err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	downloadURL := fmt.Sprintf("%s/repos/%s/%s/actions/artifacts/%d/zip", baseURL, url.PathEscape(strings.TrimSpace(input.Owner)), url.PathEscape(strings.TrimSpace(input.Repo)), input.ArtifactID)
+	archiveBytes, redirected, err := performTestGitHubRequest(ctx, client, runtime.LookupEnv(testToolGitHubTokenEnv), http.MethodGet, downloadURL)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	archivePath := filepath.ToSlash(filepath.Join("github", "actions", "artifacts", fmt.Sprintf("%d.zip", input.ArtifactID)))
+	if err := writeGitHubTestFile(toolCtx, archivePath, archiveBytes); err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	if input.Extract {
+		if err := extractGitHubTestZIP(toolCtx, filepath.ToSlash(filepath.Join("github", "actions", "artifacts", fmt.Sprintf("%d", input.ArtifactID))), archiveBytes); err != nil {
+			toolCtx.SetPolicyError(step, err)
+			return nil
+		}
+	}
+	output, err := toolscommon.MarshalToolOutput(map[string]any{
+		"artifact_id": input.ArtifactID,
+		"redirected":  redirected,
+	})
+	if err != nil {
+		return err
+	}
+	toolCtx.SetOutput(step, output)
 	return nil
 }
 

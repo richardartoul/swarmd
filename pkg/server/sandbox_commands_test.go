@@ -11,9 +11,11 @@ const (
 	testSlackDMToolID      = "slack_dm"
 	testSlackHistoryToolID = "slack_channel_history"
 	testDatadogReadToolID  = "datadog_read"
+	testGitHubRepoToolID   = "github_read_repo"
 	testSlackUserTokenEnv  = "SLACK_USER_TOKEN"
 	testDatadogAPIKeyEnv   = "DD_API_KEY"
 	testDatadogAppKeyEnv   = "DD_APP_KEY"
+	testGitHubTokenEnv     = "GITHUB_TOKEN"
 )
 
 func TestValidateReferencedToolEnvRejectsMissingRequiredVars(t *testing.T) {
@@ -96,6 +98,26 @@ func TestValidateReferencedToolEnvRejectsMissingDatadogVars(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), testDatadogAppKeyEnv) || !strings.Contains(err.Error(), testDatadogReadToolID) {
 		t.Fatalf("ValidateReferencedToolEnv() error = %v, want Datadog env requirement", err)
+	}
+}
+
+func TestValidateReferencedToolEnvRejectsMissingGitHubVars(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateReferencedToolEnv([]AgentSpec{{
+		NamespaceID: "default",
+		AgentID:     "worker",
+		Tools: []AgentToolSpec{{
+			ID: testGitHubRepoToolID,
+		}},
+	}}, func(string) string {
+		return ""
+	})
+	if err == nil {
+		t.Fatal("ValidateReferencedToolEnv() error = nil, want missing GitHub env error")
+	}
+	if !strings.Contains(err.Error(), testGitHubTokenEnv) || !strings.Contains(err.Error(), testGitHubRepoToolID) {
+		t.Fatalf("ValidateReferencedToolEnv() error = %v, want GitHub env requirement", err)
 	}
 }
 

@@ -18,7 +18,7 @@ The repository also ships a default `../server-config/` tree that is not part of
 Agent examples are organized so each example directory contains its own `server-config` root. Pass that directory directly to the `config validate` or `server` subcommand of the `swarmd` CLI.
 
 That collection now includes both disk-backed and in-memory filesystem demos,
-including [agents/memory-filesystem](agents/memory-filesystem/README.md).
+including [agents/memory-filesystem](agents/memory-filesystem/README.md) and a GitHub custom-tool workflow in [agents/github-monorepo-assistant](agents/github-monorepo-assistant/README.md).
 
 Most checked-in agent examples require `OPENAI_API_KEY` because their configs use the OpenAI-backed worker driver by default. Anthropic-backed configs should use `model.provider: anthropic` and provide `ANTHROPIC_API_KEY`.
 

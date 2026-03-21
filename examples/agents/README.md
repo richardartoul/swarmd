@@ -54,3 +54,7 @@ A managed in-memory filesystem example. It sets `runtime.filesystem.kind: memory
 ### [github-repo-inspector](github-repo-inspector/README.md)
 
 An example that configures `network.reachable_hosts` and uses the built-in `http_request` tool surface plus managed `http.headers` rules to talk to the GitHub API and write a summary into a sandbox directory.
+
+### [github-monorepo-assistant](github-monorepo-assistant/README.md)
+
+A GitHub custom-tool example that combines `github_read_repo`, `github_read_reviews`, and `github_read_ci` to inspect one shared repository and write a summary into a sandbox directory.

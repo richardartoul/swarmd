@@ -227,6 +227,9 @@ The stock swarmd binary currently exposes these custom tools:
 | `slack_replies` | Yes | `default_channel` | Reads replies from one Slack thread, optionally after a cursor timestamp. |
 | `slack_channel_history` | Yes | `default_channel` | Reads channel timeline messages newer than a timestamp without expanding thread replies automatically. |
 | `datadog_read` | Yes | none | Reads incidents, monitors, dashboards, metrics, log search results, log aggregates, and events through the server-owned Datadog client. |
+| `github_read_repo` | Yes | none | Reads repository metadata, code search, tree or file contents, branches, and rulesets through the server-owned GitHub client. |
+| `github_read_reviews` | Yes | none | Reads issues, pull requests, comments, reviews, commits, and comparisons through the server-owned GitHub client. |
+| `github_read_ci` | Yes | none | Reads statuses, checks, workflows, runs, jobs, logs, and artifacts through the server-owned GitHub client. |
 
 Tool notes:
 
@@ -246,6 +249,13 @@ Tool notes:
 - `query_metrics`, `search_logs`, and `aggregate_logs` require a `query` argument
 - `search_logs` and `aggregate_logs` both accept optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
 - `aggregate_logs` also accepts optional `indexes`, `compute`, `group_by`, and `page_cursor` inputs for Datadog log analytics queries
+- `github_read_repo`, `github_read_reviews`, and `github_read_ci` all require `GITHUB_TOKEN` plus `network.reachable_hosts`
+- every GitHub tool call requires explicit `action`, `owner`, and `repo` fields
+- `github_read_repo` is repository-scoped only; it does not search across the whole of GitHub
+- `github_read_repo.search_code` is discovery-only, remains scoped to the repository default branch, and should usually be followed by `get_file_contents` or `list_tree`
+- `github_read_ci` log and artifact download actions write files under `github/actions/...` inside the agent root instead of inlining large payloads into the prompt
+- `github_read_ci` download actions may follow GitHub-issued redirects, so agents that need logs or artifacts may need broader `network.reachable_hosts` than `api.github.com` alone
+- `github_read_security`, `github_read_org`, and `github_write` are reserved follow-on tool IDs rather than stock tools in the current binary; security reads will need broader `security_events`-style access, org reads will need broader `read:org`-style access, and writes stay separate because they are mutating
 
 Example:
 
@@ -273,6 +283,44 @@ Example tool call payload:
 ```json
 {"email":"ada@example.com","text":"Can you take a look at the deploy?"}
 ```
+
+GitHub repo tool example:
+
+```json
+{"action":"search_code","owner":"acme","repo":"monorepo","query":"FlakyTest path:services/payments language:go","page":1,"per_page":25}
+```
+
+```json
+{"tool":"github_read_repo","action":"search_code","ok":true,"data":{"query":"FlakyTest path:services/payments language:go repo:acme/monorepo","total_count":12,"incomplete_results":false,"items":[{"repository":"acme/monorepo","path":"services/payments/flaky_test.go","sha":"abc123","html_url":"https://github.com/acme/monorepo/blob/main/services/payments/flaky_test.go"}]},"warnings":["GitHub code search only indexes the default branch"],"page_info":{"page":1,"per_page":25,"has_next_page":false,"next_page":null},"files":[]}
+```
+
+GitHub review tool example:
+
+```json
+{"action":"get_pull_request","owner":"acme","repo":"monorepo","pull_number":9021}
+```
+
+```json
+{"tool":"github_read_reviews","action":"get_pull_request","ok":true,"data":{"number":9021,"title":"Stabilize flaky payment retry test","state":"open","draft":false,"mergeable_state":"clean","head_sha":"abc123","head_ref":"fix/flaky-payment-retry","base_ref":"main","requested_reviewers":["alice"],"requested_teams":["payments"]},"warnings":[],"page_info":null,"files":[]}
+```
+
+GitHub CI tool example:
+
+```json
+{"action":"download_artifact","owner":"acme","repo":"monorepo","artifact_id":701,"extract":true}
+```
+
+```json
+{"tool":"github_read_ci","action":"download_artifact","ok":true,"data":{"artifact_id":701,"name":"junit-results","redirected":true,"archive_format":"zip","extract":true},"warnings":[],"page_info":null,"files":[{"path":"github/actions/artifacts/701.zip","mime_type":"application/zip","description":"Raw artifact archive"},{"path":"github/actions/artifacts/701/junit.xml","mime_type":"application/xml","description":"Extracted JUnit report"}]}
+```
+
+Planned GitHub follow-on tools:
+
+| Tool ID | Status | Extra scope or safety notes |
+| --- | --- | --- |
+| `github_read_security` | planned | Should stay separate from the baseline GitHub token because code scanning, Dependabot, and secret-scanning reads often need broader `security_events`-style access. |
+| `github_read_org` | planned | Should stay separate from the baseline GitHub token because collaborator, team, and repository-permission reads often need broader `read:org`-style access. |
+| `github_write` | planned | Should stay separate because it is mutating; keep it on a narrower first action set with stricter schemas and extra safety guidance around comments, issue updates, and review requests. |
 
 Rules:
 
@@ -445,6 +493,7 @@ Some YAML features depend on environment variables provided to the server proces
 | Anthropic-backed worker runtime | `ANTHROPIC_API_KEY` |
 | Slack tools | `SLACK_USER_TOKEN` |
 | Datadog tool | `DD_API_KEY`, `DD_APP_KEY`, optional `DD_SITE` |
+| GitHub tools | `GITHUB_TOKEN`, optional `GITHUB_API_BASE_URL` |
 | Managed HTTP headers from env | Whatever `http.headers[].env_var` references |
 | Mount contents from env | Whatever `mounts[].source.env_var` references |
 

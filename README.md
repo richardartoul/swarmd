@@ -112,6 +112,7 @@ The primary database is SQLite, so backups are usually just backups of that data
 - [examples/agents/memory-filesystem](examples/agents/memory-filesystem/README.md): a managed in-memory filesystem example using `runtime.filesystem.kind: memory` with warm state preserved while the same worker stays alive
 - [examples/agents/workspace-summary](examples/agents/workspace-summary/README.md): a filesystem-heavy example that mounts reusable context and writes a report into a demo workspace
 - [examples/agents/github-repo-inspector](examples/agents/github-repo-inspector/README.md): a networked example that configures `network.reachable_hosts` and managed `http.headers`
+- [examples/agents/github-monorepo-assistant](examples/agents/github-monorepo-assistant/README.md): a GitHub custom-tool example that combines repository, review, and CI reads for one shared repo
 - [examples/embedding](examples/embedding/README.md): small Go programs that use `pkg/agent` directly without running the full server
 
 ## Agent YAML
@@ -158,7 +159,7 @@ The full guide covers:
 4. Add a blank import in `pkg/tools/customtools/customtools.go`.
 5. Reference the tool id from agent YAML under `tools:`.
 
-For the stock `swarmd` server binary, new custom tools should follow the same pattern as `pkg/tools/serverlog`, `pkg/tools/slackpost`, and `pkg/tools/datadogread`: self-register on import, then get pulled into the binary through `pkg/tools/customtools`.
+For the stock `swarmd` server binary, new custom tools should follow the same pattern as `pkg/tools/serverlog`, `pkg/tools/slackpost`, `pkg/tools/datadogread`, and the GitHub read tool packages under `pkg/tools/githubreadrepo`, `pkg/tools/githubreadreviews`, and `pkg/tools/githubreadci`: self-register on import, then get pulled into the binary through `pkg/tools/customtools`.
 
 A minimal server-backed tool looks like this:
 

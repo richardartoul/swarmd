@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -893,6 +895,543 @@ func TestRuntimeManagerBlocksDatadogReadToolWhenHostDisallowed(t *testing.T) {
 	if !hasToolNamed(captured, "datadog_read") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "datadog_read")
 	}
+}
+
+func TestRuntimeManagerExecutesGitHubReadRepoTool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-github-repo-tool")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "github_read_repo",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/monorepo" {
+			t.Fatalf("request path = %q, want repo path", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer github-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"full_name":      "acme/monorepo",
+			"default_branch": "main",
+			"visibility":     "private",
+			"archived":       false,
+			"topics":         []string{"platform", "mono"},
+			"license": map[string]any{
+				"key":  "apache-2.0",
+				"name": "Apache License 2.0",
+			},
+		})
+	}))
+	defer server.Close()
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "github_read_repo",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"get_repo","owner":"acme","repo":"monorepo"}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "GITHUB_TOKEN":
+				return "github-token"
+			case "GITHUB_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-github-repo-tool",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		return requests == 1, nil
+	})
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	_, step := latestRunStepByPrompt(t, ctx, s, namespace.ID, "start")
+	if step.ActionName != "github_read_repo" {
+		t.Fatalf("step.ActionName = %q, want %q", step.ActionName, "github_read_repo")
+	}
+	if !strings.Contains(step.ActionOutput, `"default_branch":"main"`) {
+		t.Fatalf("step.ActionOutput = %q, want repo response payload", step.ActionOutput)
+	}
+}
+
+func TestRuntimeManagerExecutesGitHubReadReviewsTool(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-github-reviews-tool")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "github_read_reviews",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search/issues" {
+			t.Fatalf("request path = %q, want search issues path", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("q"); !strings.Contains(got, "repo:acme/monorepo") {
+			t.Fatalf("query q = %q, want repo qualifier", got)
+		}
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"total_count":        1,
+			"incomplete_results": false,
+			"items": []map[string]any{{
+				"number": 4182,
+				"title":  "Flaky integration test in payments",
+				"state":  "open",
+				"labels": []map[string]any{{"name": "flaky-test"}},
+			}},
+		})
+	}))
+	defer server.Close()
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "github_read_reviews",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"search_issues","owner":"acme","repo":"monorepo","query":"label:flaky-test state:open","page":1,"per_page":20}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "GITHUB_TOKEN":
+				return "github-token"
+			case "GITHUB_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-github-reviews-tool",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		requestsMu.Lock()
+		defer requestsMu.Unlock()
+		return requests == 1, nil
+	})
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	_, step := latestRunStepByPrompt(t, ctx, s, namespace.ID, "start")
+	if step.ActionName != "github_read_reviews" {
+		t.Fatalf("step.ActionName = %q, want %q", step.ActionName, "github_read_reviews")
+	}
+	if !strings.Contains(step.ActionOutput, `Flaky integration test in payments`) {
+		t.Fatalf("step.ActionOutput = %q, want issue search payload", step.ActionOutput)
+	}
+}
+
+func TestRuntimeManagerExecutesGitHubReadCIToolDownloadArtifact(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-github-ci-tool")
+	root := filepath.Join(t.TempDir(), "worker")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "github_read_ci",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	zipBytes := mustRuntimeZIP(t, map[string]string{"junit.xml": "<testsuite/>"})
+	var (
+		requestsMu sync.Mutex
+		requests   int
+		serverURL  string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		switch r.URL.Path {
+		case "/repos/acme/monorepo/actions/artifacts/701":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":            701,
+				"name":          "junit-results",
+				"size_in_bytes": len(zipBytes),
+				"expired":       false,
+				"expires_at":    "2026-06-18T00:00:00Z",
+				"workflow_run": map[string]any{
+					"id":          123,
+					"head_branch": "main",
+					"head_sha":    "abc123",
+				},
+			})
+		case "/repos/acme/monorepo/actions/artifacts/701/zip":
+			http.Redirect(w, r, serverURL+"/downloads/701.zip", http.StatusFound)
+		case "/downloads/701.zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(zipBytes)
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "github_read_ci",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"download_artifact","owner":"acme","repo":"monorepo","artifact_id":701,"extract":true}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "GITHUB_TOKEN":
+				return "github-token"
+			case "GITHUB_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-github-ci-tool",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	requestsMu.Lock()
+	gotRequests := requests
+	requestsMu.Unlock()
+	if gotRequests < 3 {
+		t.Fatalf("request count = %d, want at least 3 for metadata, redirect, and download", gotRequests)
+	}
+	extractedPath := filepath.Join(root, "github/actions/artifacts/701/junit.xml")
+	payload, err := os.ReadFile(extractedPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(extractedPath) error = %v", err)
+	}
+	if string(payload) != "<testsuite/>" {
+		t.Fatalf("extracted payload = %q, want junit payload", string(payload))
+	}
+	_, step := latestRunStepByPrompt(t, ctx, s, namespace.ID, "start")
+	if step.ActionName != "github_read_ci" {
+		t.Fatalf("step.ActionName = %q, want %q", step.ActionName, "github_read_ci")
+	}
+	if !strings.Contains(step.ActionOutput, `"redirected":true`) {
+		t.Fatalf("step.ActionOutput = %q, want redirected artifact metadata", step.ActionOutput)
+	}
+}
+
+func TestRuntimeManagerBlocksGitHubReadRepoToolWhenHostDisallowed(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-github-repo-blocked")
+	root := filepath.Join(t.TempDir(), "worker")
+
+	var (
+		requestsMu sync.Mutex
+		requests   int
+		toolsMu    sync.Mutex
+		tools      []agent.ToolDefinition
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestsMu.Lock()
+		requests++
+		requestsMu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"full_name": "acme/monorepo"})
+	}))
+	defer server.Close()
+
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         cpstore.AgentRoleWorker,
+		DesiredState: cpstore.AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+		MaxAttempts:  1,
+		AllowNetwork: true,
+		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{Glob: "example.com"}},
+			},
+			Tools: []agent.ConfiguredTool{{
+				ID: "github_read_repo",
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			driver := &scriptedDriver{
+				decisions: []agent.Decision{
+					{Tool: &agent.ToolAction{
+						Name:  "github_read_repo",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"action":"get_repo","owner":"acme","repo":"monorepo"}`,
+					}},
+					{Finish: &agent.FinishAction{Value: "ok"}},
+				},
+			}
+			return agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return driver.Next(ctx, req)
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		EnvLookup: func(key string) string {
+			switch key {
+			case "GITHUB_TOKEN":
+				return "github-token"
+			case "GITHUB_API_BASE_URL":
+				return server.URL
+			default:
+				return ""
+			}
+		},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-github-repo-blocked",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	requestsMu.Lock()
+	gotRequests := requests
+	requestsMu.Unlock()
+	if gotRequests != 0 {
+		t.Fatalf("request count = %d, want 0 for blocked GitHub host", gotRequests)
+	}
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if !hasToolNamed(captured, "github_read_repo") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "github_read_repo")
+	}
+}
+
+func mustRuntimeZIP(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for name, contents := range files {
+		entry, err := writer.Create(name)
+		if err != nil {
+			t.Fatalf("writer.Create(%q) error = %v", name, err)
+		}
+		if _, err := entry.Write([]byte(contents)); err != nil {
+			t.Fatalf("entry.Write(%q) error = %v", name, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() error = %v", err)
+	}
+	return buffer.Bytes()
 }
 
 func hasToolNamed(tools []agent.ToolDefinition, name string) bool {
