@@ -331,6 +331,7 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 				Kind:              agent.ToolKindFunction,
 				Parameters:        map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
 				RequiredArguments: []string{"file_path"},
+				Examples:          []string{`{"file_path":"/tmp/example.txt"}`},
 			},
 			{
 				Name:         agent.ToolNameApplyPatch,
@@ -380,8 +381,11 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if snapshot[0].Request.Tools[0].Name != agent.ToolNameReadFile {
 		t.Fatalf("first tool = %#v, want read_file", snapshot[0].Request.Tools[0])
 	}
-	if len(snapshot[0].Request.Tools[0].InputExamples) != 0 {
-		t.Fatalf("len(read_file input_examples) = %d, want 0 for function tools", len(snapshot[0].Request.Tools[0].InputExamples))
+	if len(snapshot[0].Request.Tools[0].InputExamples) != 1 {
+		t.Fatalf("len(read_file input_examples) = %d, want 1 for function tools", len(snapshot[0].Request.Tools[0].InputExamples))
+	}
+	if got := snapshot[0].Request.Tools[0].InputExamples[0]["file_path"]; got != "/tmp/example.txt" {
+		t.Fatalf("read_file input_examples[0][file_path] = %#v, want %q", got, "/tmp/example.txt")
 	}
 	if snapshot[0].Request.Tools[0].CacheControl != nil {
 		t.Fatalf("first tool cache_control = %#v, want nil", snapshot[0].Request.Tools[0].CacheControl)
@@ -447,8 +451,11 @@ func TestBuildAnthropicToolsCapsInputExamplesByToolKind(t *testing.T) {
 	if len(tools) != 2 {
 		t.Fatalf("len(tools) = %d, want 2", len(tools))
 	}
-	if len(tools[0].InputExamples) != 0 {
-		t.Fatalf("len(read_file input_examples) = %d, want 0", len(tools[0].InputExamples))
+	if len(tools[0].InputExamples) != 1 {
+		t.Fatalf("len(read_file input_examples) = %d, want 1", len(tools[0].InputExamples))
+	}
+	if got := tools[0].InputExamples[0]["file_path"]; got != "/tmp/demo.txt" {
+		t.Fatalf("read_file input_examples[0][file_path] = %#v, want %q", got, "/tmp/demo.txt")
 	}
 	if len(tools[1].InputExamples) != 1 {
 		t.Fatalf("len(apply_patch input_examples) = %d, want 1", len(tools[1].InputExamples))

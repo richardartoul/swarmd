@@ -925,10 +925,12 @@ func anthropicToolInputExamples(tool agent.ToolDefinition) []map[string]any {
 }
 
 func anthropicToolInputExampleLimit(tool agent.ToolDefinition) int {
-	if tool.Kind == agent.ToolKindCustom {
+	switch tool.Kind {
+	case agent.ToolKindFunction, agent.ToolKindCustom:
 		return 1
+	default:
+		return 0
 	}
-	return 0
 }
 
 func anthropicToolInputExample(tool agent.ToolDefinition, example string) (map[string]any, bool) {
