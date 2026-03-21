@@ -1,9 +1,12 @@
 package httprequest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,13 +25,57 @@ const (
 
 var registerOnce sync.Once
 
+type headerArg struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type headerList []headerArg
+
+func (h *headerList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	switch {
+	case len(trimmed) == 0, string(trimmed) == "null":
+		*h = nil
+		return nil
+	case trimmed[0] == '[':
+		var headers []headerArg
+		if err := json.Unmarshal(trimmed, &headers); err != nil {
+			return err
+		}
+		*h = headerList(headers)
+		return nil
+	case trimmed[0] == '{':
+		var legacy map[string]string
+		if err := json.Unmarshal(trimmed, &legacy); err != nil {
+			return err
+		}
+		names := make([]string, 0, len(legacy))
+		for name := range legacy {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		headers := make([]headerArg, 0, len(names))
+		for _, name := range names {
+			headers = append(headers, headerArg{
+				Name:  name,
+				Value: legacy[name],
+			})
+		}
+		*h = headerList(headers)
+		return nil
+	default:
+		return fmt.Errorf("headers must be an array of {name, value} objects")
+	}
+}
+
 type args struct {
-	Method          string            `json:"method"`
-	URL             string            `json:"url"`
-	Headers         map[string]string `json:"headers"`
-	Body            string            `json:"body"`
-	FollowRedirects bool              `json:"follow_redirects"`
-	TimeoutMS       int               `json:"timeout_ms"`
+	Method          string     `json:"method"`
+	URL             string     `json:"url"`
+	Headers         headerList `json:"headers"`
+	Body            string     `json:"body"`
+	FollowRedirects bool       `json:"follow_redirects"`
+	TimeoutMS       int        `json:"timeout_ms"`
 }
 
 type plugin struct{}
@@ -50,9 +97,16 @@ func (plugin) Definition() toolscore.ToolDefinition {
 		Kind:        toolscore.ToolKindFunction,
 		Parameters: toolscommon.ObjectSchema(
 			map[string]any{
-				"method":           toolscommon.StringSchema("HTTP method. Defaults to GET."),
-				"url":              toolscommon.StringSchema("HTTP or HTTPS URL to request."),
-				"headers":          toolscommon.StringMapSchema("Optional HTTP request headers."),
+				"method": toolscommon.StringSchema("HTTP method. Defaults to GET."),
+				"url":    toolscommon.StringSchema("HTTP or HTTPS URL to request."),
+				"headers": map[string]any{
+					"type":        "array",
+					"description": "Optional HTTP request headers as an array of {name, value} objects.",
+					"items": toolscommon.ObjectSchema(map[string]any{
+						"name":  toolscommon.StringSchema("HTTP header name."),
+						"value": toolscommon.StringSchema("HTTP header value."),
+					}, "name", "value"),
+				},
 				"body":             toolscommon.StringSchema("Optional UTF-8 request body."),
 				"follow_redirects": toolscommon.BooleanSchema("Whether to follow redirects."),
 				"timeout_ms":       toolscommon.NumberSchema("Optional request timeout in milliseconds."),
@@ -62,7 +116,7 @@ func (plugin) Definition() toolscore.ToolDefinition {
 		RequiredArguments: []string{"url"},
 		Examples: []string{
 			`{"method":"GET","url":"https://api.example.com/v1/users","follow_redirects":true}`,
-			`{"method":"POST","url":"https://api.example.com/v1/users","headers":{"Content-Type":"application/json"},"body":"{\"name\":\"Ada\"}"}`,
+			`{"method":"POST","url":"https://api.example.com/v1/users","headers":[{"name":"Content-Type","value":"application/json"}],"body":"{\"name\":\"Ada\"}"}`,
 		},
 		OutputNotes: "Returns status, final URL, response headers, and a bounded UTF-8 response body.",
 		Interop: toolscommon.ToolInterop(
@@ -137,7 +191,7 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 	return nil
 }
 
-func executeRequest(ctx context.Context, toolCtx toolscore.ToolContext, method, rawURL string, headers map[string]string, body string, followRedirects bool, timeout time.Duration, maxBodyBytes int64) (*http.Response, []byte, bool, error) {
+func executeRequest(ctx context.Context, toolCtx toolscore.ToolContext, method, rawURL string, headers []headerArg, body string, followRedirects bool, timeout time.Duration, maxBodyBytes int64) (*http.Response, []byte, bool, error) {
 	client := toolCtx.HTTPClient(toolscore.ToolHTTPClientOptions{
 		ConnectTimeout:  toolscommon.DefaultHTTPConnectTimeout,
 		FollowRedirects: followRedirects,
@@ -164,12 +218,16 @@ func executeRequest(ctx context.Context, toolCtx toolscore.ToolContext, method, 
 		return nil, nil, false, err
 	}
 	req.Header.Set("User-Agent", toolscommon.DefaultToolHTTPUserAgent)
-	for name, value := range headers {
-		name = strings.TrimSpace(name)
+	for _, header := range headers {
+		name := strings.TrimSpace(header.Name)
 		if name == "" {
 			return nil, nil, false, fmt.Errorf("request headers must not include empty names")
 		}
-		req.Header.Set(name, value)
+		if strings.EqualFold(name, "Host") {
+			req.Host = header.Value
+			continue
+		}
+		req.Header.Set(name, header.Value)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
