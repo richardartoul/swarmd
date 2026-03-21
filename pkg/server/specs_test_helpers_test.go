@@ -78,15 +78,6 @@ func mustManagedMountContent(t *testing.T, mount managedAgentMount) []byte {
 	return data
 }
 
-func mustManagedMountEntryContent(t *testing.T, entry managedAgentMountEntry) []byte {
-	t.Helper()
-	data, err := entry.contentBytes()
-	if err != nil {
-		t.Fatalf("entry.contentBytes() error = %v", err)
-	}
-	return data
-}
-
 func findManagedMount(t *testing.T, mounts []managedAgentMount, path string) managedAgentMount {
 	t.Helper()
 	for _, mount := range mounts {
@@ -96,15 +87,4 @@ func findManagedMount(t *testing.T, mounts []managedAgentMount, path string) man
 	}
 	t.Fatalf("missing managed mount %q in %#v", path, mounts)
 	return managedAgentMount{}
-}
-
-func findManagedMountEntry(t *testing.T, entries []managedAgentMountEntry, path string) managedAgentMountEntry {
-	t.Helper()
-	for _, entry := range entries {
-		if entry.Path == path {
-			return entry
-		}
-	}
-	t.Fatalf("missing managed mount entry %q in %#v", path, entries)
-	return managedAgentMountEntry{}
 }

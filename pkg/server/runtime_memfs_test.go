@@ -2,8 +2,9 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,11 +18,22 @@ func TestRuntimeManagerMaterializesMountedFilesInMemFS(t *testing.T) {
 	ctx := context.Background()
 	s := newServerStore(t)
 	namespace := createServerNamespace(t, ctx, s, "namespace-memfs-mounted-files")
+	sourcePath := filepath.Join(t.TempDir(), "source", "message.txt")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(sourcePath), err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("mounted hello\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", sourcePath, err)
+	}
 	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", "/workspace", nil, managedAgentRuntimeConfig{
 		Filesystem: managedAgentFilesystemConfig{Kind: managedAgentFilesystemKindMemory},
 		Mounts: []managedAgentMount{{
-			Path:          "mounted/message.txt",
-			ContentBase64: base64.StdEncoding.EncodeToString([]byte("mounted hello\n")),
+			Path: "mounted/message.txt",
+			Source: managedAgentMountSource{
+				Path:         sourcePath,
+				ResolvedPath: sourcePath,
+			},
+			Kind: managedAgentMountKindFile,
 		}},
 	})
 

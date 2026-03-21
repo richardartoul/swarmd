@@ -1,9 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -30,24 +32,17 @@ type AgentMountSourceSpec struct {
 }
 
 type managedAgentMount struct {
-	Path          string                   `json:"path,omitempty"`
-	Description   string                   `json:"description,omitempty"`
-	Source        managedAgentMountSource  `json:"source,omitempty"`
-	Kind          string                   `json:"kind,omitempty"`
-	ContentBase64 string                   `json:"content_base64,omitempty"`
-	Entries       []managedAgentMountEntry `json:"entries,omitempty"`
+	Path          string                  `json:"path,omitempty"`
+	Description   string                  `json:"description,omitempty"`
+	Source        managedAgentMountSource `json:"source,omitempty"`
+	Kind          string                  `json:"kind,omitempty"`
+	ContentBase64 string                  `json:"content_base64,omitempty"`
 }
 
 type managedAgentMountSource struct {
-	Path   string  `json:"path,omitempty"`
-	EnvVar string  `json:"env_var,omitempty"`
-	Inline *string `json:"inline,omitempty"`
-}
-
-type managedAgentMountEntry struct {
-	Path          string `json:"path,omitempty"`
-	Kind          string `json:"kind,omitempty"`
-	ContentBase64 string `json:"content_base64,omitempty"`
+	Path         string  `json:"path,omitempty"`
+	ResolvedPath string  `json:"resolved_path,omitempty"`
+	EnvVar       string  `json:"env_var,omitempty"`
 }
 
 func validateAgentMounts(spec AgentSpec) error {
@@ -61,15 +56,17 @@ func validateAgentMounts(spec AgentSpec) error {
 			return fmt.Errorf("mounts[%d].path duplicates mounts[%d]", i, previous)
 		}
 		seen[targetPath] = i
+		hasSourcePath := strings.TrimSpace(mount.Source.Path) != ""
+		hasEnvVar := strings.TrimSpace(mount.Source.EnvVar) != ""
+		hasInlineContent := mount.Source.Inline != nil
+		if mountSourceSelectionCount(hasSourcePath, hasEnvVar, hasInlineContent) != 1 {
+			return fmt.Errorf("mounts[%d] must set exactly one of source.path, source.env_var, or source.inline", i)
+		}
 		if _, err := managedAgentMountFromSpec(spec.SourcePath, mount); err != nil {
-			switch {
-			case strings.Contains(err.Error(), "exactly one of source.path, source.env_var, or source.inline"):
-				return fmt.Errorf("mounts[%d] %w", i, err)
-			case strings.Contains(err.Error(), "source.path"):
+			if hasSourcePath {
 				return fmt.Errorf("mounts[%d].source.path invalid: %w", i, err)
-			default:
-				return fmt.Errorf("mounts[%d] invalid: %w", i, err)
 			}
+			return fmt.Errorf("mounts[%d] invalid: %w", i, err)
 		}
 	}
 	return nil
@@ -135,7 +132,6 @@ func managedAgentMountFromSpec(specPath string, mount AgentMountSpec) (managedAg
 		Source: managedAgentMountSource{
 			Path:   strings.TrimSpace(mount.Source.Path),
 			EnvVar: strings.TrimSpace(mount.Source.EnvVar),
-			Inline: mount.Source.Inline,
 		},
 	}
 	hasSourcePath := strings.TrimSpace(mount.Source.Path) != ""
@@ -152,74 +148,79 @@ func managedAgentMountFromSpec(specPath string, mount AgentMountSpec) (managedAg
 		managedMount.Kind = managedAgentMountKindFile
 		return managedMount, nil
 	default:
-		kind, contentBase64, entries, err := loadManagedAgentMountSource(specPath, mount.Source.Path)
+		inspectedSource, err := inspectManagedAgentMountSourcePath(specPath, mount.Source.Path)
 		if err != nil {
 			return managedMount, err
 		}
-		managedMount.Kind = kind
-		managedMount.ContentBase64 = contentBase64
-		managedMount.Entries = entries
+		managedMount.Kind = inspectedSource.Kind
+		managedMount.Source.ResolvedPath = inspectedSource.ResolvedPath
 		return managedMount, nil
 	}
 }
 
-func loadManagedAgentMountSource(specPath, sourcePath string) (string, string, []managedAgentMountEntry, error) {
+type inspectedManagedAgentMountSource struct {
+	Kind         string
+	ResolvedPath string
+}
+
+func inspectManagedAgentMountSourcePath(specPath, sourcePath string) (inspectedManagedAgentMountSource, error) {
 	resolvedSourcePath, err := resolveAgentMountSourcePath(specPath, sourcePath)
 	if err != nil {
-		return "", "", nil, err
+		return inspectedManagedAgentMountSource{}, err
 	}
-	info, err := os.Stat(resolvedSourcePath)
+	return inspectManagedAgentMountResolvedSourcePath(resolvedSourcePath)
+}
+
+func inspectManagedAgentMountResolvedSourcePath(sourcePath string) (inspectedManagedAgentMountSource, error) {
+	sourcePath = strings.TrimSpace(sourcePath)
+	if sourcePath == "" {
+		return inspectedManagedAgentMountSource{}, fmt.Errorf("must not be empty")
+	}
+	info, err := os.Stat(sourcePath)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("stat %q: %w", resolvedSourcePath, err)
+		return inspectedManagedAgentMountSource{}, fmt.Errorf("stat %q: %w", sourcePath, err)
 	}
+	resolvedSourcePath, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		return inspectedManagedAgentMountSource{}, fmt.Errorf("resolve %q: %w", sourcePath, err)
+	}
+	resolvedSourcePath = filepath.Clean(resolvedSourcePath)
 	switch {
 	case info.Mode().IsRegular():
-		data, err := os.ReadFile(resolvedSourcePath)
+		file, err := os.Open(resolvedSourcePath)
 		if err != nil {
-			return "", "", nil, fmt.Errorf("read %q: %w", resolvedSourcePath, err)
+			return inspectedManagedAgentMountSource{}, fmt.Errorf("open %q: %w", resolvedSourcePath, err)
 		}
-		return managedAgentMountKindFile, base64.StdEncoding.EncodeToString(data), nil, nil
+		if err := file.Close(); err != nil {
+			return inspectedManagedAgentMountSource{}, fmt.Errorf("close %q: %w", resolvedSourcePath, err)
+		}
+		return inspectedManagedAgentMountSource{
+			Kind:         managedAgentMountKindFile,
+			ResolvedPath: resolvedSourcePath,
+		}, nil
 	case info.IsDir():
-		entries, err := loadManagedAgentMountDirectoryEntries(resolvedSourcePath)
-		if err != nil {
-			return "", "", nil, err
+		if err := validateManagedAgentMountDirectorySource(resolvedSourcePath); err != nil {
+			return inspectedManagedAgentMountSource{}, err
 		}
-		return managedAgentMountKindDirectory, "", entries, nil
+		return inspectedManagedAgentMountSource{
+			Kind:         managedAgentMountKindDirectory,
+			ResolvedPath: resolvedSourcePath,
+		}, nil
 	default:
-		return "", "", nil, fmt.Errorf("%q is %s, want regular file or directory", resolvedSourcePath, mountSourceFileKind(info.Mode()))
+		return inspectedManagedAgentMountSource{}, fmt.Errorf("%q is %s, want regular file or directory", resolvedSourcePath, mountSourceFileKind(info.Mode()))
 	}
 }
 
-func mountSourceSelectionCount(values ...bool) int {
-	count := 0
-	for _, value := range values {
-		if value {
-			count++
-		}
-	}
-	return count
-}
-
-func loadManagedAgentMountDirectoryEntries(root string) ([]managedAgentMountEntry, error) {
-	var entries []managedAgentMountEntry
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+func validateManagedAgentMountDirectorySource(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if path == root {
 			return nil
 		}
-		relPath, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		relPath = filepath.ToSlash(relPath)
 		switch {
 		case entry.IsDir():
-			entries = append(entries, managedAgentMountEntry{
-				Path: relPath,
-				Kind: managedAgentMountKindDirectory,
-			})
 			return nil
 		case entry.Type()&fs.ModeSymlink != 0:
 			return fmt.Errorf("%q is a symlink, want directory tree of regular files only", path)
@@ -231,21 +232,18 @@ func loadManagedAgentMountDirectoryEntries(root string) ([]managedAgentMountEntr
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("%q is %s, want directory tree of regular files only", path, mountSourceFileKind(info.Mode()))
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %q: %w", path, err)
-		}
-		entries = append(entries, managedAgentMountEntry{
-			Path:          relPath,
-			Kind:          managedAgentMountKindFile,
-			ContentBase64: base64.StdEncoding.EncodeToString(data),
-		})
 		return nil
 	})
-	if err != nil {
-		return nil, err
+}
+
+func mountSourceSelectionCount(values ...bool) int {
+	count := 0
+	for _, value := range values {
+		if value {
+			count++
+		}
 	}
-	return entries, nil
+	return count
 }
 
 func mountSourceFileKind(mode fs.FileMode) string {
@@ -264,6 +262,12 @@ func (mount managedAgentMount) contentBytes() ([]byte, error) {
 }
 
 func (mount managedAgentMount) contentBytesWithLookup(lookupEnv func(string) string) ([]byte, error) {
+	if mount.isPathSource() {
+		if strings.TrimSpace(mount.Source.ResolvedPath) == "" {
+			return nil, fmt.Errorf("path-backed mount %q is missing source.resolved_path; re-sync or recreate the agent", mount.Path)
+		}
+		return nil, fmt.Errorf("path-backed mount %q does not store embedded content", mount.Path)
+	}
 	if envVar := strings.TrimSpace(mount.Source.EnvVar); envVar != "" {
 		if lookupEnv == nil {
 			lookupEnv = os.Getenv
@@ -273,6 +277,9 @@ func (mount managedAgentMount) contentBytesWithLookup(lookupEnv func(string) str
 			return nil, fmt.Errorf("environment variable %q for mount %q is empty or not set", envVar, mount.Path)
 		}
 		return []byte(value), nil
+	}
+	if strings.TrimSpace(mount.ContentBase64) == "" {
+		return nil, fmt.Errorf("mount %q has no embedded content", mount.Path)
 	}
 	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(mount.ContentBase64))
 	if err != nil {
@@ -288,19 +295,8 @@ func (mount managedAgentMount) kind() string {
 	return mount.Kind
 }
 
-func (entry managedAgentMountEntry) contentBytes() ([]byte, error) {
-	data, err := base64.StdEncoding.DecodeString(strings.TrimSpace(entry.ContentBase64))
-	if err != nil {
-		return nil, fmt.Errorf("decode %q content: %w", entry.Path, err)
-	}
-	return data, nil
-}
-
-func (entry managedAgentMountEntry) kind() string {
-	if strings.TrimSpace(entry.Kind) == "" {
-		return managedAgentMountKindFile
-	}
-	return entry.Kind
+func (mount managedAgentMount) isPathSource() bool {
+	return strings.TrimSpace(mount.Source.Path) != ""
 }
 
 func materializeAgentMounts(fsys sandbox.FileSystem, mounts []managedAgentMount, lookupEnv func(string) string) error {
@@ -319,18 +315,18 @@ func materializeAgentMounts(fsys sandbox.FileSystem, mounts []managedAgentMount,
 		if err != nil {
 			return fmt.Errorf("resolve mount target %q: %w", mount.Path, err)
 		}
-		switch mount.kind() {
-		case managedAgentMountKindFile:
+		switch {
+		case mount.isPathSource():
+			if err := materializeAgentMountPathSource(fsys, targetPath, mount); err != nil {
+				return fmt.Errorf("write mount %q: %w", targetPath, err)
+			}
+		case mount.kind() == managedAgentMountKindFile:
 			content, err := mount.contentBytesWithLookup(lookupEnv)
 			if err != nil {
 				return err
 			}
 			if err := materializeAgentMountFile(fsys, targetPath, content); err != nil {
 				return fmt.Errorf("write mount %q: %w", targetPath, err)
-			}
-		case managedAgentMountKindDirectory:
-			if err := materializeAgentMountDirectory(fsys, targetPath, mount.Entries); err != nil {
-				return fmt.Errorf("write mount directory %q: %w", targetPath, err)
 			}
 		default:
 			return fmt.Errorf("mount %q has unsupported kind %q", mount.Path, mount.Kind)
@@ -339,43 +335,102 @@ func materializeAgentMounts(fsys sandbox.FileSystem, mounts []managedAgentMount,
 	return nil
 }
 
-func materializeAgentMountDirectory(fsys sandbox.FileSystem, targetPath string, entries []managedAgentMountEntry) error {
+func materializeAgentMountPathSource(fsys sandbox.FileSystem, targetPath string, mount managedAgentMount) error {
+	resolvedSourcePath := strings.TrimSpace(mount.Source.ResolvedPath)
+	if resolvedSourcePath == "" {
+		return fmt.Errorf("path-backed mount %q is missing source.resolved_path; re-sync or recreate the agent", mount.Path)
+	}
+	inspectedSource, err := inspectManagedAgentMountResolvedSourcePath(resolvedSourcePath)
+	if err != nil {
+		return err
+	}
+	if inspectedSource.Kind != mount.kind() {
+		return fmt.Errorf(
+			"mount source %q changed from %q to %q",
+			inspectedSource.ResolvedPath,
+			mount.kind(),
+			inspectedSource.Kind,
+		)
+	}
+	switch inspectedSource.Kind {
+	case managedAgentMountKindFile:
+		return materializeAgentMountFileFromSourcePath(fsys, targetPath, inspectedSource.ResolvedPath)
+	case managedAgentMountKindDirectory:
+		return materializeAgentMountDirectoryFromSourcePath(fsys, targetPath, inspectedSource.ResolvedPath)
+	default:
+		return fmt.Errorf("mount %q has unsupported kind %q", mount.Path, inspectedSource.Kind)
+	}
+}
+
+func materializeAgentMountDirectoryFromSourcePath(fsys sandbox.FileSystem, targetPath, sourceRoot string) error {
 	if err := ensureMountDirectory(fsys, targetPath); err != nil {
 		return err
 	}
-	for _, entry := range entries {
-		entryPath, err := sandbox.ResolvePath(fsys, targetPath, filepath.FromSlash(entry.Path))
+	return filepath.WalkDir(sourceRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == sourceRoot {
+			return nil
+		}
+		relPath, err := filepath.Rel(sourceRoot, path)
 		if err != nil {
-			return fmt.Errorf("resolve directory mount entry %q: %w", entry.Path, err)
+			return err
 		}
-		switch entry.kind() {
-		case managedAgentMountKindDirectory:
-			if err := ensureMountDirectory(fsys, entryPath); err != nil {
-				return err
-			}
-		case managedAgentMountKindFile:
-			content, err := entry.contentBytes()
-			if err != nil {
-				return err
-			}
-			if err := materializeAgentMountFile(fsys, entryPath, content); err != nil {
-				return err
-			}
-		default:
-			return fmt.Errorf("directory mount entry %q has unsupported kind %q", entry.Path, entry.Kind)
+		entryPath, err := sandbox.ResolvePath(fsys, targetPath, relPath)
+		if err != nil {
+			return fmt.Errorf("resolve directory mount entry %q: %w", relPath, err)
 		}
-	}
-	return nil
+		switch {
+		case entry.IsDir():
+			return ensureMountDirectory(fsys, entryPath)
+		case entry.Type()&fs.ModeSymlink != 0:
+			return fmt.Errorf("%q is a symlink, want directory tree of regular files only", path)
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%q is %s, want directory tree of regular files only", path, mountSourceFileKind(info.Mode()))
+		}
+		return materializeAgentMountFileFromSourcePath(fsys, entryPath, path)
+	})
 }
 
-func materializeAgentMountFile(fsys sandbox.FileSystem, targetPath string, content []byte) error {
+func materializeAgentMountFileFromSourcePath(fsys sandbox.FileSystem, targetPath, sourcePath string) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("open %q: %w", sourcePath, err)
+	}
+	defer sourceFile.Close()
+	return materializeAgentMountFileFromReader(fsys, targetPath, sourceFile)
+}
+
+func materializeAgentMountFileFromReader(fsys sandbox.FileSystem, targetPath string, content io.Reader) (err error) {
 	if err := ensureMountDirectory(fsys, filepath.Dir(targetPath)); err != nil {
 		return err
 	}
 	if err := ensureMountFileTarget(fsys, targetPath); err != nil {
 		return err
 	}
-	return fsys.WriteFile(targetPath, content, 0o644)
+	targetFile, err := fsys.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := targetFile.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
+	if _, err = io.Copy(targetFile, content); err != nil {
+		return err
+	}
+	return nil
+}
+
+func materializeAgentMountFile(fsys sandbox.FileSystem, targetPath string, content []byte) error {
+	return materializeAgentMountFileFromReader(fsys, targetPath, bytes.NewReader(content))
 }
 
 func ensureMountDirectory(fsys sandbox.FileSystem, path string) error {

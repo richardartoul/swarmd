@@ -130,13 +130,24 @@ Behavior notes:
 | `runtime.filesystem.kind` | string | `disk` or `memory`. Defaults to `disk`. |
 | `mounts[].path` | string | Destination path inside the sandbox root. Must not resolve to the root itself or escape it. |
 | `mounts[].description` | string | Optional human-readable description surfaced in prompt guidance. |
-| `mounts[].source.path` | string | Host file or directory path. Relative paths resolve from the YAML file's directory. |
+| `mounts[].source.path` | string | Host file or directory path. Relative paths resolve from the YAML file's directory. The runtime validates the path during sync, then snapshots it into the sandbox when a worker starts. |
 | `mounts[].source.env_var` | string | Reads file contents from an environment variable value. |
-| `mounts[].source.inline` | string | Inline file contents stored directly in YAML. |
+| `mounts[].source.inline` | string | Inline file contents stored directly in YAML and embedded in the managed config. Keep this to small files. |
 
 Mounts are sandbox-local copies, not live bind mounts. That stays true in both
 disk and memory mode.
 Exactly one of `mounts[].source.path`, `mounts[].source.env_var`, or `mounts[].source.inline` must be set for each mount.
+
+`mounts[].source.path` behavior is intentionally deferred:
+
+- sync validates that the current host source exists and is either a regular file or a directory tree of regular files
+- the synced agent config stores path metadata, not the file bytes or per-file directory payloads
+- worker startup re-reads the current host source and copies it into the sandbox
+- changing host contents while a worker stays warm does not update the running sandbox copy or restart the worker
+- updated host contents appear the next time the worker is recreated or restarted for some other reason
+- top-level symlink sources are followed and canonicalized during sync, and directory trees still cannot contain nested symlinks or special files
+
+`mounts[].source.inline` does not use deferred snapshots. Its contents stay embedded in config, so large inline blobs still increase config size.
 
 `root_path` resolution works like this:
 

@@ -352,7 +352,7 @@ tools:
 	}
 }
 
-func TestSyncSpecsFromConfigRootPersistsResolvedMountSettings(t *testing.T) {
+func TestSyncSpecsFromConfigRootPersistsCompactPathMountMetadata(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -366,6 +366,10 @@ func TestSyncSpecsFromConfigRootPersistsResolvedMountSettings(t *testing.T) {
 	if err := os.WriteFile(sourcePath, []byte("version one"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", sourcePath, err)
 	}
+	resolvedSourcePath, err := filepath.EvalSymlinks(sourcePath)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks(%q) error = %v", sourcePath, err)
+	}
 	templateDir := filepath.Join(configRoot, "namespaces", "default", "templates")
 	if err := os.MkdirAll(filepath.Join(templateDir, "partials"), 0o755); err != nil {
 		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Join(templateDir, "partials"), err)
@@ -375,6 +379,10 @@ func TestSyncSpecsFromConfigRootPersistsResolvedMountSettings(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(templateDir, "partials", "header.txt"), []byte("header template"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(header.txt) error = %v", err)
+	}
+	resolvedTemplateDir, err := filepath.EvalSymlinks(templateDir)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks(%q) error = %v", templateDir, err)
 	}
 
 	writeAgentSpec(t, configRoot, "default", "mount-worker", `
@@ -405,6 +413,13 @@ mounts:
 	if err != nil {
 		t.Fatalf("GetAgent() first error = %v", err)
 	}
+	firstConfigJSON := record.ConfigJSON
+	if strings.Contains(firstConfigJSON, "version one") {
+		t.Fatalf("first ConfigJSON unexpectedly embedded file contents: %q", firstConfigJSON)
+	}
+	if strings.Contains(firstConfigJSON, "summary template") {
+		t.Fatalf("first ConfigJSON unexpectedly embedded directory contents: %q", firstConfigJSON)
+	}
 	mounts, err := loadAgentMountSettings(record.ConfigJSON)
 	if err != nil {
 		t.Fatalf("loadAgentMountSettings() first error = %v", err)
@@ -419,11 +434,14 @@ mounts:
 	if got := fileMount.Source.Path; got != "../seed.txt" {
 		t.Fatalf("fileMount.Source.Path = %q, want %q", got, "../seed.txt")
 	}
+	if got := fileMount.Source.ResolvedPath; got != resolvedSourcePath {
+		t.Fatalf("fileMount.Source.ResolvedPath = %q, want %q", got, resolvedSourcePath)
+	}
 	if got := fileMount.kind(); got != managedAgentMountKindFile {
 		t.Fatalf("fileMount.kind() = %q, want %q", got, managedAgentMountKindFile)
 	}
-	if got := string(mustManagedMountContent(t, fileMount)); got != "version one" {
-		t.Fatalf("fileMount content = %q, want %q", got, "version one")
+	if got := fileMount.ContentBase64; got != "" {
+		t.Fatalf("fileMount.ContentBase64 = %q, want empty for deferred path mount", got)
 	}
 	inlineMount := findManagedMount(t, mounts, "mounted/inline.txt")
 	if got := inlineMount.Description; got != "Inline example file." {
@@ -439,14 +457,14 @@ mounts:
 	if got := dirMount.kind(); got != managedAgentMountKindDirectory {
 		t.Fatalf("dirMount.kind() = %q, want %q", got, managedAgentMountKindDirectory)
 	}
-	if got := string(mustManagedMountEntryContent(t, findManagedMountEntry(t, dirMount.Entries, "summary.md"))); got != "summary template" {
-		t.Fatalf("summary entry content = %q, want %q", got, "summary template")
+	if got := dirMount.Source.Path; got != "../templates" {
+		t.Fatalf("dirMount.Source.Path = %q, want %q", got, "../templates")
 	}
-	if got := string(mustManagedMountEntryContent(t, findManagedMountEntry(t, dirMount.Entries, "partials/header.txt"))); got != "header template" {
-		t.Fatalf("header entry content = %q, want %q", got, "header template")
+	if got := dirMount.Source.ResolvedPath; got != resolvedTemplateDir {
+		t.Fatalf("dirMount.Source.ResolvedPath = %q, want %q", got, resolvedTemplateDir)
 	}
-	if got := findManagedMountEntry(t, dirMount.Entries, "partials").kind(); got != managedAgentMountKindDirectory {
-		t.Fatalf("partials entry kind = %q, want %q", got, managedAgentMountKindDirectory)
+	if got := dirMount.ContentBase64; got != "" {
+		t.Fatalf("dirMount.ContentBase64 = %q, want empty for deferred path mount", got)
 	}
 
 	if err := os.WriteFile(sourcePath, []byte("version two"), 0o644); err != nil {
@@ -460,12 +478,94 @@ mounts:
 	if err != nil {
 		t.Fatalf("GetAgent() second error = %v", err)
 	}
+	if got := record.ConfigJSON; got != firstConfigJSON {
+		t.Fatalf("ConfigJSON changed after only source content changed\nold: %s\nnew: %s", firstConfigJSON, got)
+	}
 	mounts, err = loadAgentMountSettings(record.ConfigJSON)
 	if err != nil {
 		t.Fatalf("loadAgentMountSettings() second error = %v", err)
 	}
 	fileMount = findManagedMount(t, mounts, "mounted/source.txt")
-	if got := string(mustManagedMountContent(t, fileMount)); got != "version two" {
-		t.Fatalf("fileMount content = %q, want %q after resync", got, "version two")
+	if got := fileMount.Source.ResolvedPath; got != resolvedSourcePath {
+		t.Fatalf("fileMount.Source.ResolvedPath = %q, want %q after resync", got, resolvedSourcePath)
+	}
+}
+
+func TestSyncSpecsFromConfigRootUpdatesConfigWhenMountMetadataChanges(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := newServerStore(t)
+	configRoot := t.TempDir()
+	rootBase := filepath.Join(t.TempDir(), "roots")
+	firstSourcePath := filepath.Join(configRoot, "namespaces", "default", "seed-one.txt")
+	secondSourcePath := filepath.Join(configRoot, "namespaces", "default", "seed-two.txt")
+	if err := os.MkdirAll(filepath.Dir(firstSourcePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(firstSourcePath), err)
+	}
+	if err := os.WriteFile(firstSourcePath, []byte("version one"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", firstSourcePath, err)
+	}
+	if err := os.WriteFile(secondSourcePath, []byte("version two"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", secondSourcePath, err)
+	}
+	resolvedSecondSourcePath, err := filepath.EvalSymlinks(secondSourcePath)
+	if err != nil {
+		t.Fatalf("filepath.EvalSymlinks(%q) error = %v", secondSourcePath, err)
+	}
+
+	writeAgentSpec(t, configRoot, "default", "mount-worker", `
+version: 1
+model:
+  name: gpt-5
+prompt: hello
+mounts:
+  - path: mounted/source.txt
+    source:
+      path: ../seed-one.txt
+`)
+
+	if _, err := SyncSpecsFromConfigRoot(ctx, store, configRoot, rootBase); err != nil {
+		t.Fatalf("SyncSpecsFromConfigRoot() first error = %v", err)
+	}
+
+	record, err := store.GetAgent(ctx, "default", "mount-worker")
+	if err != nil {
+		t.Fatalf("GetAgent() first error = %v", err)
+	}
+	firstConfigJSON := record.ConfigJSON
+
+	writeAgentSpec(t, configRoot, "default", "mount-worker", `
+version: 1
+model:
+  name: gpt-5
+prompt: hello
+mounts:
+  - path: mounted/source.txt
+    source:
+      path: ../seed-two.txt
+`)
+
+	if _, err := SyncSpecsFromConfigRoot(ctx, store, configRoot, rootBase); err != nil {
+		t.Fatalf("SyncSpecsFromConfigRoot() second error = %v", err)
+	}
+
+	record, err = store.GetAgent(ctx, "default", "mount-worker")
+	if err != nil {
+		t.Fatalf("GetAgent() second error = %v", err)
+	}
+	if got := record.ConfigJSON; got == firstConfigJSON {
+		t.Fatalf("ConfigJSON did not change after mount metadata changed: %s", got)
+	}
+	mounts, err := loadAgentMountSettings(record.ConfigJSON)
+	if err != nil {
+		t.Fatalf("loadAgentMountSettings() error = %v", err)
+	}
+	fileMount := findManagedMount(t, mounts, "mounted/source.txt")
+	if got := fileMount.Source.Path; got != "../seed-two.txt" {
+		t.Fatalf("fileMount.Source.Path = %q, want %q", got, "../seed-two.txt")
+	}
+	if got := fileMount.Source.ResolvedPath; got != resolvedSecondSourcePath {
+		t.Fatalf("fileMount.Source.ResolvedPath = %q, want %q", got, resolvedSecondSourcePath)
 	}
 }

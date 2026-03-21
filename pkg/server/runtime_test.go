@@ -1016,18 +1016,28 @@ func TestRuntimeManagerMaterializesMountedFilesBeforeRun(t *testing.T) {
 	ctx := context.Background()
 	s := newServerStore(t)
 	namespace := createServerNamespace(t, ctx, s, "namespace-mounted-files")
+	sourcePath := filepath.Join(t.TempDir(), "source", "message.txt")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(sourcePath), err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("mounted hello\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", sourcePath, err)
+	}
 	root := filepath.Join(t.TempDir(), "worker")
-	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, map[string]any{
-		"managed_by":  "filesystem",
-		"source_path": "test.yaml",
-		"mounts": []map[string]any{
+	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
+		Mounts: []managedAgentMount{
 			{
-				"path":           "mounted/message.txt",
-				"content_base64": base64.StdEncoding.EncodeToString([]byte("mounted hello\n")),
+				Path: "mounted/message.txt",
+				Source: managedAgentMountSource{
+					Path:         sourcePath,
+					ResolvedPath: sourcePath,
+				},
+				Kind: managedAgentMountKindFile,
 			},
 			{
-				"path":           "mounted/show.sh",
-				"content_base64": base64.StdEncoding.EncodeToString([]byte("cat mounted/message.txt\n")),
+				Path:          "mounted/show.sh",
+				Kind:          managedAgentMountKindFile,
+				ContentBase64: base64.StdEncoding.EncodeToString([]byte("cat mounted/message.txt\n")),
 			},
 		},
 	})
@@ -1170,6 +1180,21 @@ func TestRuntimeManagerMaterializesMountedDirectoriesAndOverwritesExistingTarget
 	ctx := context.Background()
 	s := newServerStore(t)
 	namespace := createServerNamespace(t, ctx, s, "namespace-mounted-directories")
+	sourceRoot := filepath.Join(t.TempDir(), "source")
+	assetsSource := filepath.Join(sourceRoot, "assets")
+	fileSource := filepath.Join(sourceRoot, "file.txt")
+	if err := os.MkdirAll(filepath.Join(assetsSource, "templates"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Join(assetsSource, "templates"), err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsSource, "templates", "base.txt"), []byte("base template\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(base.txt) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsSource, "notes.txt"), []byte("directory note\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(notes.txt) error = %v", err)
+	}
+	if err := os.WriteFile(fileSource, []byte("fresh file\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", fileSource, err)
+	}
 	root := filepath.Join(t.TempDir(), "worker")
 	if err := os.MkdirAll(filepath.Join(root, "mounted"), 0o755); err != nil {
 		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Join(root, "mounted"), err)
@@ -1184,17 +1209,19 @@ func TestRuntimeManagerMaterializesMountedDirectoriesAndOverwritesExistingTarget
 		Mounts: []managedAgentMount{
 			{
 				Path: "mounted/assets",
-				Kind: managedAgentMountKindDirectory,
-				Entries: []managedAgentMountEntry{
-					{Path: "templates", Kind: managedAgentMountKindDirectory},
-					{Path: "templates/base.txt", Kind: managedAgentMountKindFile, ContentBase64: base64.StdEncoding.EncodeToString([]byte("base template\n"))},
-					{Path: "notes.txt", Kind: managedAgentMountKindFile, ContentBase64: base64.StdEncoding.EncodeToString([]byte("directory note\n"))},
+				Source: managedAgentMountSource{
+					Path:         assetsSource,
+					ResolvedPath: assetsSource,
 				},
+				Kind: managedAgentMountKindDirectory,
 			},
 			{
-				Path:          "mounted/file.txt",
-				Kind:          managedAgentMountKindFile,
-				ContentBase64: base64.StdEncoding.EncodeToString([]byte("fresh file\n")),
+				Path: "mounted/file.txt",
+				Source: managedAgentMountSource{
+					Path:         fileSource,
+					ResolvedPath: fileSource,
+				},
+				Kind: managedAgentMountKindFile,
 			},
 		},
 	})
@@ -1263,22 +1290,38 @@ func TestRuntimeManagerAddsMountGuidanceToSystemPrompt(t *testing.T) {
 	ctx := context.Background()
 	s := newServerStore(t)
 	namespace := createServerNamespace(t, ctx, s, "namespace-mount-prompt")
+	sourceRoot := filepath.Join(t.TempDir(), "source")
+	contextSource := filepath.Join(sourceRoot, "context.txt")
+	templatesSource := filepath.Join(sourceRoot, "templates")
+	if err := os.MkdirAll(templatesSource, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", templatesSource, err)
+	}
+	if err := os.WriteFile(contextSource, []byte("context"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", contextSource, err)
+	}
+	if err := os.WriteFile(filepath.Join(templatesSource, "summary.md"), []byte("template"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(summary.md) error = %v", err)
+	}
 	root := filepath.Join(t.TempDir(), "worker")
 	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
 		Mounts: []managedAgentMount{
 			{
-				Path:          "mounted/context.txt",
-				Description:   "Current run context file.",
-				Kind:          managedAgentMountKindFile,
-				ContentBase64: base64.StdEncoding.EncodeToString([]byte("context")),
+				Path:        "mounted/context.txt",
+				Description: "Current run context file.",
+				Source: managedAgentMountSource{
+					Path:         contextSource,
+					ResolvedPath: contextSource,
+				},
+				Kind: managedAgentMountKindFile,
 			},
 			{
 				Path:        "mounted/templates",
 				Description: "Reusable report templates.",
-				Kind:        managedAgentMountKindDirectory,
-				Entries: []managedAgentMountEntry{
-					{Path: "summary.md", Kind: managedAgentMountKindFile, ContentBase64: base64.StdEncoding.EncodeToString([]byte("template"))},
+				Source: managedAgentMountSource{
+					Path:         templatesSource,
+					ResolvedPath: templatesSource,
 				},
+				Kind: managedAgentMountKindDirectory,
 			},
 		},
 	})
@@ -1345,6 +1388,163 @@ func TestRuntimeManagerAddsMountGuidanceToSystemPrompt(t *testing.T) {
 	}
 	if !strings.Contains(combinedPrompts, "sandbox-local copies") {
 		t.Fatalf("combined system prompts = %q, want copy semantics guidance", combinedPrompts)
+	}
+}
+
+func TestRuntimeManagerRefreshesPathMountsOnlyAfterWorkerRestart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-mounted-refresh")
+	sourcePath := filepath.Join(t.TempDir(), "source", "message.txt")
+	if err := os.MkdirAll(filepath.Dir(sourcePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(sourcePath), err)
+	}
+	if err := os.WriteFile(sourcePath, []byte("version one\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", sourcePath, err)
+	}
+	root := filepath.Join(t.TempDir(), "worker")
+	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
+		Mounts: []managedAgentMount{{
+			Path: "mounted/message.txt",
+			Source: managedAgentMountSource{
+				Path:         sourcePath,
+				ResolvedPath: sourcePath,
+			},
+			Kind: managedAgentMountKindFile,
+		}},
+	})
+
+	firstManager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					withThought(shell("cat mounted/message.txt > mounted/first.txt"), "read first mounted file snapshot"),
+					{Finish: &agent.FinishAction{Value: "first"}},
+					withThought(shell("cat mounted/message.txt > mounted/second.txt"), "read second mounted file snapshot"),
+					{Finish: &agent.FinishAction{Value: "second"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- firstManager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-mounted-refresh-first",
+		RecipientAgentID: "worker",
+		Payload:          "read first snapshot",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage(first) error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	if err := os.WriteFile(sourcePath, []byte("version two\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) update error = %v", sourcePath, err)
+	}
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-mounted-refresh-second",
+		RecipientAgentID: "worker",
+		Payload:          "read second snapshot",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage(second) error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 2, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	firstRead, err := os.ReadFile(filepath.Join(root, "mounted", "first.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(first.txt) error = %v", err)
+	}
+	if got := string(firstRead); got != "version one\n" {
+		t.Fatalf("first.txt = %q, want %q", got, "version one\n")
+	}
+	secondRead, err := os.ReadFile(filepath.Join(root, "mounted", "second.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(second.txt) error = %v", err)
+	}
+	if got := string(secondRead); got != "version one\n" {
+		t.Fatalf("second.txt = %q, want running worker to keep %q", got, "version one\n")
+	}
+
+	secondManager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					withThought(shell("cat mounted/message.txt > mounted/third.txt"), "read mounted file after restart"),
+					{Finish: &agent.FinishAction{Value: "third"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel = context.WithCancel(context.Background())
+	errCh = make(chan error, 1)
+	go func() {
+		errCh <- secondManager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-mounted-refresh-third",
+		RecipientAgentID: "worker",
+		Payload:          "read third snapshot",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage(third) error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 3, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	thirdRead, err := os.ReadFile(filepath.Join(root, "mounted", "third.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(third.txt) error = %v", err)
+	}
+	if got := string(thirdRead); got != "version two\n" {
+		t.Fatalf("third.txt = %q, want %q after restart", got, "version two\n")
 	}
 }
 
@@ -1466,12 +1666,12 @@ func TestWorkerFingerprintIncludesConfigJSON(t *testing.T) {
 			MaxOutputBytes:         1024,
 			LeaseDuration:          time.Minute,
 			ModelBaseURL:           "https://example.test",
-			ConfigJSON:             `{"version":1,"type":"agent_config","body":{"mounts":[{"path":"mounted/file.txt","content_base64":"b25l"}]}}`,
+			ConfigJSON:             `{"version":1,"type":"agent_config","body":{"mounts":[{"path":"mounted/file.txt","kind":"file","source":{"path":"../seed-one.txt","resolved_path":"/tmp/seed-one.txt"}}]}}`,
 		},
 		SystemPrompt: "test prompt",
 	}
 	updated := record
-	updated.ConfigJSON = `{"version":1,"type":"agent_config","body":{"mounts":[{"path":"mounted/file.txt","content_base64":"dHdv"}]}}`
+	updated.ConfigJSON = `{"version":1,"type":"agent_config","body":{"mounts":[{"path":"mounted/file.txt","kind":"file","source":{"path":"../seed-two.txt","resolved_path":"/tmp/seed-two.txt"}}]}}`
 
 	if workerFingerprint(record) == workerFingerprint(updated) {
 		t.Fatal("workerFingerprint() ignored ConfigJSON changes, want different fingerprints")
