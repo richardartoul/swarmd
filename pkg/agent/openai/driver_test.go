@@ -473,7 +473,7 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 				},
 			},
 		},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
 
 	if len(input) != 7 {
 		t.Fatalf("len(input) = %d, want 7", len(input))
@@ -510,6 +510,368 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 	}
 }
 
+func TestBuildResponsesInputUsesRawReplayDataWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	input := buildResponsesInput(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			Thought:        "inspect the file first",
+			ActionName:     agent.ToolNameReadFile,
+			ActionToolKind: agent.ToolKindFunction,
+			ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+			ActionOutput:   "demo content",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+		StepReplayData: map[string]string{
+			"step_1": compactJSON([]responsesOutputItem{
+				{
+					Type: "reasoning",
+					Summary: []responsesOutputContent{{
+						Type: "summary_text",
+						Text: "inspect the file first",
+					}},
+				},
+				{
+					Type:      "function_call",
+					CallID:    "call_abc",
+					Name:      agent.ToolNameReadFile,
+					Arguments: `{"file_path":"/tmp/demo.txt"}`,
+				},
+			}),
+		},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
+
+	if len(input) != 5 {
+		t.Fatalf("len(input) = %d, want 5", len(input))
+	}
+	if input[0].Role != agent.MessageRoleUser || input[0].Content != "trigger context" {
+		t.Fatalf("input[0] = %#v, want trigger context first", input[0])
+	}
+	if input[1].Type != "reasoning" || len(input[1].Summary) != 1 || input[1].Summary[0].Text != "inspect the file first" {
+		t.Fatalf("input[1] = %#v, want raw reasoning replay", input[1])
+	}
+	if input[2].Type != "function_call" || input[2].CallID != "call_abc" || input[2].Name != agent.ToolNameReadFile {
+		t.Fatalf("input[2] = %#v, want raw function_call replay", input[2])
+	}
+	if input[3].Type != "function_call_output" || input[3].CallID != "call_abc" {
+		t.Fatalf("input[3] = %#v, want function_call_output replay with provider call id", input[3])
+	}
+	if !strings.Contains(input[3].Output, "demo content") {
+		t.Fatalf("input[3].Output = %q, want observation output", input[3].Output)
+	}
+	if input[4].Content != testCurrentStateMessage(2) {
+		t.Fatalf("input[4].Content = %q, want current-state footer last", input[4].Content)
+	}
+}
+
+func TestBuildResponsesInputInterleavesPriorSessionTurnBeforeCurrentTurn(t *testing.T) {
+	t.Parallel()
+
+	input := buildResponsesInput(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+		},
+		ConversationTurns: []agent.ConversationTurn{{
+			User: agent.Message{
+				Role:    agent.MessageRoleUser,
+				Content: "first question",
+			},
+			Assistant: &agent.Message{
+				Role:    agent.MessageRoleAssistant,
+				Content: "first answer",
+			},
+			Steps: []agent.Step{{
+				Index:          1,
+				Thought:        "inspect the file first",
+				ActionName:     agent.ToolNameReadFile,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   "demo content",
+			}},
+		}},
+		CurrentTurnMessages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "second question"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
+
+	if len(input) != 8 {
+		t.Fatalf("len(input) = %d, want 8", len(input))
+	}
+	if input[0].Role != agent.MessageRoleUser || input[0].Content != "first question" {
+		t.Fatalf("input[0] = %#v, want prior turn user first", input[0])
+	}
+	if input[1].Role != agent.MessageRoleAssistant || input[1].Content != "inspect the file first" {
+		t.Fatalf("input[1] = %#v, want replayed assistant thought", input[1])
+	}
+	if input[2].Type != "function_call" || input[2].CallID != "step_1" {
+		t.Fatalf("input[2] = %#v, want replayed function call", input[2])
+	}
+	if input[3].Type != "function_call_output" || input[3].CallID != "step_1" {
+		t.Fatalf("input[3] = %#v, want replayed function call output", input[3])
+	}
+	if input[4].Role != agent.MessageRoleAssistant || input[4].Content != "first answer" {
+		t.Fatalf("input[4] = %#v, want prior turn assistant before current turn", input[4])
+	}
+	if input[5].Role != agent.MessageRoleUser || input[5].Content != "second question" {
+		t.Fatalf("input[5] = %#v, want current turn user after prior turn history", input[5])
+	}
+	if input[6].Role != agent.MessageRoleUser || input[6].Content != "stable protocol" {
+		t.Fatalf("input[6] = %#v, want protocol before the current-state footer", input[6])
+	}
+	if input[7].Content != testCurrentStateMessage(1) {
+		t.Fatalf("input[7] = %#v, want current-state footer last", input[7])
+	}
+}
+
+func TestBuildResponsesRequestUsesPreviousResponseIDForToolContinuation(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Step: 2,
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+			{Role: agent.MessageRoleUser, Content: "trigger context"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(2)},
+		},
+		Steps: []agent.Step{{
+			Index:          1,
+			ActionName:     agent.ToolNameReadFile,
+			ActionToolKind: agent.ToolKindFunction,
+			ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+			Status:         agent.StepStatusOK,
+			CWDAfter:       "/workspace",
+			ActionOutput:   "demo content",
+		}},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+		StepReplayData: map[string]string{
+			"step_1": compactJSON([]responsesOutputItem{{
+				Type:      "function_call",
+				CallID:    "call_abc",
+				Name:      agent.ToolNameReadFile,
+				Arguments: `{"file_path":"/tmp/demo.txt"}`,
+			}}),
+		},
+		ProviderState: compactJSON(openAIProviderState{
+			ResponseID: "resp_1",
+		}),
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+
+	if request.PreviousResponseID != "resp_1" {
+		t.Fatalf("request previous_response_id = %q, want %q", request.PreviousResponseID, "resp_1")
+	}
+	if len(request.Input) != 2 {
+		t.Fatalf("len(request.Input) = %d, want 2", len(request.Input))
+	}
+	if request.Input[0].Type != "function_call_output" || request.Input[0].CallID != "call_abc" {
+		t.Fatalf("request.Input[0] = %#v, want function_call_output with provider call id", request.Input[0])
+	}
+	if !strings.Contains(request.Input[0].Output, "demo content") {
+		t.Fatalf("request.Input[0].Output = %q, want observation output", request.Input[0].Output)
+	}
+	if request.Input[1].Content != testCurrentStateMessage(2) {
+		t.Fatalf("request.Input[1].Content = %q, want current-state footer", request.Input[1].Content)
+	}
+}
+
+func TestBuildResponsesRequestUsesPreviousResponseIDForResolvedNewTurn(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Step: 1,
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+		},
+		CurrentTurnMessages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "second question"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
+		},
+		ProviderState: compactJSON(openAIProviderState{
+			ResponseID: "resp_1",
+			Output: []responsesOutputItem{{
+				Type: "message",
+				Role: agent.MessageRoleAssistant,
+			}},
+		}),
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+
+	if request.PreviousResponseID != "resp_1" {
+		t.Fatalf("request previous_response_id = %q, want %q", request.PreviousResponseID, "resp_1")
+	}
+	if len(request.Input) != 2 {
+		t.Fatalf("len(request.Input) = %d, want 2", len(request.Input))
+	}
+	if request.Input[0].Role != agent.MessageRoleUser || request.Input[0].Content != "second question" {
+		t.Fatalf("request.Input[0] = %#v, want current user turn", request.Input[0])
+	}
+	if request.Input[1].Content != testCurrentStateMessage(1) {
+		t.Fatalf("request.Input[1] = %#v, want current-state footer", request.Input[1])
+	}
+}
+
+func TestBuildResponsesRequestFallsBackToReplayForNewTurnAfterUnresolvedToolCall(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:   "gpt-5.4",
+		baseURL: DefaultBaseURL,
+	}
+	request := driver.buildResponsesRequest(agent.Request{
+		Step: 1,
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+		},
+		ConversationTurns: []agent.ConversationTurn{{
+			User: agent.Message{
+				Role:    agent.MessageRoleUser,
+				Content: "first question",
+			},
+			Steps: []agent.Step{{
+				Index:          1,
+				ActionName:     agent.ToolNameReadFile,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   "demo content",
+			}},
+		}},
+		CurrentTurnMessages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "second question"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+		}},
+		ProviderState: compactJSON(openAIProviderState{
+			ResponseID: "resp_1",
+			Output: []responsesOutputItem{{
+				Type:      "function_call",
+				CallID:    "call_abc",
+				Name:      agent.ToolNameReadFile,
+				Arguments: `{"file_path":"/tmp/demo.txt"}`,
+			}},
+		}),
+	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+
+	if request.PreviousResponseID != "" {
+		t.Fatalf("request previous_response_id = %q, want empty for unresolved prior tool call", request.PreviousResponseID)
+	}
+	if len(request.Input) != 6 {
+		t.Fatalf("len(request.Input) = %d, want 6", len(request.Input))
+	}
+	if request.Input[0].Role != agent.MessageRoleUser || request.Input[0].Content != "first question" {
+		t.Fatalf("request.Input[0] = %#v, want prior turn user first", request.Input[0])
+	}
+	if request.Input[1].Type != "function_call" || request.Input[1].CallID != "step_1" {
+		t.Fatalf("request.Input[1] = %#v, want replayed function_call", request.Input[1])
+	}
+	if request.Input[2].Type != "function_call_output" || request.Input[2].CallID != "step_1" {
+		t.Fatalf("request.Input[2] = %#v, want replayed function_call_output", request.Input[2])
+	}
+	if request.Input[3].Role != agent.MessageRoleUser || request.Input[3].Content != "second question" {
+		t.Fatalf("request.Input[3] = %#v, want new turn user after replayed history", request.Input[3])
+	}
+	if request.Input[4].Role != agent.MessageRoleUser || request.Input[4].Content != "stable protocol" {
+		t.Fatalf("request.Input[4] = %#v, want protocol before current-state footer", request.Input[4])
+	}
+	if request.Input[5].Content != testCurrentStateMessage(1) {
+		t.Fatalf("request.Input[5] = %#v, want current-state footer", request.Input[5])
+	}
+}
+
+func TestParseResponsesDecisionCapturesReplayAndProviderStateForToolCalls(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseResponsesDecision(responsesResponse{
+		ID: "resp_1",
+		Output: []responsesOutputItem{
+			{
+				Type: "reasoning",
+				Summary: []responsesOutputContent{{
+					Type: "summary_text",
+					Text: "inspect the file first",
+				}},
+			},
+			{
+				Type:      "function_call",
+				CallID:    "call_abc",
+				Name:      agent.ToolNameReadFile,
+				Arguments: `{"file_path":"/tmp/demo.txt"}`,
+			},
+		},
+	}, []agent.ToolDefinition{{
+		Name: agent.ToolNameReadFile,
+		Kind: agent.ToolKindFunction,
+	}}, openAIAdapterCapabilities{})
+	if err != nil {
+		t.Fatalf("parseResponsesDecision() error = %v", err)
+	}
+	if decision.Tool == nil || decision.Tool.Name != agent.ToolNameReadFile {
+		t.Fatalf("decision.Tool = %#v, want read_file", decision.Tool)
+	}
+	if decision.ReplayData == "" {
+		t.Fatal("decision.ReplayData = empty, want raw replay output")
+	}
+	replayItems, ok := decodeOpenAIReplayOutputItems(decision.ReplayData)
+	if !ok || len(replayItems) != 2 {
+		t.Fatalf("decision.ReplayData = %q, want two replay items", decision.ReplayData)
+	}
+	if replayItems[1].CallID != "call_abc" {
+		t.Fatalf("replayItems[1].CallID = %q, want %q", replayItems[1].CallID, "call_abc")
+	}
+	if decision.ProviderState == "" {
+		t.Fatal("decision.ProviderState = empty, want provider continuation state")
+	}
+	state, ok := decodeOpenAIProviderState(decision.ProviderState)
+	if !ok {
+		t.Fatalf("decision.ProviderState = %q, want decodable provider state", decision.ProviderState)
+	}
+	if state.ResponseID != "resp_1" {
+		t.Fatalf("provider state response_id = %q, want %q", state.ResponseID, "resp_1")
+	}
+	if len(state.Output) != 2 {
+		t.Fatalf("len(provider state output) = %d, want 2", len(state.Output))
+	}
+}
+
 func TestBuildResponsesToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
 	t.Parallel()
 
@@ -532,6 +894,69 @@ func TestBuildResponsesToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
 	}
 	if !strings.Contains(tools[0].Description, "Safety tags: read_only, bounded_output.") {
 		t.Fatalf("tool description = %q, want safety tags", tools[0].Description)
+	}
+}
+
+func TestBuildResponsesToolsUsesNativeWebSearchWhenSupported(t *testing.T) {
+	t.Parallel()
+
+	webSearch := agent.ToolDefinition{
+		Name:        agent.ToolNameWebSearch,
+		Description: "Search the web for current information.",
+		Kind:        agent.ToolKindFunction,
+		Parameters:  map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}, "additionalProperties": false},
+		Interop: agent.ToolInterop{
+			OpenAIPreferredKind: agent.ToolBoundaryKindWebSearch,
+			OpenAIFallbackKind:  agent.ToolBoundaryKindFunction,
+		},
+	}
+	tools := buildResponsesTools([]agent.ToolDefinition{webSearch}, openAIAdapterCapabilities{SupportsHostedWebSearch: true})
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if tools[0].Type != string(agent.ToolBoundaryKindWebSearch) {
+		t.Fatalf("tools[0].Type = %q, want native web_search", tools[0].Type)
+	}
+	if tools[0].Name != "" {
+		t.Fatalf("tools[0].Name = %q, want empty built-in tool name", tools[0].Name)
+	}
+	if tools[0].Description != "" {
+		t.Fatalf("tools[0].Description = %q, want empty built-in tool description", tools[0].Description)
+	}
+	instructions := buildResponsesInstructions([]agent.Message{{
+		Role:    agent.MessageRoleSystem,
+		Content: "test prompt",
+	}}, []agent.ToolDefinition{webSearch}, openAIAdapterCapabilities{SupportsHostedWebSearch: true})
+	if !strings.Contains(instructions, "Provider-native built-in tools may run internally before the final response.") {
+		t.Fatalf("instructions = %q, want built-in tool guidance", instructions)
+	}
+}
+
+func TestParseResponsesDecisionIgnoresWebSearchCallsAndReturnsFinalAnswer(t *testing.T) {
+	t.Parallel()
+
+	decision, err := parseResponsesDecision(responsesResponse{
+		OutputText: strictFinalText("searched", "done"),
+		Output: []responsesOutputItem{
+			{Type: "web_search_call"},
+			{
+				Type: "message",
+				Role: agent.MessageRoleAssistant,
+				Content: []responsesOutputContent{{
+					Type: "output_text",
+					Text: strictFinalText("searched", "done"),
+				}},
+			},
+		},
+	}, nil, openAIAdapterCapabilities{SupportsHostedWebSearch: true})
+	if err != nil {
+		t.Fatalf("parseResponsesDecision() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatalf("decision.Finish = %#v, want final response", decision.Finish)
+	}
+	if decision.Finish.Value != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", decision.Finish.Value, "done")
 	}
 }
 
@@ -627,6 +1052,7 @@ type responsesRequestLog struct {
 }
 
 type responsesTestServerResponse struct {
+	ID           string
 	Output       []responsesOutputItem
 	OutputText   string
 	CachedTokens int
@@ -675,6 +1101,7 @@ func newResponsesTestServer(t *testing.T, responses []responsesTestServerRespons
 		response := responses[index]
 		index++
 		_ = json.NewEncoder(w).Encode(responsesResponse{
+			ID:         response.ID,
 			Output:     response.Output,
 			OutputText: response.OutputText,
 			Usage: responsesUsage{
@@ -1063,6 +1490,49 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	}
 	if got := decision.Thought; got != "all work is complete" {
 		t.Fatalf("decision.Thought = %q, want %q", got, "all work is complete")
+	}
+	if got := decision.Finish.Value; got != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
+func TestDriverNextMergesReasoningIntoStructuredResponsesFinishThought(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
+		{
+			OutputText: strictFinalText("all work is complete", "done"),
+			Output: []responsesOutputItem{{
+				Type: "reasoning",
+				Summary: []responsesOutputContent{{
+					Type: "summary_text",
+					Text: "inspect the result before finishing",
+				}},
+			}},
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:        agent.ToolNameReadFile,
+			Description: "Reads a file.",
+			Kind:        agent.ToolKindFunction,
+			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	if got := decision.Thought; got != "inspect the result before finishing\nall work is complete" {
+		t.Fatalf("decision.Thought = %q, want merged final-turn reasoning", got)
 	}
 	if got := decision.Finish.Value; got != "done" {
 		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")

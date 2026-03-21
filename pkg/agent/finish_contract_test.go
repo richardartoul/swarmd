@@ -77,15 +77,30 @@ func TestParseStrictFinalResponseDecodesPayloads(t *testing.T) {
 			t.Fatalf("value = %#v, want %q", value, "done")
 		}
 	})
+
+	t.Run("plain text fallback", func(t *testing.T) {
+		t.Parallel()
+
+		thought, value, err := ParseStrictFinalResponse(`{"thought":"make the plan more detailed","result_json":"Here is a more detailed plan:\n- inspect the current implementation\n- break the work into concrete todos"}`)
+		if err != nil {
+			t.Fatalf("ParseStrictFinalResponse() error = %v", err)
+		}
+		if thought != "make the plan more detailed" {
+			t.Fatalf("thought = %q, want %q", thought, "make the plan more detailed")
+		}
+		if value != "Here is a more detailed plan:\n- inspect the current implementation\n- break the work into concrete todos" {
+			t.Fatalf("value = %#v, want raw plain-text fallback", value)
+		}
+	})
 }
 
 func TestParseStrictFinalResponseRejectsInvalidInput(t *testing.T) {
 	t.Parallel()
 
 	for name, content := range map[string]string{
-		"empty result_json":   `{"thought":"done","result_json":""}`,
-		"invalid result_json": `{"thought":"done","result_json":"not-json"}`,
-		"extra field":         `{"thought":"done","result_json":"\"ok\"","extra":true}`,
+		"empty result_json":              `{"thought":"done","result_json":""}`,
+		"invalid structured result_json": `{"thought":"done","result_json":"{not-json}"}`,
+		"extra field":                    `{"thought":"done","result_json":"\"ok\"","extra":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

@@ -402,11 +402,8 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	if len(snapshot[0].Request.Tools[1].InputExamples) != 1 {
 		t.Fatalf("len(patch tool input_examples) = %d, want 1", len(snapshot[0].Request.Tools[1].InputExamples))
 	}
-	if snapshot[0].Request.Tools[1].CacheControl == nil {
-		t.Fatal("patch tool cache_control = nil, want explicit cache breakpoint")
-	}
-	if snapshot[0].Request.Tools[1].CacheControl.TTL != "5m" {
-		t.Fatalf("patch tool cache_control.ttl = %q, want %q", snapshot[0].Request.Tools[1].CacheControl.TTL, "5m")
+	if snapshot[0].Request.Tools[1].CacheControl != nil {
+		t.Fatalf("patch tool cache_control = %#v, want nil when system blocks own the static-prefix breakpoint", snapshot[0].Request.Tools[1].CacheControl)
 	}
 	if got := snapshot[0].Request.Tools[1].InputExamples[0]["patch"]; got != "*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch" {
 		t.Fatalf("patch tool input_examples[0][patch] = %#v, want wrapped patch example", got)
@@ -446,7 +443,7 @@ func TestBuildAnthropicToolsCapsInputExamplesByToolKind(t *testing.T) {
 				"*** Begin Patch\n*** Update File: /workspace/demo.txt\n@@\n-old\n+new\n*** End Patch",
 			},
 		},
-	}, "")
+	}, "", false)
 	if len(tools) != 2 {
 		t.Fatalf("len(tools) = %d, want 2", len(tools))
 	}
@@ -468,7 +465,7 @@ func TestBuildAnthropicToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
 		CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
 		OutputNotes:  "Returns a patch application summary.",
 		SafetyTags:   []string{"mutating", "filesystem_write"},
-	}}, "")
+	}}, "", false)
 	if len(tools) != 1 {
 		t.Fatalf("len(tools) = %d, want 1", len(tools))
 	}
@@ -565,6 +562,124 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	}
 	if mustAnthropicStringContent(t, payload.Messages[3].Content) != testCurrentStateMessage(2) {
 		t.Fatalf("payload.Messages[3].Content = %#v, want current-state footer", payload.Messages[3].Content)
+	}
+}
+
+func TestBuildMessagesRequestInterleavesPriorSessionTurnBeforeCurrentTurn(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+		},
+		ConversationTurns: []agent.ConversationTurn{{
+			User: agent.Message{
+				Role:    agent.MessageRoleUser,
+				Content: "first question",
+			},
+			Assistant: &agent.Message{
+				Role:    agent.MessageRoleAssistant,
+				Content: "first answer",
+			},
+			Steps: []agent.Step{{
+				Index:          1,
+				Thought:        "inspect the file first",
+				ActionName:     agent.ToolNameReadFile,
+				ActionToolKind: agent.ToolKindFunction,
+				ActionInput:    `{"file_path":"/tmp/demo.txt"}`,
+				Status:         agent.StepStatusOK,
+				CWDAfter:       "/workspace",
+				ActionOutput:   "demo content",
+			}},
+		}},
+		CurrentTurnMessages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "second question"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
+		},
+		Tools: []agent.ToolDefinition{{
+			Name:       agent.ToolNameReadFile,
+			Kind:       agent.ToolKindFunction,
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
+			ReadOnly:   true,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	if len(payload.Messages) != 7 {
+		t.Fatalf("len(payload.Messages) = %d, want 7", len(payload.Messages))
+	}
+	if got := mustAnthropicTextContent(t, payload.Messages[0].Content); got != "first question" {
+		t.Fatalf("payload.Messages[0] = %q, want %q", got, "first question")
+	}
+	assistantReplayBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	if assistantReplayBlocks[len(assistantReplayBlocks)-1]["type"] != "tool_use" {
+		t.Fatalf("payload.Messages[1] = %#v, want assistant tool replay before current turn", assistantReplayBlocks)
+	}
+	userReplayBlocks := mustAnthropicBlocks(t, payload.Messages[2].Content)
+	if userReplayBlocks[0]["type"] != "tool_result" {
+		t.Fatalf("payload.Messages[2] = %#v, want tool result before prior assistant reply", userReplayBlocks)
+	}
+	if got := mustAnthropicTextContent(t, payload.Messages[3].Content); got != "first answer" {
+		t.Fatalf("payload.Messages[3] = %q, want %q", got, "first answer")
+	}
+	if got := mustAnthropicTextContent(t, payload.Messages[4].Content); got != "second question" {
+		t.Fatalf("payload.Messages[4] = %q, want %q", got, "second question")
+	}
+	if got := mustAnthropicTextContent(t, payload.Messages[5].Content); got != "stable protocol" {
+		t.Fatalf("payload.Messages[5] = %q, want %q", got, "stable protocol")
+	}
+	if got := mustAnthropicTextContent(t, payload.Messages[6].Content); got != testCurrentStateMessage(1) {
+		t.Fatalf("payload.Messages[6] = %q, want current-state footer", got)
+	}
+}
+
+func TestBuildMessagesRequestCachesPriorTurnBoundaryForSessionTurn(t *testing.T) {
+	t.Parallel()
+
+	driver := &Driver{
+		model:          "claude-sonnet-4-6",
+		maxTokens:      DefaultMaxTokens,
+		promptCacheTTL: "5m",
+	}
+	payload, err := driver.buildMessagesRequest(agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleSystem, Content: "test prompt"},
+		},
+		ConversationTurns: []agent.ConversationTurn{{
+			User: agent.Message{
+				Role:    agent.MessageRoleUser,
+				Content: "first question",
+			},
+			Assistant: &agent.Message{
+				Role:    agent.MessageRoleAssistant,
+				Content: "first answer",
+			},
+		}},
+		CurrentTurnMessages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "second question"},
+			{Role: agent.MessageRoleUser, Content: "stable protocol"},
+			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildMessagesRequest() error = %v", err)
+	}
+	if len(payload.Messages) != 5 {
+		t.Fatalf("len(payload.Messages) = %d, want 5", len(payload.Messages))
+	}
+	assistantBlocks := mustAnthropicBlocks(t, payload.Messages[1].Content)
+	cacheControl, ok := assistantBlocks[0]["cache_control"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload.Messages[1] = %#v, want cached prior-turn boundary", assistantBlocks)
+	}
+	if cacheControl["ttl"] != "5m" {
+		t.Fatalf("assistant cache_control[ttl] = %#v, want %q", cacheControl["ttl"], "5m")
+	}
+	if _, ok := payload.Messages[2].Content.(string); !ok {
+		t.Fatalf("payload.Messages[2].Content = %#v, want uncached current-turn user string", payload.Messages[2].Content)
 	}
 }
 
@@ -745,7 +860,7 @@ func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled
 		maxTokens:      DefaultMaxTokens,
 		promptCacheTTL: "5m",
 	}
-	largeOutput := strings.Repeat("x", anthropicReplayCacheMinOutputLen)
+	largeOutput := strings.Repeat("x", anthropicMinimumCacheableTokens("claude-sonnet-4-6")*4)
 	payload, err := driver.buildMessagesRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
@@ -806,6 +921,29 @@ func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled
 	}
 	if cacheControl["ttl"] != "5m" {
 		t.Fatalf("second replay cache_control[ttl] = %#v, want %q", cacheControl["ttl"], "5m")
+	}
+}
+
+func TestAnthropicReplayEligibleForCacheUsesApproxTokenFloor(t *testing.T) {
+	t.Parallel()
+
+	if anthropicReplayEligibleForCache(agent.StepReplay{
+		ToolName: agent.ToolNameReadFile,
+		Output:   strings.Repeat("x", anthropicReplayCacheMinApproxTokens*4-4),
+	}, []agent.ToolDefinition{{
+		Name:     agent.ToolNameReadFile,
+		ReadOnly: true,
+	}}, anthropicReplayCacheMinApproxTokens) {
+		t.Fatal("anthropicReplayEligibleForCache() = true, want false below approximate token floor")
+	}
+	if !anthropicReplayEligibleForCache(agent.StepReplay{
+		ToolName: agent.ToolNameReadFile,
+		Output:   strings.Repeat("x", anthropicReplayCacheMinApproxTokens*4),
+	}, []agent.ToolDefinition{{
+		Name:     agent.ToolNameReadFile,
+		ReadOnly: true,
+	}}, anthropicReplayCacheMinApproxTokens) {
+		t.Fatal("anthropicReplayEligibleForCache() = false, want true at approximate token floor")
 	}
 }
 
@@ -1143,6 +1281,46 @@ func TestDriverNextParsesStructuredFinishThought(t *testing.T) {
 	}
 }
 
+func TestDriverNextMergesThinkingIntoStructuredFinishThought(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{
+				{
+					Type:     "thinking",
+					Thinking: "inspect the result before finishing",
+				},
+				{
+					Type: "text",
+					Text: strictFinalText("all work is complete", "done"),
+				},
+			},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil {
+		t.Fatal("decision.Finish = nil, want finish decision")
+	}
+	if got := decision.Thought; got != "inspect the result before finishing\nall work is complete" {
+		t.Fatalf("decision.Thought = %q, want merged final-turn reasoning", got)
+	}
+	if got := decision.Finish.Value; got != "done" {
+		t.Fatalf("decision.Finish.Value = %#v, want %q", got, "done")
+	}
+}
+
 func TestDriverNextAcceptsStructuredFinishWithoutThought(t *testing.T) {
 	t.Parallel()
 
@@ -1333,6 +1511,23 @@ func mustAnthropicStringContent(t *testing.T, content any) string {
 		t.Fatalf("content = %#v, want string", content)
 	}
 	return value
+}
+
+func mustAnthropicTextContent(t *testing.T, content any) string {
+	t.Helper()
+
+	if value, ok := content.(string); ok {
+		return value
+	}
+	blocks := mustAnthropicBlocks(t, content)
+	if len(blocks) == 0 {
+		t.Fatalf("content = %#v, want at least one text block", content)
+	}
+	text, ok := blocks[0]["text"].(string)
+	if !ok {
+		t.Fatalf("first block = %#v, want text field", blocks[0])
+	}
+	return text
 }
 
 func mustAnthropicBlocks(t *testing.T, content any) []map[string]any {

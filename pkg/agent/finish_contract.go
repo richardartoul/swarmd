@@ -79,9 +79,34 @@ func ParseStrictFinalResponse(content string) (string, any, error) {
 		return "", nil, fmt.Errorf(`strict final response must include non-empty "result_json"`)
 	}
 
-	var value any
-	if err := json.Unmarshal([]byte(encoded), &value); err != nil {
+	value, err := parseStrictFinalResultJSON(encoded)
+	if err != nil {
 		return "", nil, fmt.Errorf(`strict final response contains invalid JSON in "result_json": %w`, err)
 	}
 	return thought, value, nil
+}
+
+func parseStrictFinalResultJSON(encoded string) (any, error) {
+	var value any
+	if err := json.Unmarshal([]byte(encoded), &value); err == nil {
+		return value, nil
+	} else if strictResultJSONMustStayStructured(encoded) {
+		return nil, err
+	}
+	// Some providers still populate result_json with raw user-facing text instead
+	// of a JSON-encoded string; accept that as a plain string fallback.
+	return encoded, nil
+}
+
+func strictResultJSONMustStayStructured(encoded string) bool {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return true
+	}
+	switch encoded[0] {
+	case '{', '[', '"':
+		return true
+	default:
+		return false
+	}
 }

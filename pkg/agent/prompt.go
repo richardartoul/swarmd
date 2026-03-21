@@ -142,7 +142,9 @@ const (
 type driverRequestContext struct {
 	Mode           driverRequestMode
 	PriorMessages  []Message
+	PriorTurns     []ConversationTurn
 	StepReplayData map[string]string
+	ProviderState  string
 	RunStartedAt   time.Time
 }
 
@@ -150,10 +152,12 @@ func newTriggerDriverRequestContext() driverRequestContext {
 	return driverRequestContext{Mode: driverRequestModeTrigger}
 }
 
-func newSessionDriverRequestContext(priorMessages []Message) driverRequestContext {
+func newSessionDriverRequestContext(priorTurns []ConversationTurn) driverRequestContext {
+	clonedTurns := cloneConversationTurns(priorTurns)
 	return driverRequestContext{
 		Mode:          driverRequestModeSession,
-		PriorMessages: cloneMessages(priorMessages),
+		PriorMessages: flattenConversationMessages(clonedTurns),
+		PriorTurns:    clonedTurns,
 	}
 }
 
@@ -167,6 +171,20 @@ func (c driverRequestContext) withStepReplayData(callID, replayData string) driv
 		c.StepReplayData = make(map[string]string, 1)
 	}
 	c.StepReplayData[callID] = replayData
+	return c
+}
+
+func (c driverRequestContext) withStepReplayDataMap(data map[string]string) driverRequestContext {
+	c.StepReplayData = cloneStepReplayData(data)
+	return c
+}
+
+func (c driverRequestContext) withProviderState(state string) driverRequestContext {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return c
+	}
+	c.ProviderState = state
 	return c
 }
 
@@ -235,14 +253,33 @@ func (a *Agent) buildDriverRequestWithContext(
 	}
 
 	req := Request{
-		Trigger:        trigger,
-		Step:           step,
-		SandboxRoot:    a.sandboxRoot,
-		CWD:            cwd,
-		Steps:          steps,
-		Tools:          append([]ToolDefinition(nil), a.toolDefinitions...),
-		StepReplayData: cloneStepReplayData(requestContext.StepReplayData),
+		Trigger:           trigger,
+		Step:              step,
+		SandboxRoot:       a.sandboxRoot,
+		CWD:               cwd,
+		ConversationTurns: cloneConversationTurns(requestContext.PriorTurns),
+		CurrentTurnSteps:  cloneSteps(steps),
+		Tools:             append([]ToolDefinition(nil), a.toolDefinitions...),
+		StepReplayData:    cloneStepReplayData(requestContext.StepReplayData),
+		ProviderState:     strings.TrimSpace(requestContext.ProviderState),
 	}
+	req.Steps = append(flattenConversationSteps(req.ConversationTurns), cloneSteps(req.CurrentTurnSteps)...)
+	currentTurnMessages := []Message{
+		{
+			Role:    MessageRoleUser,
+			Content: currentUserTurnContent(prompt, req.Trigger, requestContext.Mode),
+		},
+		{
+			Role:    MessageRoleUser,
+			Content: currentTurnProtocolPrompt(),
+		},
+	}
+	req.CurrentTurnMessages = cloneMessages(currentTurnMessages)
+	currentStateMessage := Message{
+		Role:    MessageRoleUser,
+		Content: formatDynamicCurrentStateForPromptWithContext(prompt, req, requestContext),
+	}
+	req.CurrentTurnMessages = append(req.CurrentTurnMessages, currentStateMessage)
 	req.Messages = []Message{
 		{Role: MessageRoleSystem, Content: a.systemPrompt},
 	}
@@ -253,14 +290,7 @@ func (a *Agent) buildDriverRequestWithContext(
 		})
 	}
 	req.Messages = append(req.Messages, cloneMessages(requestContext.PriorMessages)...)
-	req.Messages = append(req.Messages, Message{
-		Role:    MessageRoleUser,
-		Content: currentUserTurnContent(prompt, req.Trigger, requestContext.Mode),
-	})
-	req.Messages = append(req.Messages, Message{
-		Role:    MessageRoleUser,
-		Content: formatCurrentStateForPromptWithContext(prompt, req, requestContext),
-	})
+	req.Messages = append(req.Messages, cloneMessages(req.CurrentTurnMessages)...)
 	return req, prompt, nil
 }
 
@@ -291,6 +321,31 @@ func formatCurrentStateForPrompt(prompt string, req Request) string {
 }
 
 func formatCurrentStateForPromptWithContext(prompt string, req Request, requestContext driverRequestContext) string {
+	protocol := strings.TrimSpace(currentTurnProtocolPrompt())
+	dynamic := strings.TrimSpace(formatDynamicCurrentStateForPromptWithContext(prompt, req, requestContext))
+	switch {
+	case protocol == "":
+		return dynamic
+	case dynamic == "":
+		return protocol
+	default:
+		return protocol + "\n\n" + dynamic
+	}
+}
+
+func currentTurnProtocolPrompt() string {
+	var b strings.Builder
+	b.WriteString("Native tool metadata is included elsewhere in this request. Retry guidance appears below only when the last attempted tool needs repair.\n")
+	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.\n")
+	fmt.Fprintf(&b, "When finishing, return %s.\n", StrictFinalResponseShape())
+	b.WriteString("A final thought is optional metadata; use an empty string when it adds no value.\n")
+	fmt.Fprintf(&b, "For normal answers, put the user-facing reply in result_json as a JSON string, like %s.\n", StrictFinalResponseExample("all work is complete", "done"))
+	fmt.Fprintf(&b, "Use an object or array inside result_json only for explicitly structured output or runtime-required data, like %s.\n", StrictFinalResponseExample("return the structured result", map[string]any{"reply": "done"}))
+	b.WriteString("Never emit multiple tool calls in a single response.\n")
+	return strings.TrimSpace(b.String())
+}
+
+func formatDynamicCurrentStateForPromptWithContext(prompt string, req Request, requestContext driverRequestContext) string {
 	var b strings.Builder
 	b.WriteString("Current execution state\n")
 	if strings.TrimSpace(req.SandboxRoot) != "" {
@@ -304,22 +359,14 @@ func formatCurrentStateForPromptWithContext(prompt string, req Request, requestC
 		fmt.Fprintf(&b, "Current time at start of this run: %s\n", runStartedAtUTC.Format(time.RFC3339))
 		fmt.Fprintf(&b, "Current Unix time at start of this run: %d\n", runStartedAtUTC.Unix())
 	}
-	if len(req.Steps) == 0 {
+	if len(requestCurrentTurnSteps(req)) == 0 {
 		fmt.Fprintf(&b, "No prior steps have been run for this %s.\n", requestContext.currentStateTarget())
 	}
-	b.WriteString("\nNative tool metadata is included elsewhere in this request. Retry guidance appears below only when the last attempted tool needs repair.\n")
 	if expanded := toolExpandedGuidancePrompt(prompt, req); expanded != "" {
 		b.WriteString("\n")
 		b.WriteString(expanded)
-		b.WriteString("\n")
 	}
-	b.WriteString("Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.\n")
-	fmt.Fprintf(&b, "When finishing, return %s.\n", StrictFinalResponseShape())
-	b.WriteString("A final thought is optional metadata; use an empty string when it adds no value.\n")
-	fmt.Fprintf(&b, "For normal answers, put the user-facing reply in result_json as a JSON string, like %s.\n", StrictFinalResponseExample("all work is complete", "done"))
-	fmt.Fprintf(&b, "Use an object or array inside result_json only for explicitly structured output or runtime-required data, like %s.\n", StrictFinalResponseExample("return the structured result", map[string]any{"reply": "done"}))
-	b.WriteString("Never emit multiple tool calls in a single response.\n")
-	return b.String()
+	return strings.TrimSpace(b.String())
 }
 
 func currentUserTurnContent(prompt string, trigger Trigger, mode driverRequestMode) string {
@@ -358,7 +405,7 @@ func toolExpandedGuidancePrompt(prompt string, req Request) string {
 }
 
 func selectRetryTool(req Request) (ToolDefinition, bool) {
-	retryTool := lastFailedTool(req.Steps)
+	retryTool := lastFailedTool(requestCurrentTurnSteps(req))
 	if retryTool == "" {
 		return ToolDefinition{}, false
 	}
@@ -447,6 +494,13 @@ func indentLines(text, prefix string) string {
 
 func cloneMessages(messages []Message) []Message {
 	return append([]Message(nil), messages...)
+}
+
+func requestCurrentTurnSteps(req Request) []Step {
+	if len(req.CurrentTurnSteps) > 0 || len(req.ConversationTurns) > 0 {
+		return req.CurrentTurnSteps
+	}
+	return req.Steps
 }
 
 func cloneStepReplayData(data map[string]string) map[string]string {

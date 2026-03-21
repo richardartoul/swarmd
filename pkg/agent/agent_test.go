@@ -297,6 +297,30 @@ func TestSessionReplaysConversationAndStepsAcrossTurns(t *testing.T) {
 	if got := agent.StepCallID(secondTurnFirstRequest.Steps[0]); got != "step_1" {
 		t.Fatalf("StepCallID(prior step) = %q, want %q", got, "step_1")
 	}
+	if len(secondTurnFirstRequest.ConversationTurns) != 1 {
+		t.Fatalf("len(second turn request conversation turns) = %d, want 1", len(secondTurnFirstRequest.ConversationTurns))
+	}
+	if got := secondTurnFirstRequest.ConversationTurns[0].User.Content; got != "first question" {
+		t.Fatalf("first conversation turn user = %q, want %q", got, "first question")
+	}
+	if secondTurnFirstRequest.ConversationTurns[0].Assistant == nil {
+		t.Fatal("first conversation turn assistant = nil, want prior assistant reply")
+	}
+	if got := secondTurnFirstRequest.ConversationTurns[0].Assistant.Content; got != "first answer" {
+		t.Fatalf("first conversation turn assistant = %q, want %q", got, "first answer")
+	}
+	if len(secondTurnFirstRequest.ConversationTurns[0].Steps) != 1 {
+		t.Fatalf("len(first conversation turn steps) = %d, want 1", len(secondTurnFirstRequest.ConversationTurns[0].Steps))
+	}
+	if len(secondTurnFirstRequest.CurrentTurnSteps) != 0 {
+		t.Fatalf("len(second turn current steps) = %d, want 0 before the first step", len(secondTurnFirstRequest.CurrentTurnSteps))
+	}
+	if len(secondTurnFirstRequest.CurrentTurnMessages) != 3 {
+		t.Fatalf("len(second turn current messages) = %d, want 3", len(secondTurnFirstRequest.CurrentTurnMessages))
+	}
+	if got := secondTurnFirstRequest.CurrentTurnMessages[0].Content; got != "second question" {
+		t.Fatalf("second turn current user message = %q, want %q", got, "second question")
+	}
 
 	var (
 		userMessages      []string
@@ -321,6 +345,86 @@ func TestSessionReplaysConversationAndStepsAcrossTurns(t *testing.T) {
 	}
 	if !slices.Contains(assistantMessages, "first answer") {
 		t.Fatalf("assistant messages = %#v, want prior assistant reply", assistantMessages)
+	}
+}
+
+func TestSessionCarriesProviderStateAcrossTurns(t *testing.T) {
+	t.Parallel()
+
+	providerState := `{"provider":"openai","response_id":"resp_1"}`
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			withProviderState(finish("first answer"), providerState),
+			finish("second answer"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:   t.TempDir(),
+		Driver: driver,
+	})
+	session := agent.NewSession(a)
+
+	if _, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-1",
+		Kind:    "repl.prompt",
+		Payload: "first question",
+	}); err != nil {
+		t.Fatalf("first RunTrigger() error = %v", err)
+	}
+	if _, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-2",
+		Kind:    "repl.prompt",
+		Payload: "second question",
+	}); err != nil {
+		t.Fatalf("second RunTrigger() error = %v", err)
+	}
+
+	if len(driver.requests) != 2 {
+		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
+	}
+	if got := driver.requests[1].ProviderState; got != providerState {
+		t.Fatalf("second request ProviderState = %q, want %q", got, providerState)
+	}
+}
+
+func TestSessionCarriesStepReplayDataAcrossTurns(t *testing.T) {
+	t.Parallel()
+
+	replayData := `[{"type":"thinking","thinking":"","signature":"sig-step-1"}]`
+	driver := &recordingDriver{
+		decisions: []agent.Decision{
+			withReplayData(shell("printf 'first'"), replayData),
+			finish("first answer"),
+			finish("second answer"),
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:     t.TempDir(),
+		MaxSteps: 2,
+		Driver:   driver,
+	})
+	session := agent.NewSession(a)
+
+	if _, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-1",
+		Kind:    "repl.prompt",
+		Payload: "first question",
+	}); err != nil {
+		t.Fatalf("first RunTrigger() error = %v", err)
+	}
+	if _, err := session.RunTrigger(context.Background(), agent.Trigger{
+		ID:      "turn-2",
+		Kind:    "repl.prompt",
+		Payload: "second question",
+	}); err != nil {
+		t.Fatalf("second RunTrigger() error = %v", err)
+	}
+
+	if len(driver.requests) != 3 {
+		t.Fatalf("len(driver.requests) = %d, want 3", len(driver.requests))
+	}
+	if got := driver.requests[2].StepReplayData["step_1"]; got != replayData {
+		t.Fatalf("second turn request StepReplayData[step_1] = %q, want %q", got, replayData)
 	}
 }
 
@@ -888,8 +992,8 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if req.Step != 1 {
 		t.Fatalf("req.Step = %d, want 1", req.Step)
 	}
-	if len(req.Messages) != 4 {
-		t.Fatalf("len(req.Messages) = %d, want 4", len(req.Messages))
+	if len(req.Messages) != 5 {
+		t.Fatalf("len(req.Messages) = %d, want 5", len(req.Messages))
 	}
 	if req.Messages[0].Role != agent.MessageRoleSystem || req.Messages[0].Content != "test prompt" {
 		t.Fatalf("req.Messages[0] = %#v, want system prompt", req.Messages[0])
@@ -912,18 +1016,21 @@ func TestHandleTriggerBuildsDriverMessages(t *testing.T) {
 	if !strings.Contains(req.Messages[2].Content, "User prompt:\nlist files") {
 		t.Fatalf("trigger context = %q, want rendered prompt", req.Messages[2].Content)
 	}
-	if req.Messages[3].Role != agent.MessageRoleUser {
-		t.Fatalf("req.Messages[3].Role = %q, want %q", req.Messages[3].Role, agent.MessageRoleUser)
+	if req.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(req.Messages[3].Content, "Use exactly one tool call when more work is needed") {
+		t.Fatalf("req.Messages[3] = %#v, want stable protocol message", req.Messages[3])
 	}
-	if !strings.Contains(req.Messages[3].Content, "Current step number: 1") {
-		t.Fatalf("current state = %q, want step number", req.Messages[3].Content)
+	if req.Messages[4].Role != agent.MessageRoleUser {
+		t.Fatalf("req.Messages[4].Role = %q, want %q", req.Messages[4].Role, agent.MessageRoleUser)
 	}
-	if !strings.Contains(req.Messages[3].Content, "No prior steps have been run for this trigger.") {
-		t.Fatalf("current state = %q, want empty-step note", req.Messages[3].Content)
+	if !strings.Contains(req.Messages[4].Content, "Current step number: 1") {
+		t.Fatalf("current state = %q, want step number", req.Messages[4].Content)
 	}
-	assertRunStartLines(t, req.Messages[3].Content)
-	if strings.Contains(req.Messages[3].Content, "Focused retry guidance for the last failed tool:") {
-		t.Fatalf("current state = %q, want no retry guidance on first turn", req.Messages[3].Content)
+	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this trigger.") {
+		t.Fatalf("current state = %q, want empty-step note", req.Messages[4].Content)
+	}
+	assertRunStartLines(t, req.Messages[4].Content)
+	if strings.Contains(req.Messages[4].Content, "Focused retry guidance for the last failed tool:") {
+		t.Fatalf("current state = %q, want no retry guidance on first turn", req.Messages[4].Content)
 	}
 }
 
@@ -954,8 +1061,8 @@ func TestHandleTriggerCarriesPriorStepsWithoutConversationReplayMessages(t *test
 		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
 	}
 	second := driver.requests[1]
-	if len(second.Messages) != 4 {
-		t.Fatalf("len(second.Messages) = %d, want 4", len(second.Messages))
+	if len(second.Messages) != 5 {
+		t.Fatalf("len(second.Messages) = %d, want 5", len(second.Messages))
 	}
 	if second.Messages[2].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[2].Content, "Trigger context") {
 		t.Fatalf("second.Messages[2] = %#v, want trigger context", second.Messages[2])
@@ -977,13 +1084,16 @@ func TestHandleTriggerCarriesPriorStepsWithoutConversationReplayMessages(t *test
 	if second.Steps[0].Shell != "pwd" {
 		t.Fatalf("second.Steps[0].Shell = %q, want %q", second.Steps[0].Shell, "pwd")
 	}
-	if second.Messages[3].Role != agent.MessageRoleUser {
-		t.Fatalf("second.Messages[3].Role = %q, want %q", second.Messages[3].Role, agent.MessageRoleUser)
+	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Use exactly one tool call when more work is needed") {
+		t.Fatalf("second.Messages[3] = %#v, want stable protocol message", second.Messages[3])
 	}
-	if !strings.Contains(second.Messages[3].Content, "Current step number: 2") {
-		t.Fatalf("current state = %q, want updated step number", second.Messages[3].Content)
+	if second.Messages[4].Role != agent.MessageRoleUser {
+		t.Fatalf("second.Messages[4].Role = %q, want %q", second.Messages[4].Role, agent.MessageRoleUser)
 	}
-	assertRunStartLines(t, second.Messages[3].Content)
+	if !strings.Contains(second.Messages[4].Content, "Current step number: 2") {
+		t.Fatalf("current state = %q, want updated step number", second.Messages[4].Content)
+	}
+	assertRunStartLines(t, second.Messages[4].Content)
 }
 
 func TestHandleTriggerKeepsRunStartTimeStableAcrossSteps(t *testing.T) {
@@ -1189,8 +1299,8 @@ func TestHandleTriggerDoesNotReplayConversationAcrossTriggers(t *testing.T) {
 		t.Fatalf("len(driver.requests) = %d, want 2", len(driver.requests))
 	}
 	second := driver.requests[1]
-	if len(second.Messages) != 4 {
-		t.Fatalf("len(second.Messages) = %d, want 4", len(second.Messages))
+	if len(second.Messages) != 5 {
+		t.Fatalf("len(second.Messages) = %d, want 5", len(second.Messages))
 	}
 	if second.Messages[2].Role != agent.MessageRoleUser {
 		t.Fatalf("second.Messages[2].Role = %q, want %q", second.Messages[2].Role, agent.MessageRoleUser)
@@ -1210,10 +1320,13 @@ func TestHandleTriggerDoesNotReplayConversationAcrossTriggers(t *testing.T) {
 	if !strings.Contains(second.Messages[2].Content, "show it to me") {
 		t.Fatalf("second.Messages[2] = %#v, want current prompt only", second.Messages[2])
 	}
-	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Current step number: 1") {
-		t.Fatalf("second.Messages[3] = %#v, want current state", second.Messages[3])
+	if second.Messages[3].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[3].Content, "Use exactly one tool call when more work is needed") {
+		t.Fatalf("second.Messages[3] = %#v, want stable protocol message", second.Messages[3])
 	}
-	assertRunStartLines(t, second.Messages[3].Content)
+	if second.Messages[4].Role != agent.MessageRoleUser || !strings.Contains(second.Messages[4].Content, "Current step number: 1") {
+		t.Fatalf("second.Messages[4] = %#v, want current state", second.Messages[4])
+	}
+	assertRunStartLines(t, second.Messages[4].Content)
 }
 
 func TestHandleTriggerAccumulatesDriverUsage(t *testing.T) {
@@ -1351,6 +1464,9 @@ func (d *recordingDriver) Next(_ context.Context, req agent.Request) (agent.Deci
 	copied := req
 	copied.Messages = append([]agent.Message(nil), req.Messages...)
 	copied.Steps = append([]agent.Step(nil), req.Steps...)
+	copied.CurrentTurnMessages = append([]agent.Message(nil), req.CurrentTurnMessages...)
+	copied.CurrentTurnSteps = append([]agent.Step(nil), req.CurrentTurnSteps...)
+	copied.ConversationTurns = cloneConversationTurnsForTest(req.ConversationTurns)
 	if len(req.StepReplayData) > 0 {
 		copied.StepReplayData = make(map[string]string, len(req.StepReplayData))
 		for key, value := range req.StepReplayData {
@@ -1383,6 +1499,24 @@ func (fsys *recordingSandboxFS) Getwd() (string, error) {
 func (fsys *recordingSandboxFS) Open(name string) (fs.File, error) {
 	fsys.openCount++
 	return fsys.OSFileSystem.Open(name)
+}
+
+func cloneConversationTurnsForTest(turns []agent.ConversationTurn) []agent.ConversationTurn {
+	if len(turns) == 0 {
+		return nil
+	}
+	cloned := make([]agent.ConversationTurn, len(turns))
+	for idx, turn := range turns {
+		cloned[idx] = agent.ConversationTurn{
+			User:  turn.User,
+			Steps: append([]agent.Step(nil), turn.Steps...),
+		}
+		if turn.Assistant != nil {
+			assistant := *turn.Assistant
+			cloned[idx].Assistant = &assistant
+		}
+	}
+	return cloned
 }
 
 func (q channelQueue) Next(ctx context.Context) (agent.Trigger, error) {
@@ -1430,6 +1564,16 @@ func finishWithThought(value any, thought string) agent.Decision {
 
 func withCachedTokens(decision agent.Decision, cachedTokens int) agent.Decision {
 	decision.Usage.CachedTokens = cachedTokens
+	return decision
+}
+
+func withProviderState(decision agent.Decision, providerState string) agent.Decision {
+	decision.ProviderState = providerState
+	return decision
+}
+
+func withReplayData(decision agent.Decision, replayData string) agent.Decision {
+	decision.ReplayData = replayData
 	return decision
 }
 

@@ -5,16 +5,18 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Session keeps one long-lived conversation around an existing [Agent].
 // It is intended for interactive callers such as agentrepl and is not safe for
 // concurrent use.
 type Session struct {
-	agent         *Agent
-	conversation  []Message
-	steps         []Step
-	nextStepIndex int
+	agent          *Agent
+	turns          []ConversationTurn
+	stepReplayData map[string]string
+	providerState  string
+	nextStepIndex  int
 }
 
 // NewSession wraps one [Agent] in a long-lived conversational session.
@@ -43,22 +45,27 @@ func (s *Session) RunTrigger(ctx context.Context, trigger Trigger) (Result, erro
 
 	result, runErr := s.agent.runTurn(ctx, turnRunInput{
 		Trigger:       trigger,
-		PriorSteps:    s.steps,
+		PriorSteps:    flattenConversationSteps(s.turns),
 		NextStepIndex: s.nextStepIndex,
 		ResetRunner:   !s.agent.preserveState,
-		RequestContext: newSessionDriverRequestContext(
-			s.conversation,
-		),
+		RequestContext: newSessionDriverRequestContext(s.turns).
+			withStepReplayDataMap(s.stepReplayData).
+			withProviderState(s.providerState),
 	})
 
-	s.conversation = append(s.conversation, userTurn)
-	if assistantTurn, ok := sessionAssistantTurn(result); ok {
-		s.conversation = append(s.conversation, assistantTurn)
+	turn := ConversationTurn{
+		User:  userTurn,
+		Steps: cloneSteps(result.Steps),
 	}
+	if assistantTurn, ok := sessionAssistantTurn(result); ok {
+		turn.Assistant = &assistantTurn
+	}
+	s.turns = append(s.turns, turn)
 	if len(result.Steps) > 0 {
-		s.steps = append(s.steps, cloneSteps(result.Steps)...)
 		s.nextStepIndex += len(result.Steps)
 	}
+	s.stepReplayData = cloneStepReplayData(result.StepReplayData)
+	s.providerState = strings.TrimSpace(result.ProviderState)
 
 	if runErr != nil {
 		return result, runErr

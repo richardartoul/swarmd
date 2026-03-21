@@ -211,7 +211,6 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 	if nextStepIndex <= 0 {
 		nextStepIndex = 1
 	}
-	priorSteps := cloneSteps(input.PriorSteps)
 	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
 	turnSteps := make([]Step, 0, a.maxSteps)
 	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
@@ -219,24 +218,21 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			result.Status = ResultStatusCanceled
 			result.Error = err.Error()
 			result.Steps = turnSteps
-			return a.finishResult(result), err
+			return a.finishResult(result, requestContext), err
 		}
 
-		stepsSnapshot := make([]Step, 0, len(priorSteps)+len(turnSteps))
-		stepsSnapshot = append(stepsSnapshot, priorSteps...)
-		stepsSnapshot = append(stepsSnapshot, turnSteps...)
 		request, _, err := a.buildDriverRequestWithContext(
 			input.Trigger,
 			requestStep,
 			a.runner.Dir,
-			stepsSnapshot,
+			turnSteps,
 			requestContext,
 		)
 		if err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
 			result.Steps = turnSteps
-			return a.finishResult(result), nil
+			return a.finishResult(result, requestContext), nil
 		}
 
 		decision, err := a.driver.Next(ctx, request)
@@ -244,21 +240,22 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
 			result.Steps = turnSteps
-			return a.finishResult(result), nil
+			return a.finishResult(result, requestContext), nil
 		}
+		requestContext = requestContext.withProviderState(decision.ProviderState)
 		result.Usage = mergeUsage(result.Usage, decision.Usage)
 		if err := validateDecision(decision); err != nil {
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
 			result.Steps = turnSteps
-			return a.finishResult(result), nil
+			return a.finishResult(result, requestContext), nil
 		}
 		if decision.Finish != nil {
 			result.Status = ResultStatusFinished
 			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
 			result.Steps = turnSteps
-			return a.finishResult(result), nil
+			return a.finishResult(result, requestContext), nil
 		}
 
 		stepIndex := nextStepIndex + len(turnSteps)
@@ -275,7 +272,7 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 					Usage:     result.Usage,
 					Steps:     turnSteps,
 					Error:     stepErr.Error(),
-				}), stepErr
+				}, requestContext), stepErr
 			}
 		}
 		if runErr != nil {
@@ -283,19 +280,19 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 				result.Status = ResultStatusCanceled
 				result.Error = ctx.Err().Error()
 				result.Steps = turnSteps
-				return a.finishResult(result), ctx.Err()
+				return a.finishResult(result, requestContext), ctx.Err()
 			}
 			result.Status = ResultStatusFatalError
 			result.Error = runErr.Error()
 			result.Steps = turnSteps
-			return a.finishResult(result), nil
+			return a.finishResult(result, requestContext), nil
 		}
 	}
 
 	result.Status = ResultStatusMaxSteps
 	result.Error = fmt.Sprintf("agent reached max steps (%d)", a.maxSteps)
 	result.Steps = turnSteps
-	return a.finishResult(result), nil
+	return a.finishResult(result, requestContext), nil
 }
 
 func (a *Agent) handleResult(ctx context.Context, result Result) error {
@@ -382,11 +379,13 @@ func blockControlBuiltins(ctx context.Context, args []string) ([]string, error) 
 	}
 }
 
-func (a *Agent) finishResult(result Result) Result {
+func (a *Agent) finishResult(result Result, requestContext driverRequestContext) Result {
 	result.FinishedAt = time.Now()
 	result.Duration = result.FinishedAt.Sub(result.StartedAt)
 	result.CWD = a.runner.Dir
 	result.Steps = cloneSteps(result.Steps)
+	result.StepReplayData = cloneStepReplayData(requestContext.StepReplayData)
+	result.ProviderState = strings.TrimSpace(requestContext.ProviderState)
 	return result
 }
 

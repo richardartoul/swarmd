@@ -199,12 +199,28 @@ type Request struct {
 	Step        int
 	SandboxRoot string
 	CWD         string
-	Steps       []Step
-	Tools       []ToolDefinition
-	Messages    []Message
+	// Steps contains all prior replayable steps visible to this request across
+	// both prior session turns and the current in-flight turn.
+	Steps []Step
+	// ConversationTurns captures prior session turns in chronological order. It
+	// is empty for one-shot trigger handling.
+	ConversationTurns []ConversationTurn
+	// CurrentTurnMessages are the current turn's provider-neutral prompt
+	// messages in order: current user turn, protocol reminder, then current
+	// execution-state footer.
+	CurrentTurnMessages []Message
+	// CurrentTurnSteps contains only the already executed steps from the current
+	// in-flight turn. Unlike [Steps], it never includes steps from prior turns.
+	CurrentTurnSteps []Step
+	Tools            []ToolDefinition
+	Messages         []Message
 	// StepReplayData carries opaque provider-specific replay metadata keyed by
 	// [StepCallID]. Drivers may use it to reconstruct native multi-step context.
 	StepReplayData map[string]string
+	// ProviderState carries opaque provider-specific turn state. Drivers may use
+	// it to continue native conversations or reconstruct provider-native context
+	// across requests and session turns.
+	ProviderState string
 }
 
 type Usage = toolscore.Usage
@@ -218,6 +234,9 @@ type Decision struct {
 	// ReplayData carries opaque provider-specific metadata for the action
 	// represented by this decision so later requests can replay native context.
 	ReplayData string
+	// ProviderState carries opaque provider-specific turn state produced by this
+	// decision so later requests can continue native provider context.
+	ProviderState string
 }
 
 type ToolAction = toolscore.ToolAction
@@ -270,6 +289,13 @@ type Result struct {
 	Value         any
 	Steps         []Step
 	Error         string
+	// StepReplayData carries the opaque per-step replay metadata accumulated over
+	// this result's conversation state so sessions can preserve native step
+	// context across turns.
+	StepReplayData map[string]string
+	// ProviderState carries opaque provider-specific turn state so sessions can
+	// preserve native provider context across turns.
+	ProviderState string
 }
 
 const (

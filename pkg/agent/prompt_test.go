@@ -391,16 +391,19 @@ func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testi
 		ID:      "trigger-2",
 		Kind:    "repl.prompt",
 		Payload: "second question",
-	}, 1, "/workspace", nil, newSessionDriverRequestContext([]Message{
-		{Role: MessageRoleUser, Content: "first question"},
-		{Role: MessageRoleAssistant, Content: "first answer"},
-	}).withRunStartedAt(startedAt))
+	}, 1, "/workspace", nil, newSessionDriverRequestContext([]ConversationTurn{{
+		User: Message{Role: MessageRoleUser, Content: "first question"},
+		Assistant: &Message{
+			Role:    MessageRoleAssistant,
+			Content: "first answer",
+		},
+	}}).withRunStartedAt(startedAt))
 	if err != nil {
 		t.Fatalf("buildDriverRequestWithContext() error = %v", err)
 	}
 
-	if len(req.Messages) != 5 {
-		t.Fatalf("len(req.Messages) = %d, want 5", len(req.Messages))
+	if len(req.Messages) != 6 {
+		t.Fatalf("len(req.Messages) = %d, want 6", len(req.Messages))
 	}
 	if req.Messages[1] != (Message{Role: MessageRoleUser, Content: "first question"}) {
 		t.Fatalf("req.Messages[1] = %#v, want prior user turn", req.Messages[1])
@@ -411,17 +414,26 @@ func TestBuildDriverRequestWithSessionContextUsesPlainConversationTurns(t *testi
 	if req.Messages[3] != (Message{Role: MessageRoleUser, Content: "second question"}) {
 		t.Fatalf("req.Messages[3] = %#v, want plain current user turn", req.Messages[3])
 	}
+	if len(req.ConversationTurns) != 1 {
+		t.Fatalf("len(req.ConversationTurns) = %d, want 1", len(req.ConversationTurns))
+	}
+	if len(req.CurrentTurnMessages) != 3 {
+		t.Fatalf("len(req.CurrentTurnMessages) = %d, want 3", len(req.CurrentTurnMessages))
+	}
 	if strings.Contains(req.Messages[3].Content, "Trigger context") {
 		t.Fatalf("current session user message = %#v, want plain prompt without trigger wrapper", req.Messages[3])
 	}
-	if !strings.Contains(req.Messages[4].Content, "No prior steps have been run for this turn.") {
-		t.Fatalf("current-state message = %#v, want turn-scoped footer wording", req.Messages[4])
+	if req.Messages[4].Role != MessageRoleUser || !strings.Contains(req.Messages[4].Content, "Use exactly one tool call when more work is needed") {
+		t.Fatalf("req.Messages[4] = %#v, want stable protocol message", req.Messages[4])
 	}
-	if !strings.Contains(req.Messages[4].Content, "Current time at start of this run: "+startedAt.Format(time.RFC3339)) {
-		t.Fatalf("current-state message = %#v, want RFC3339 run-start line", req.Messages[4])
+	if !strings.Contains(req.Messages[5].Content, "No prior steps have been run for this turn.") {
+		t.Fatalf("current-state message = %#v, want turn-scoped footer wording", req.Messages[5])
 	}
-	if !strings.Contains(req.Messages[4].Content, fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.Unix())) {
-		t.Fatalf("current-state message = %#v, want Unix-seconds run-start line", req.Messages[4])
+	if !strings.Contains(req.Messages[5].Content, "Current time at start of this run: "+startedAt.Format(time.RFC3339)) {
+		t.Fatalf("current-state message = %#v, want RFC3339 run-start line", req.Messages[5])
+	}
+	if !strings.Contains(req.Messages[5].Content, fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.Unix())) {
+		t.Fatalf("current-state message = %#v, want Unix-seconds run-start line", req.Messages[5])
 	}
 }
 
