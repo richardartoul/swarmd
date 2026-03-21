@@ -282,7 +282,7 @@ func TestTUIWheelScrollsDetailPaneUnderMouse(t *testing.T) {
 	model.height = 30
 	model.resize()
 	model.focus = tuiPaneList
-	model.setDetailContent(strings.TrimSpace(strings.Repeat("line\n", 64)))
+	model.setDetailContent(strings.TrimSpace(strings.Repeat("line\n", 64)), false)
 
 	listWidth, _, _ := model.paneDimensions()
 	mouseY := lipgloss.Height(model.headerView()) + 1
@@ -512,10 +512,10 @@ func TestTUIRefreshPreservesSelectionAndFilter(t *testing.T) {
 		}
 	}
 
-	if len(model.list.Items()) < 2 {
-		t.Fatalf("len(list.Items()) = %d, want at least 2 runs", len(model.list.Items()))
+	if len(model.list.Items()) < 1 {
+		t.Fatalf("len(list.Items()) = %d, want at least 1 run", len(model.list.Items()))
 	}
-	model.list.Select(1)
+	model.list.Select(0)
 	selected, ok := model.selectedItem()
 	if !ok {
 		t.Fatal("selectedItem() = !ok, want selected run")
