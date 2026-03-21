@@ -270,6 +270,7 @@ func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 			Tools: []agent.ConfiguredTool{
 				{ID: "server_log"},
 				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_dm"},
 				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
 				{ID: "slack_channel_history", Config: map[string]any{"default_channel": "C12345678"}},
 			},
@@ -330,6 +331,9 @@ func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 	}
 	if !hasToolNamed(captured, "slack_post") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_post")
+	}
+	if !hasToolNamed(captured, "slack_dm") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_dm")
 	}
 	if !hasToolNamed(captured, "slack_replies") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")
@@ -651,6 +655,7 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 			},
 			Tools: []agent.ConfiguredTool{
 				{ID: "slack_post", Config: map[string]any{"default_channel": "C12345678"}},
+				{ID: "slack_dm"},
 				{ID: "slack_replies", Config: map[string]any{"default_channel": "C12345678"}},
 				{ID: "slack_channel_history", Config: map[string]any{"default_channel": "C12345678"}},
 			},
@@ -671,6 +676,11 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 						Name:  "slack_post",
 						Kind:  agent.ToolKindFunction,
 						Input: `{"text":"hello from test"}`,
+					}},
+					{Tool: &agent.ToolAction{
+						Name:  "slack_dm",
+						Kind:  agent.ToolKindFunction,
+						Input: `{"user_id":"U12345678","text":"hello from dm"}`,
 					}},
 					{Tool: &agent.ToolAction{
 						Name:  "slack_replies",
@@ -745,6 +755,9 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 	toolsMu.Unlock()
 	if !hasToolNamed(captured, "slack_post") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_post")
+	}
+	if !hasToolNamed(captured, "slack_dm") {
+		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_dm")
 	}
 	if !hasToolNamed(captured, "slack_replies") {
 		t.Fatalf("req.Tools = %#v, want %q", captured, "slack_replies")

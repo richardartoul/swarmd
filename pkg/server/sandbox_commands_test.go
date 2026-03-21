@@ -8,6 +8,7 @@ import (
 const (
 	testServerLogToolID    = "server_log"
 	testSlackPostToolID    = "slack_post"
+	testSlackDMToolID      = "slack_dm"
 	testSlackHistoryToolID = "slack_channel_history"
 	testDatadogReadToolID  = "datadog_read"
 	testSlackUserTokenEnv  = "SLACK_USER_TOKEN"
@@ -52,6 +53,26 @@ func TestValidateReferencedToolEnvRejectsMissingSlackHistoryVars(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), testSlackUserTokenEnv) || !strings.Contains(err.Error(), testSlackHistoryToolID) {
 		t.Fatalf("ValidateReferencedToolEnv() error = %v, want slack history tool env requirement", err)
+	}
+}
+
+func TestValidateReferencedToolEnvRejectsMissingSlackDMVars(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateReferencedToolEnv([]AgentSpec{{
+		NamespaceID: "default",
+		AgentID:     "worker",
+		Tools: []AgentToolSpec{{
+			ID: testSlackDMToolID,
+		}},
+	}}, func(string) string {
+		return ""
+	})
+	if err == nil {
+		t.Fatal("ValidateReferencedToolEnv() error = nil, want missing env error")
+	}
+	if !strings.Contains(err.Error(), testSlackUserTokenEnv) || !strings.Contains(err.Error(), testSlackDMToolID) {
+		t.Fatalf("ValidateReferencedToolEnv() error = %v, want slack dm tool env requirement", err)
 	}
 }
 

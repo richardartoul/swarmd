@@ -20,6 +20,7 @@ import (
 const (
 	testToolServerLogID    = "server_log"
 	testToolSlackPostID    = "slack_post"
+	testToolSlackDMID      = "slack_dm"
 	testToolSlackRepliesID = "slack_replies"
 	testToolSlackHistoryID = "slack_channel_history"
 	testToolDatadogReadID  = "datadog_read"
@@ -47,6 +48,9 @@ func registerServerTestTools() {
 		}, ToolRegistrationOptions{})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackPostToolPlugin{host: host}
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
+		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
+			return testSlackDMToolPlugin{host: host}
 		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackRepliesToolPlugin{host: host}
@@ -251,6 +255,134 @@ func (p testSlackPostToolPlugin) handle(ctx context.Context, toolCtx toolscore.T
 		return nil
 	}
 	toolCtx.SetOutput(step, string(body))
+	return nil
+}
+
+type testSlackDMToolPlugin struct {
+	host ToolHost
+}
+
+func (testSlackDMToolPlugin) Definition() toolscore.ToolDefinition {
+	parameters := toolscommon.ObjectSchema(
+		map[string]any{
+			"user_id": toolscommon.StringSchema("Slack user ID."),
+			"email":   toolscommon.StringSchema("Slack user email."),
+			"text":    toolscommon.StringSchema("Message text."),
+		},
+		"text",
+	)
+	parameters["oneOf"] = []map[string]any{
+		{"required": []string{"user_id"}},
+		{"required": []string{"email"}},
+	}
+	return toolscore.ToolDefinition{
+		Name:              testToolSlackDMID,
+		Description:       "Send a Slack direct message to one user through the tool-owned Slack client.",
+		Kind:              toolscore.ToolKindFunction,
+		Parameters:        parameters,
+		RequiredArguments: []string{"text"},
+		RequiresNetwork:   true,
+		Mutating:          true,
+	}
+}
+
+func (p testSlackDMToolPlugin) NewHandler(config toolscore.ConfiguredTool) (toolscore.ToolHandler, error) {
+	if err := toolscommon.ValidateNoToolConfig(testToolSlackDMID, config.Config); err != nil {
+		return nil, err
+	}
+	return toolscore.ToolHandlerFunc(p.handle), nil
+}
+
+func (p testSlackDMToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
+	if !p.host.NetworkEnabled(toolCtx) {
+		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolSlackDMID))
+		return nil
+	}
+	input, err := toolscore.DecodeToolInput[struct {
+		UserID string `json:"user_id"`
+		Email  string `json:"email"`
+		Text   string `json:"text"`
+	}](call.Input)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	text := strings.TrimSpace(input.Text)
+	if text == "" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("text must not be empty"))
+		return nil
+	}
+	userID := strings.TrimSpace(input.UserID)
+	email := strings.ToLower(strings.TrimSpace(input.Email))
+	switch {
+	case userID == "" && email == "":
+		toolCtx.SetPolicyError(step, fmt.Errorf("exactly one of user_id or email must be provided"))
+		return nil
+	case userID != "" && email != "":
+		toolCtx.SetPolicyError(step, fmt.Errorf("exactly one of user_id or email must be provided"))
+		return nil
+	}
+	runtime, client, baseURL, err := testSlackRequestRuntime(p.host, toolCtx, testToolSlackDMID)
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	if email != "" {
+		target, err := url.Parse(baseURL + "/users.lookupByEmail")
+		if err != nil {
+			return fmt.Errorf("parse Slack dm lookup test URL: %w", err)
+		}
+		query := target.Query()
+		query.Set("email", email)
+		target.RawQuery = query.Encode()
+		body, err := performTestSlackRequest(ctx, client, runtime.LookupEnv(testToolSlackUserTokenEnv), http.MethodGet, target.String(), nil)
+		if err != nil {
+			toolCtx.SetPolicyError(step, err)
+			return nil
+		}
+		var response struct {
+			User struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		}
+		if err := json.Unmarshal(body, &response); err != nil {
+			return fmt.Errorf("decode slack dm lookup response: %w", err)
+		}
+		userID = strings.TrimSpace(response.User.ID)
+		if userID == "" {
+			toolCtx.SetPolicyError(step, fmt.Errorf("slack dm lookup response missing user.id"))
+			return nil
+		}
+	}
+	openBody, err := performTestSlackRequest(ctx, client, runtime.LookupEnv(testToolSlackUserTokenEnv), http.MethodPost, baseURL+"/conversations.open", map[string]any{
+		"users": userID,
+	})
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	var openResponse struct {
+		Channel struct {
+			ID string `json:"id"`
+		} `json:"channel"`
+	}
+	if err := json.Unmarshal(openBody, &openResponse); err != nil {
+		return fmt.Errorf("decode slack dm open response: %w", err)
+	}
+	channel := strings.TrimSpace(openResponse.Channel.ID)
+	if channel == "" {
+		toolCtx.SetPolicyError(step, fmt.Errorf("slack dm open response missing channel.id"))
+		return nil
+	}
+	postBody, err := performTestSlackRequest(ctx, client, runtime.LookupEnv(testToolSlackUserTokenEnv), http.MethodPost, baseURL+"/chat.postMessage", map[string]any{
+		"channel": channel,
+		"text":    text,
+	})
+	if err != nil {
+		toolCtx.SetPolicyError(step, err)
+		return nil
+	}
+	toolCtx.SetOutput(step, string(postBody))
 	return nil
 }
 
