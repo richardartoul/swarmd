@@ -74,7 +74,7 @@ func loadNamespaceItems(ctx context.Context, store *cpstore.Store) ([]list.Item,
 			desc:        desc,
 			filter:      strings.Join([]string{snapshot.Namespace.ID, snapshot.Namespace.Name, desc}, " "),
 			namespaceID: snapshot.Namespace.ID,
-			value:       row,
+			value:       snapshot,
 		})
 	}
 	return items, nil
