@@ -976,7 +976,7 @@ func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 		}
 	}
 	if len(tool.Parameters) != 0 {
-		return tool.Parameters
+		return anthropicCompatibleInputSchema(tool.Parameters)
 	}
 	return map[string]any{
 		"type":                 "object",
@@ -984,6 +984,48 @@ func anthropicToolSchema(tool agent.ToolDefinition) map[string]any {
 		"required":             []string{},
 		"additionalProperties": false,
 	}
+}
+
+func anthropicCompatibleInputSchema(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return schema
+	}
+	var notes []string
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		value, ok := schema[keyword]
+		if !ok {
+			continue
+		}
+		notes = append(notes, anthropicTopLevelSchemaConstraintNote(keyword, value))
+	}
+	if len(notes) == 0 {
+		return schema
+	}
+	clone := make(map[string]any, len(schema))
+	for key, value := range schema {
+		clone[key] = value
+	}
+	delete(clone, "oneOf")
+	delete(clone, "anyOf")
+	delete(clone, "allOf")
+	description, _ := clone["description"].(string)
+	description = strings.TrimSpace(description)
+	note := strings.Join(notes, " ")
+	switch {
+	case description == "":
+		clone["description"] = note
+	default:
+		clone["description"] = description + "\n\n" + note
+	}
+	return clone
+}
+
+func anthropicTopLevelSchemaConstraintNote(keyword string, value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("Anthropic compatibility note: obey the original top-level %s constraint when constructing tool input.", keyword)
+	}
+	return fmt.Sprintf("Anthropic compatibility note: obey the original top-level %s constraint when constructing tool input: %s", keyword, string(encoded))
 }
 
 func anthropicCustomToolInputField(tool agent.ToolDefinition) string {

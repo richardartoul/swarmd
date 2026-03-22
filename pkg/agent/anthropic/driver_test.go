@@ -490,6 +490,47 @@ func TestBuildAnthropicToolsMovesUniqueHintsIntoDescriptions(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicToolsStripsTopLevelSchemaCombinators(t *testing.T) {
+	t.Parallel()
+
+	parameters := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"user_id": map[string]any{"type": "string"},
+			"email":   map[string]any{"type": "string"},
+			"text":    map[string]any{"type": "string"},
+		},
+		"required":             []string{"text"},
+		"additionalProperties": false,
+		"oneOf": []map[string]any{
+			{"required": []string{"user_id"}},
+			{"required": []string{"email"}},
+		},
+	}
+
+	tools := buildAnthropicTools([]agent.ToolDefinition{{
+		Name:       "slack_dm",
+		Kind:       agent.ToolKindFunction,
+		Parameters: parameters,
+	}}, "", false)
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if _, ok := tools[0].InputSchema["oneOf"]; ok {
+		t.Fatalf("input_schema = %#v, want top-level oneOf removed for Anthropic compatibility", tools[0].InputSchema)
+	}
+	description, ok := tools[0].InputSchema["description"].(string)
+	if !ok {
+		t.Fatalf("input_schema description = %#v, want compatibility note string", tools[0].InputSchema["description"])
+	}
+	if !strings.Contains(description, "top-level oneOf constraint") {
+		t.Fatalf("input_schema description = %q, want original top-level oneOf note", description)
+	}
+	if _, ok := parameters["oneOf"]; !ok {
+		t.Fatalf("original parameters = %#v, want source schema left untouched", parameters)
+	}
+}
+
 func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	t.Parallel()
 
