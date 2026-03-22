@@ -26,6 +26,11 @@ const (
 
 	anthropicVersion                    = "2023-06-01"
 	anthropicReplayCacheMinApproxTokens = 1024
+	anthropicMaxContinuations           = 3
+	anthropicDiagnosticContentLimit     = 512
+
+	anthropicEmptyEndTurnContinuationPrompt = "Please continue and respond with either exactly one tool call or the strict final JSON response."
+	anthropicTruncationContinuationPrompt   = "Please continue from where you left off. Do not repeat prior content. Respond with either exactly one tool call or the strict final JSON response."
 )
 
 // DefaultSystemPrompt is kept for backward compatibility.
@@ -169,6 +174,14 @@ func (b *anthropicContentBlock) UnmarshalJSON(data []byte) error {
 	b.Data = decoded.Data
 	b.raw = append(json.RawMessage(nil), data...)
 	return nil
+}
+
+func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
+	raw := b.rawJSON()
+	if len(raw) == 0 {
+		return []byte("null"), nil
+	}
+	return raw, nil
 }
 
 func (b anthropicContentBlock) rawJSON() json.RawMessage {
@@ -688,14 +701,68 @@ func anthropicReplayToolInput(replay agent.StepReplay, def agent.ToolDefinition)
 }
 
 func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
+	totalCachedTokens := 0
+	for attempt := 0; ; attempt++ {
+		response, err := d.completeOnce(ctx, payload)
+		if err != nil {
+			return agent.Decision{}, err
+		}
+		totalCachedTokens += response.Usage.CacheReadInputTokens
+
+		stopReason := strings.TrimSpace(response.StopReason)
+		switch stopReason {
+		case "refusal":
+			return agent.Decision{}, fmt.Errorf("anthropic response refused request (%s)", anthropicResponseSummary(stopReason, response.Content))
+		case "pause_turn":
+			if len(response.Content) == 0 {
+				return agent.Decision{}, fmt.Errorf("anthropic response with stop_reason %q was empty (%s)", stopReason, anthropicResponseSummary(stopReason, response.Content))
+			}
+			if attempt >= anthropicMaxContinuations {
+				return agent.Decision{}, fmt.Errorf("anthropic response exceeded pause_turn continuation limit (%s)", anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, "")
+			continue
+		}
+
+		if stopReason == "end_turn" && !anthropicResponseHasDecisionSignal(response) {
+			if attempt >= anthropicMaxContinuations {
+				return agent.Decision{}, fmt.Errorf("anthropic response exceeded empty end_turn continuation limit (%s)", anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, anthropicEmptyEndTurnContinuationPrompt)
+			continue
+		}
+		if anthropicStopReasonNeedsContinuation(stopReason) && !anthropicResponseHasToolUse(response) {
+			if attempt >= anthropicMaxContinuations {
+				return agent.Decision{}, fmt.Errorf("anthropic response exceeded %q continuation limit (%s)", stopReason, anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, anthropicTruncationContinuationPrompt)
+			continue
+		}
+
+		decision, err := parseMessageDecision(response, allowedTools)
+		if err != nil {
+			return agent.Decision{}, anthropicResponseParseError{
+				StopReason: stopReason,
+				Content:    response.Content,
+				Err:        err,
+			}
+		}
+		decision.Usage = agent.Usage{
+			CachedTokens: totalCachedTokens,
+		}
+		return decision, nil
+	}
+}
+
+func (d *Driver) completeOnce(ctx context.Context, payload messagesRequest) (messagesResponse, error) {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return agent.Decision{}, err
+		return messagesResponse{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/messages", &body)
 	if err != nil {
-		return agent.Decision{}, err
+		return messagesResponse{}, err
 	}
 	req.Header.Set("x-api-key", d.apiKey)
 	req.Header.Set("anthropic-version", anthropicVersion)
@@ -704,34 +771,129 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return agent.Decision{}, err
+		return messagesResponse{}, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return agent.Decision{}, err
+		return messagesResponse{}, err
 	}
+	agent.MaybeWriteDebugResponse(respBody)
 	if resp.StatusCode/100 != 2 {
 		var apiErr apiErrorResponse
 		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Error.Message != "" {
-			return agent.Decision{}, fmt.Errorf("anthropic api error (%s): %s", resp.Status, apiErr.Error.Message)
+			return messagesResponse{}, fmt.Errorf("anthropic api error (%s): %s", resp.Status, apiErr.Error.Message)
 		}
-		return agent.Decision{}, fmt.Errorf("anthropic api error (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
+		return messagesResponse{}, fmt.Errorf("anthropic api error (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
 	}
 
 	var response messagesResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return agent.Decision{}, err
+		return messagesResponse{}, err
 	}
-	decision, err := parseMessageDecision(response, allowedTools)
-	if err != nil {
-		return agent.Decision{}, err
+	return response, nil
+}
+
+type anthropicResponseParseError struct {
+	StopReason string
+	Content    []anthropicContentBlock
+	Err        error
+}
+
+func (e anthropicResponseParseError) Error() string {
+	return fmt.Sprintf("anthropic response parse error (%s): %v", anthropicResponseSummary(e.StopReason, e.Content), e.Err)
+}
+
+func (e anthropicResponseParseError) Unwrap() error {
+	return e.Err
+}
+
+func anthropicContinuationPayload(payload messagesRequest, response messagesResponse, userPrompt string) messagesRequest {
+	next := payload
+	next.Messages = append([]anthropicMessage(nil), payload.Messages...)
+	if len(response.Content) > 0 {
+		next.Messages = append(next.Messages, anthropicMessage{
+			Role:    agent.MessageRoleAssistant,
+			Content: response.Content,
+		})
 	}
-	decision.Usage = agent.Usage{
-		CachedTokens: response.Usage.CacheReadInputTokens,
+	userPrompt = strings.TrimSpace(userPrompt)
+	if userPrompt != "" {
+		next.Messages = append(next.Messages, anthropicMessage{
+			Role:    agent.MessageRoleUser,
+			Content: userPrompt,
+		})
 	}
-	return decision, nil
+	return next
+}
+
+func anthropicStopReasonNeedsContinuation(stopReason string) bool {
+	switch strings.TrimSpace(stopReason) {
+	case "max_tokens", "model_context_window_exceeded":
+		return true
+	default:
+		return false
+	}
+}
+
+func anthropicResponseHasDecisionSignal(response messagesResponse) bool {
+	return anthropicResponseHasToolUse(response) || extractAnthropicText(response.Content) != ""
+}
+
+func anthropicResponseHasToolUse(response messagesResponse) bool {
+	for _, block := range response.Content {
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
+}
+
+func anthropicResponseSummary(stopReason string, content []anthropicContentBlock) string {
+	return fmt.Sprintf(
+		`stop_reason=%q block_types=%s content=%s`,
+		strings.TrimSpace(stopReason),
+		compactJSON(anthropicContentBlockTypes(content)),
+		anthropicDiagnosticContent(content),
+	)
+}
+
+func anthropicContentBlockTypes(blocks []anthropicContentBlock) []string {
+	if len(blocks) == 0 {
+		return []string{}
+	}
+	types := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		typeName := strings.TrimSpace(block.Type)
+		if typeName == "" {
+			typeName = "<empty>"
+		}
+		types = append(types, typeName)
+	}
+	return types
+}
+
+func anthropicDiagnosticContent(blocks []anthropicContentBlock) string {
+	if len(blocks) == 0 {
+		return "[]"
+	}
+	return truncateAnthropicDiagnostic(compactJSON(blocks), anthropicDiagnosticContentLimit)
+}
+
+func truncateAnthropicDiagnostic(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || maxRunes <= 0 {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	if maxRunes <= 3 {
+		return string(runes[:maxRunes])
+	}
+	return string(runes[:maxRunes-3]) + "..."
 }
 
 func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDefinition) (agent.Decision, error) {

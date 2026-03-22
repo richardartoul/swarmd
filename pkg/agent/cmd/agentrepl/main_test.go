@@ -866,6 +866,178 @@ func TestAgentTUIModelMouseWheelScrollsTranscriptWhileInputFocused(t *testing.T)
 	}
 }
 
+func TestAgentTUIModelUpKeyFocusesTranscriptAndScrollsHistory(t *testing.T) {
+	t.Parallel()
+
+	model := newAgentTUIModel(agentTUIOptions{
+		events:       make(chan tea.Msg),
+		submitPrompt: func(prompt string) (agent.Trigger, bool) { return makeTrigger(prompt, 1), true },
+		cancel:       func() {},
+		modelName:    "gpt-test",
+		rootDir:      "/tmp/workspace",
+		verbose:      true,
+	})
+	model.width = 64
+	model.height = 18
+	model.resize()
+
+	for i := 0; i < 24; i++ {
+		model.appendEntry(transcriptEntry{
+			kind:  transcriptKindAssistant,
+			title: "assistant",
+			body:  strings.Repeat("line ", 6),
+		})
+	}
+	if model.focus != agentTUIFocusInput {
+		t.Fatalf("model.focus = %v, want input focus", model.focus)
+	}
+	before := model.transcript.YOffset
+	if before == 0 {
+		t.Fatalf("transcript.YOffset = 0, want scrollable content")
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	updated, ok := next.(*agentTUIModel)
+	if !ok {
+		t.Fatalf("updated model type = %T, want *agentTUIModel", next)
+	}
+	if updated.focus != agentTUIFocusTranscript {
+		t.Fatalf("updated.focus = %v, want transcript focus", updated.focus)
+	}
+	if updated.transcript.YOffset >= before {
+		t.Fatalf("transcript.YOffset = %d, want less than %d after pressing up", updated.transcript.YOffset, before)
+	}
+}
+
+func TestAgentTUIModelDownKeyKeepsTranscriptFocusUntilBottom(t *testing.T) {
+	t.Parallel()
+
+	model := newAgentTUIModel(agentTUIOptions{
+		events:       make(chan tea.Msg),
+		submitPrompt: func(prompt string) (agent.Trigger, bool) { return makeTrigger(prompt, 1), true },
+		cancel:       func() {},
+		modelName:    "gpt-test",
+		rootDir:      "/tmp/workspace",
+		verbose:      true,
+	})
+	model.width = 64
+	model.height = 18
+	model.resize()
+
+	for i := 0; i < 24; i++ {
+		model.appendEntry(transcriptEntry{
+			kind:  transcriptKindAssistant,
+			title: "assistant",
+			body:  strings.Repeat("line ", 6),
+		})
+	}
+	model.setFocus(agentTUIFocusTranscript)
+	model.transcript.LineUp(5)
+	before := model.transcript.YOffset
+	if before <= 1 {
+		t.Fatalf("transcript.YOffset = %d, want > 1 for intermediate scrolling", before)
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, ok := next.(*agentTUIModel)
+	if !ok {
+		t.Fatalf("updated model type = %T, want *agentTUIModel", next)
+	}
+	if updated.focus != agentTUIFocusTranscript {
+		t.Fatalf("updated.focus = %v, want transcript focus while not yet at bottom", updated.focus)
+	}
+	if updated.transcript.YOffset <= before {
+		t.Fatalf("transcript.YOffset = %d, want greater than %d after pressing down", updated.transcript.YOffset, before)
+	}
+}
+
+func TestAgentTUIModelDownKeyReturnsToInputAtBottom(t *testing.T) {
+	t.Parallel()
+
+	model := newAgentTUIModel(agentTUIOptions{
+		events:       make(chan tea.Msg),
+		submitPrompt: func(prompt string) (agent.Trigger, bool) { return makeTrigger(prompt, 1), true },
+		cancel:       func() {},
+		modelName:    "gpt-test",
+		rootDir:      "/tmp/workspace",
+		verbose:      true,
+	})
+	model.width = 64
+	model.height = 18
+	model.resize()
+
+	for i := 0; i < 24; i++ {
+		model.appendEntry(transcriptEntry{
+			kind:  transcriptKindAssistant,
+			title: "assistant",
+			body:  strings.Repeat("line ", 6),
+		})
+	}
+	model.setFocus(agentTUIFocusTranscript)
+	model.transcript.LineUp(1)
+	if model.transcript.AtBottom() {
+		t.Fatal("transcript.AtBottom() = true, want false before pressing down")
+	}
+
+	next, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, ok := next.(*agentTUIModel)
+	if !ok {
+		t.Fatalf("updated model type = %T, want *agentTUIModel", next)
+	}
+	if updated.focus != agentTUIFocusInput {
+		t.Fatalf("updated.focus = %v, want input focus at the live tail", updated.focus)
+	}
+	if !updated.transcript.AtBottom() {
+		t.Fatal("transcript.AtBottom() = false, want true after pressing down to the live tail")
+	}
+}
+
+func TestAgentTUIModelPreservesScrollOffsetWhileReviewingHistory(t *testing.T) {
+	t.Parallel()
+
+	model := newAgentTUIModel(agentTUIOptions{
+		events:       make(chan tea.Msg),
+		submitPrompt: func(prompt string) (agent.Trigger, bool) { return makeTrigger(prompt, 1), true },
+		cancel:       func() {},
+		modelName:    "gpt-test",
+		rootDir:      "/tmp/workspace",
+		verbose:      true,
+	})
+	model.width = 64
+	model.height = 18
+	model.resize()
+
+	for i := 0; i < 24; i++ {
+		model.appendEntry(transcriptEntry{
+			kind:  transcriptKindAssistant,
+			title: "assistant",
+			body:  strings.Repeat("line ", 6),
+		})
+	}
+	model.setFocus(agentTUIFocusTranscript)
+	model.transcript.LineUp(5)
+	before := model.transcript.YOffset
+	if before == 0 {
+		t.Fatalf("transcript.YOffset = 0, want to be scrolled away from the top")
+	}
+	if model.transcript.AtBottom() {
+		t.Fatal("transcript.AtBottom() = true, want false after scrolling up")
+	}
+
+	model.appendEntry(transcriptEntry{
+		kind:  transcriptKindAssistant,
+		title: "assistant",
+		body:  "new output while reviewing history",
+	})
+
+	if model.transcript.YOffset != before {
+		t.Fatalf("transcript.YOffset = %d, want %d after appending history", model.transcript.YOffset, before)
+	}
+	if model.transcript.AtBottom() {
+		t.Fatal("transcript.AtBottom() = true, want false while user is reviewing history")
+	}
+}
+
 func flattenTranscriptEntries(entries []transcriptEntry) string {
 	var b strings.Builder
 	for _, entry := range entries {

@@ -1293,6 +1293,200 @@ func TestDriverNextRejectsPlainTextOutsideStrictSchema(t *testing.T) {
 	if err == nil {
 		t.Fatal("Next() error = nil, want strict final parser rejection")
 	}
+	if !strings.Contains(err.Error(), `stop_reason="end_turn"`) {
+		t.Fatalf("Next() error = %v, want stop_reason context", err)
+	}
+	if !strings.Contains(err.Error(), `block_types=["text"]`) {
+		t.Fatalf("Next() error = %v, want block type context", err)
+	}
+	if !strings.Contains(err.Error(), `"text":"done"`) {
+		t.Fatalf("Next() error = %v, want content summary", err)
+	}
+}
+
+func TestDriverNextContinuesEmptyEndTurnResponses(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content:    []anthropicContentBlock{},
+			StopReason: "end_turn",
+		},
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: strictFinalText("all work is complete", "done"),
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil || decision.Finish.Value != "done" {
+		t.Fatalf("decision = %#v, want continued finish decision", decision)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(snapshot))
+	}
+	last := snapshot[1].Request.Messages[len(snapshot[1].Request.Messages)-1]
+	if last.Role != agent.MessageRoleUser {
+		t.Fatalf("second request last role = %q, want user continuation", last.Role)
+	}
+	if got := mustAnthropicTextContent(t, last.Content); !strings.Contains(got, "Please continue") {
+		t.Fatalf("second request continuation prompt = %q, want continue prompt", got)
+	}
+}
+
+func TestDriverNextContinuesPauseTurnResponses(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type:  "server_tool_use",
+				ID:    "srvtoolu_1",
+				Name:  "web_search",
+				Input: json.RawMessage(`{"query":"latest ai news"}`),
+			}},
+			StopReason: "pause_turn",
+		},
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: strictFinalText("all work is complete", "done"),
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "search the web"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil || decision.Finish.Value != "done" {
+		t.Fatalf("decision = %#v, want continued finish decision", decision)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(snapshot))
+	}
+	last := snapshot[1].Request.Messages[len(snapshot[1].Request.Messages)-1]
+	if last.Role != agent.MessageRoleAssistant {
+		t.Fatalf("second request last role = %q, want assistant continuation", last.Role)
+	}
+	blocks := mustAnthropicBlocks(t, last.Content)
+	if len(blocks) != 1 || blocks[0]["type"] != "server_tool_use" {
+		t.Fatalf("second request last content = %#v, want echoed server_tool_use block", blocks)
+	}
+	if blocks[0]["id"] != "srvtoolu_1" || blocks[0]["name"] != "web_search" {
+		t.Fatalf("second request last content = %#v, want preserved server tool metadata", blocks[0])
+	}
+}
+
+func TestDriverNextContinuesTruncatedResponses(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: `{"thought":"inspect","result_json":"`,
+			}},
+			StopReason: "max_tokens",
+		},
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: strictFinalText("all work is complete", "done"),
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	decision, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Next() error = %v", err)
+	}
+	if decision.Finish == nil || decision.Finish.Value != "done" {
+		t.Fatalf("decision = %#v, want continued finish decision", decision)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(snapshot))
+	}
+	if len(snapshot[1].Request.Messages) < 3 {
+		t.Fatalf("len(second request messages) = %d, want assistant replay plus continuation prompt", len(snapshot[1].Request.Messages))
+	}
+	assistant := snapshot[1].Request.Messages[len(snapshot[1].Request.Messages)-2]
+	if assistant.Role != agent.MessageRoleAssistant {
+		t.Fatalf("second request assistant role = %q, want assistant partial response", assistant.Role)
+	}
+	if got := mustAnthropicTextContent(t, assistant.Content); got != `{"thought":"inspect","result_json":"` {
+		t.Fatalf("second request assistant content = %q, want preserved partial text", got)
+	}
+	user := snapshot[1].Request.Messages[len(snapshot[1].Request.Messages)-1]
+	if user.Role != agent.MessageRoleUser {
+		t.Fatalf("second request final role = %q, want user continuation prompt", user.Role)
+	}
+	if got := mustAnthropicTextContent(t, user.Content); !strings.Contains(got, "Please continue from where you left off") {
+		t.Fatalf("second request continuation prompt = %q, want truncation prompt", got)
+	}
+}
+
+func TestDriverNextRejectsRefusals(t *testing.T) {
+	t.Parallel()
+
+	server, _ := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "I can't help with that request.",
+			}},
+			StopReason: "refusal",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	_, err := driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "do the unsafe thing"},
+		},
+	})
+	if err == nil {
+		t.Fatal("Next() error = nil, want refusal error")
+	}
+	if !strings.Contains(err.Error(), "refused request") {
+		t.Fatalf("Next() error = %v, want refusal classification", err)
+	}
+	if !strings.Contains(err.Error(), `stop_reason="refusal"`) {
+		t.Fatalf("Next() error = %v, want refusal stop_reason context", err)
+	}
 }
 
 func TestDriverNextParsesStructuredFinishThought(t *testing.T) {
@@ -1431,6 +1625,23 @@ func TestParseMessageDecisionRejectsMultipleToolUses(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exactly one tool use") {
 		t.Fatalf("parseMessageDecision() error = %v, want multiple tool use rejection", err)
+	}
+}
+
+func TestAnthropicContentBlockMarshalJSONPreservesRawUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"latest ai news"},"opaque":"preserve-me"}`)
+	var block anthropicContentBlock
+	if err := json.Unmarshal(raw, &block); err != nil {
+		t.Fatalf("json.Unmarshal(raw): %v", err)
+	}
+	encoded, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("json.Marshal(block): %v", err)
+	}
+	if string(encoded) != string(raw) {
+		t.Fatalf("json.Marshal(block) = %s, want %s", string(encoded), string(raw))
 	}
 }
 

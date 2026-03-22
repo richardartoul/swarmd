@@ -65,6 +65,9 @@ type transcriptEntry struct {
 
 type agentTUIKeyMap struct {
 	toggleFocus key.Binding
+	history     key.Binding
+	live        key.Binding
+	backToInput key.Binding
 	send        key.Binding
 	help        key.Binding
 	quit        key.Binding
@@ -73,6 +76,9 @@ type agentTUIKeyMap struct {
 func newAgentTUIKeyMap() agentTUIKeyMap {
 	return agentTUIKeyMap{
 		toggleFocus: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "toggle focus")),
+		history:     key.NewBinding(key.WithKeys("up", "pgup"), key.WithHelp("up/pgup", "history")),
+		live:        key.NewBinding(key.WithKeys("down", "pgdown"), key.WithHelp("down/pgdn", "prompt")),
+		backToInput: key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "input")),
 		send:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "send prompt")),
 		help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "toggle help")),
 		quit:        key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
@@ -80,13 +86,14 @@ func newAgentTUIKeyMap() agentTUIKeyMap {
 }
 
 func (k agentTUIKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.toggleFocus, k.send, k.help, k.quit}
+	return []key.Binding{k.toggleFocus, k.history, k.live, k.send, k.help, k.quit}
 }
 
 func (k agentTUIKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
-		{k.toggleFocus, k.send},
-		{k.help, k.quit},
+		{k.toggleFocus, k.history, k.live},
+		{k.backToInput, k.help, k.quit},
+		{k.send},
 	}
 }
 
@@ -226,10 +233,20 @@ func (m *agentTUIModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.focus == agentTUIFocusTranscript {
-		if msg.String() == "esc" {
+		if key.Matches(msg, m.keys.backToInput) {
 			m.setFocus(agentTUIFocusInput)
 			return m, nil
 		}
+		var cmd tea.Cmd
+		m.transcript, cmd = m.transcript.Update(msg)
+		if key.Matches(msg, m.keys.live) && m.transcript.AtBottom() {
+			m.setFocus(agentTUIFocusInput)
+		}
+		return m, cmd
+	}
+
+	if key.Matches(msg, m.keys.history) {
+		m.setFocus(agentTUIFocusTranscript)
 		var cmd tea.Cmd
 		m.transcript, cmd = m.transcript.Update(msg)
 		return m, cmd
@@ -416,16 +433,18 @@ func (m *agentTUIModel) setFocus(focus agentTUIFocus) {
 }
 
 func (m *agentTUIModel) appendEntry(entry transcriptEntry) {
+	followTail := m.shouldFollowTranscript()
 	m.entries = append(m.entries, entry)
-	m.refreshTranscript()
+	m.refreshTranscript(followTail)
 }
 
 func (m *agentTUIModel) appendStream(kind transcriptKind, text string) {
+	followTail := m.shouldFollowTranscript()
 	if len(m.entries) > 0 {
 		last := &m.entries[len(m.entries)-1]
 		if last.kind == kind {
 			last.body += text
-			m.refreshTranscript()
+			m.refreshTranscript(followTail)
 			return
 		}
 	}
@@ -434,12 +453,25 @@ func (m *agentTUIModel) appendStream(kind transcriptKind, text string) {
 		title: string(kind),
 		body:  text,
 	})
-	m.refreshTranscript()
+	m.refreshTranscript(followTail)
 }
 
-func (m *agentTUIModel) refreshTranscript() {
+func (m agentTUIModel) shouldFollowTranscript() bool {
+	if len(m.entries) == 0 || m.transcript.Height == 0 {
+		return true
+	}
+	return m.transcript.AtBottom()
+}
+
+func (m *agentTUIModel) refreshTranscript(followTail bool) {
+	offset := m.transcript.YOffset
 	m.transcript.SetContent(m.renderTranscript())
-	m.transcript.GotoBottom()
+	if followTail {
+		m.transcript.GotoBottom()
+		return
+	}
+	maxOffset := maxInt(0, m.transcript.TotalLineCount()-m.transcript.Height)
+	m.transcript.SetYOffset(minInt(offset, maxOffset))
 }
 
 func (m agentTUIModel) renderTranscript() string {
@@ -474,6 +506,7 @@ func (m *agentTUIModel) resize() {
 		return
 	}
 
+	followTail := m.shouldFollowTranscript()
 	m.help.Width = m.width
 	m.help.ShowAll = m.showHelp
 	transcriptStyle := transcriptPaneStyle(m.focus == agentTUIFocusTranscript)
@@ -488,7 +521,7 @@ func (m *agentTUIModel) resize() {
 	transcriptHeight := maxInt(8, m.height-headerHeight-inputHeight-footerHeight)
 	m.transcript.Width = maxInt(20, m.width-transcriptStyle.GetHorizontalFrameSize())
 	m.transcript.Height = maxInt(6, transcriptHeight-transcriptStyle.GetVerticalFrameSize())
-	m.refreshTranscript()
+	m.refreshTranscript(followTail)
 }
 
 func (m agentTUIModel) transcriptContentWidth() int {
@@ -585,6 +618,13 @@ func inputPaneStyle(focused bool) lipgloss.Style {
 
 func maxInt(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

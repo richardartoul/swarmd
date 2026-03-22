@@ -9,23 +9,38 @@ import (
 	"sync"
 )
 
-// DebugPromptEnvVar enables writing the exact serialized model request payload to stderr.
-const DebugPromptEnvVar = "SWARMD_DEBUG_PROMPT"
+const (
+	// DebugPromptEnvVar enables writing the exact serialized model request payload to stderr.
+	DebugPromptEnvVar = "SWARMD_DEBUG_PROMPT"
+	// DebugResponseEnvVar enables writing the exact raw model response payload to stderr.
+	DebugResponseEnvVar = "SWARMD_DEBUG_RESPONSE"
+)
 
 var (
-	debugPromptMu     sync.Mutex
-	debugPromptOutput io.Writer = os.Stderr
+	debugPayloadMu      sync.Mutex
+	debugPromptOutput   io.Writer = os.Stderr
+	debugResponseOutput io.Writer = os.Stderr
 )
 
 // MaybeWriteDebugPrompt writes the exact serialized model request payload to stderr
 // when [DebugPromptEnvVar] is set to a non-empty value.
 func MaybeWriteDebugPrompt(payload []byte) {
-	if strings.TrimSpace(os.Getenv(DebugPromptEnvVar)) == "" || len(payload) == 0 {
+	maybeWriteDebugPayload(DebugPromptEnvVar, debugPromptOutput, payload)
+}
+
+// MaybeWriteDebugResponse writes the exact raw model response payload to stderr
+// when [DebugResponseEnvVar] is set to a non-empty value.
+func MaybeWriteDebugResponse(payload []byte) {
+	maybeWriteDebugPayload(DebugResponseEnvVar, debugResponseOutput, payload)
+}
+
+func maybeWriteDebugPayload(envVar string, output io.Writer, payload []byte) {
+	if strings.TrimSpace(os.Getenv(envVar)) == "" || len(payload) == 0 {
 		return
 	}
 
-	debugPromptMu.Lock()
-	defer debugPromptMu.Unlock()
+	debugPayloadMu.Lock()
+	defer debugPayloadMu.Unlock()
 
-	_, _ = debugPromptOutput.Write(payload)
+	_, _ = output.Write(payload)
 }

@@ -39,3 +39,38 @@ func TestMaybeWriteDebugPromptSkipsWhenDisabled(t *testing.T) {
 		t.Fatalf("MaybeWriteDebugPrompt() output = %q, want empty output", got)
 	}
 }
+
+func TestMaybeWriteDebugResponseWritesExactPayloadWhenEnabled(t *testing.T) {
+	t.Setenv(DebugResponseEnvVar, "1")
+
+	var out bytes.Buffer
+	previous := debugResponseOutput
+	debugResponseOutput = &out
+	t.Cleanup(func() {
+		debugResponseOutput = previous
+	})
+
+	payload := []byte("{\"id\":\"msg_123\",\"content\":[{\"type\":\"text\",\"text\":\"hello <world>\"}]}")
+	MaybeWriteDebugResponse(payload)
+
+	if got := out.String(); got != string(payload) {
+		t.Fatalf("MaybeWriteDebugResponse() output = %q, want %q", got, string(payload))
+	}
+}
+
+func TestMaybeWriteDebugResponseSkipsWhenDisabled(t *testing.T) {
+	t.Setenv(DebugResponseEnvVar, "")
+
+	var out bytes.Buffer
+	previous := debugResponseOutput
+	debugResponseOutput = &out
+	t.Cleanup(func() {
+		debugResponseOutput = previous
+	})
+
+	MaybeWriteDebugResponse([]byte("{\"id\":\"msg_123\"}"))
+
+	if got := out.String(); got != "" {
+		t.Fatalf("MaybeWriteDebugResponse() output = %q, want empty output", got)
+	}
+}
