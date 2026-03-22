@@ -117,7 +117,6 @@ func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgen
 		existing.ModelProvider != defaultString(strings.TrimSpace(normalized.ModelProvider), "openai") ||
 		existing.ModelName != strings.TrimSpace(normalized.ModelName) ||
 		existing.ModelBaseURL != strings.TrimSpace(normalized.ModelBaseURL) ||
-		existing.AllowNetwork != normalized.AllowNetwork ||
 		existing.PreserveState != normalized.PreserveState ||
 		existing.MaxSteps != defaultInt(normalized.MaxSteps, 32) ||
 		existing.StepTimeout != defaultDuration(normalized.StepTimeout, 30*time.Second) ||
@@ -132,7 +131,7 @@ func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgen
 			ctx,
 			`UPDATE agents
 			 SET name = ?, role = ?, desired_state = ?, root_path = ?, model_provider = ?, model_name = ?, model_base_url = ?,
-			     allow_network = ?, sandbox_commands_json = ?, preserve_state = ?, max_steps = ?, step_timeout_millis = ?,
+			     sandbox_commands_json = ?, preserve_state = ?, max_steps = ?, step_timeout_millis = ?,
 			     max_output_bytes = ?, lease_duration_millis = ?, retry_delay_millis = ?, max_attempts = ?, config_json = ?,
 			     updated_at_ms = ?
 			 WHERE namespace_id = ? AND agent_id = ?`,
@@ -143,7 +142,6 @@ func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgen
 			defaultString(strings.TrimSpace(normalized.ModelProvider), "openai"),
 			strings.TrimSpace(normalized.ModelName),
 			strings.TrimSpace(normalized.ModelBaseURL),
-			boolInt(normalized.AllowNetwork),
 			"",
 			boolInt(normalized.PreserveState),
 			defaultInt(normalized.MaxSteps, 32),

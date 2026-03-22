@@ -336,7 +336,6 @@ func TestRuntimeManagerIncludesManagedServerTools(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  3,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{
@@ -436,7 +435,6 @@ func TestRuntimeManagerExecutesDatadogReadTool(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{
@@ -559,7 +557,6 @@ func TestRuntimeManagerExecutesSlackChannelHistoryTool(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{
@@ -722,7 +719,6 @@ func TestRuntimeManagerAllowsScopedSlackToolsWhenGlobalHostDisallowed(t *testing
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{
@@ -875,7 +871,6 @@ func TestRuntimeManagerAllowsScopedDatadogReadToolWhenGlobalHostDisallowed(t *te
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{
@@ -988,7 +983,6 @@ func TestRuntimeManagerExecutesGitHubReadRepoTool(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
@@ -1115,7 +1109,6 @@ func TestRuntimeManagerExecutesGitHubReadReviewsTool(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
@@ -1241,7 +1234,6 @@ func TestRuntimeManagerExecutesGitHubReadCIToolDownloadArtifact(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
@@ -1400,7 +1392,6 @@ func TestRuntimeManagerAllowsScopedGitHubReadRepoToolWhenGlobalHostDisallowed(t 
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  1,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{Glob: "example.com"}},

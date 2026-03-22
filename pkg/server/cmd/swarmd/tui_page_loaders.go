@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 
+	"github.com/richardartoul/swarmd/pkg/server"
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
@@ -104,7 +105,7 @@ func loadAgentItems(ctx context.Context, store *cpstore.Store, query tuiPageQuer
 			"state=%s model=%s global_net=%t root=%s",
 			agent.DesiredState,
 			joinModel(agent.ModelProvider, agent.ModelName),
-			agent.AllowNetwork,
+			server.GlobalNetworkEnabledFromConfigJSON(agent.ConfigJSON),
 			formatRootWithFilesystemKind(agent.RootPath, agent.ConfigJSON),
 		)
 		items = append(items, tuiItem{

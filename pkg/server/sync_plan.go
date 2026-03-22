@@ -95,7 +95,6 @@ type desiredAgentState struct {
 	ModelProvider  string
 	ModelName      string
 	ModelBaseURL   string
-	AllowNetwork   bool
 	PreserveState  bool
 	MaxSteps       int
 	StepTimeout    time.Duration
@@ -397,7 +396,6 @@ func buildManagedAgentParams(configRoot, defaultRootBase string, spec AgentSpec)
 		ModelProvider:  spec.Model.Provider,
 		ModelName:      spec.Model.Name,
 		ModelBaseURL:   spec.Model.BaseURL,
-		AllowNetwork:   agentNetworkEnabled(spec.Network),
 		PreserveState:  spec.Runtime.PreserveState,
 		MaxSteps:       spec.Runtime.MaxSteps,
 		StepTimeout:    stepTimeout,
@@ -475,7 +473,6 @@ func buildDesiredAgentState(configRoot, defaultRootBase string, spec AgentSpec) 
 		ModelProvider:  normalizedModelProvider(params),
 		ModelName:      strings.TrimSpace(params.ModelName),
 		ModelBaseURL:   strings.TrimSpace(params.ModelBaseURL),
-		AllowNetwork:   params.AllowNetwork,
 		PreserveState:  params.PreserveState,
 		MaxSteps:       normalizedMaxSteps(params),
 		StepTimeout:    normalizedStepTimeout(params),
@@ -609,7 +606,11 @@ func diffAgentState(existing cpstore.RunnableAgent, desired desiredAgentState) [
 	appendChange("model_provider", existing.ModelProvider, desired.ModelProvider)
 	appendChange("model_name", existing.ModelName, desired.ModelName)
 	appendChange("model_base_url", existing.ModelBaseURL, desired.ModelBaseURL)
-	appendChange("global_network_enabled", fmt.Sprintf("%t", existing.AllowNetwork), fmt.Sprintf("%t", desired.AllowNetwork))
+	appendChange(
+		"global_network_enabled",
+		fmt.Sprintf("%t", GlobalNetworkEnabledFromConfigJSON(existing.ConfigJSON)),
+		fmt.Sprintf("%t", GlobalNetworkEnabledFromConfigJSON(desired.ConfigJSON)),
+	)
 	appendChange("preserve_state", fmt.Sprintf("%t", existing.PreserveState), fmt.Sprintf("%t", desired.PreserveState))
 	appendChange("max_steps", fmt.Sprintf("%d", existing.MaxSteps), fmt.Sprintf("%d", desired.MaxSteps))
 	appendChange("step_timeout", existing.StepTimeout.String(), desired.StepTimeout.String())

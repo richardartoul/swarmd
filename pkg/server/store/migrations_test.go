@@ -186,3 +186,96 @@ CREATE TABLE runs (
 		t.Fatal("runs table missing migrated column finish_thought")
 	}
 }
+
+func TestMigrateDropsAgentAllowNetworkColumn(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "migration-agents.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create schema_migrations error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (9)`); err != nil {
+		t.Fatalf("insert schema version error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE namespaces (
+	namespace_id TEXT PRIMARY KEY,
+	name TEXT NOT NULL,
+	limits_json TEXT NOT NULL DEFAULT '',
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+)`); err != nil {
+		t.Fatalf("create namespaces error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+CREATE TABLE agents (
+	namespace_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	name TEXT NOT NULL,
+	role TEXT NOT NULL,
+	desired_state TEXT NOT NULL,
+	root_path TEXT NOT NULL,
+	model_provider TEXT NOT NULL,
+	model_name TEXT NOT NULL,
+	model_base_url TEXT NOT NULL DEFAULT '',
+	allow_network INTEGER NOT NULL,
+	sandbox_commands_json TEXT NOT NULL DEFAULT '',
+	preserve_state INTEGER NOT NULL,
+	max_steps INTEGER NOT NULL,
+	step_timeout_millis INTEGER NOT NULL,
+	max_output_bytes INTEGER NOT NULL,
+	lease_duration_millis INTEGER NOT NULL,
+	retry_delay_millis INTEGER NOT NULL,
+	max_attempts INTEGER NOT NULL,
+	config_json TEXT NOT NULL DEFAULT '',
+	current_prompt_version_id TEXT NOT NULL DEFAULT '',
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL
+)`); err != nil {
+		t.Fatalf("create agents error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO namespaces (namespace_id, name, limits_json, created_at_ms, updated_at_ms)
+VALUES ('default', 'default', '', 1, 1)`); err != nil {
+		t.Fatalf("insert namespace error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO agents (
+	namespace_id, agent_id, name, role, desired_state, root_path, model_provider, model_name, model_base_url,
+	allow_network, sandbox_commands_json, preserve_state, max_steps, step_timeout_millis, max_output_bytes,
+	lease_duration_millis, retry_delay_millis, max_attempts, config_json, current_prompt_version_id, created_at_ms, updated_at_ms
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"default", "worker", "worker", "worker", "running", "/tmp/worker", "openai", "gpt-5", "",
+		1, "", 0, 8, 30000, 65536, 300000, 30000, 3, `{"version":1,"type":"agent_config","body":{}}`, "", 1, 1,
+	); err != nil {
+		t.Fatalf("insert agent error = %v", err)
+	}
+
+	store, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer store.Close()
+
+	exists, err := tableColumnExists(ctx, store.DB(), "agents", "allow_network")
+	if err != nil {
+		t.Fatalf("tableColumnExists(%q) error = %v", "allow_network", err)
+	}
+	if exists {
+		t.Fatal("agents table still contains allow_network after migration")
+	}
+	var count int
+	if err := store.DB().QueryRowContext(ctx, `SELECT COUNT(1) FROM agents WHERE namespace_id = 'default' AND agent_id = 'worker'`).Scan(&count); err != nil {
+		t.Fatalf("query migrated agents error = %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("migrated agent count = %d, want 1", count)
+	}
+}

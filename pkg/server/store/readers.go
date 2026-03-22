@@ -11,7 +11,7 @@ func (s *Store) ListAgents(ctx context.Context, params ListAgentsParams) ([]Runn
 	query := `
 SELECT
 	a.namespace_id, a.agent_id, a.name, a.role, a.desired_state, a.root_path, a.model_provider, a.model_name, a.model_base_url,
-	a.allow_network, a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
+	a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
 	a.lease_duration_millis, a.retry_delay_millis, a.max_attempts, a.config_json, a.current_prompt_version_id,
 	a.created_at_ms, a.updated_at_ms,
 	COALESCE(p.prompt, '')

@@ -140,7 +140,7 @@ func renderAgentList(w io.Writer, agents []cpstore.RunnableAgent) {
 			agent.ID,
 			agent.DesiredState,
 			joinModel(agent.ModelProvider, agent.ModelName),
-			agent.AllowNetwork,
+			server.GlobalNetworkEnabledFromConfigJSON(agent.ConfigJSON),
 			displayAgentRoot(agent),
 		)
 	}
@@ -158,7 +158,7 @@ func renderAgentShow(w io.Writer, data agentShowData) {
 	writeKeyValue(w, "model", joinModel(agent.ModelProvider, agent.ModelName))
 	writeKeyValue(w, "model_base_url", displayEmpty(agent.ModelBaseURL))
 	writeKeyValue(w, "root", displayAgentRoot(agent))
-	writeKeyValue(w, "global_network_enabled", fmt.Sprintf("%t", agent.AllowNetwork))
+	writeKeyValue(w, "global_network_enabled", fmt.Sprintf("%t", server.GlobalNetworkEnabledFromConfigJSON(agent.ConfigJSON)))
 	writeKeyValue(w, "preserve_state", fmt.Sprintf("%t", agent.PreserveState))
 	writeKeyValue(w, "max_steps", fmt.Sprintf("%d", agent.MaxSteps))
 	writeKeyValue(w, "step_timeout", agent.StepTimeout.String())

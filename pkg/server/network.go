@@ -115,6 +115,13 @@ func resolveManagedNetworkHostMatchers(network managedAgentNetworkConfig) []inte
 	return matchers
 }
 
+// GlobalNetworkEnabledFromConfigJSON reports whether the managed config exposes
+// any global reachable hosts for shell and global network tools.
+func GlobalNetworkEnabledFromConfigJSON(configJSON string) bool {
+	network, err := loadAgentNetworkSettings(configJSON)
+	return err == nil && len(network.ReachableHosts) > 0
+}
+
 func networkPromptGuidance(network managedAgentNetworkConfig) string {
 	if len(network.ReachableHosts) == 0 {
 		return ""

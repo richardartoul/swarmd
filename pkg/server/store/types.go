@@ -62,7 +62,6 @@ type AgentRecord struct {
 	ModelProvider          string
 	ModelName              string
 	ModelBaseURL           string
-	AllowNetwork           bool
 	PreserveState          bool
 	MaxSteps               int
 	StepTimeout            time.Duration
@@ -231,7 +230,6 @@ type CreateAgentParams struct {
 	ModelProvider  string
 	ModelName      string
 	ModelBaseURL   string
-	AllowNetwork   bool
 	PreserveState  bool
 	MaxSteps       int
 	StepTimeout    time.Duration

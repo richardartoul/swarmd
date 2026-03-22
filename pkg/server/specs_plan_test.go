@@ -66,7 +66,6 @@ schedules:
 		ModelName:      "old-model",
 		SystemPrompt:   "Old prompt",
 		MaxSteps:       2,
-		AllowNetwork:   false,
 		DesiredState:   cpstore.AgentDesiredStateRunning,
 		Role:           cpstore.AgentRoleWorker,
 		Config:         map[string]any{"managed_by": "filesystem", "source_path": "old-path"},

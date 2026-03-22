@@ -50,9 +50,7 @@ func TestComposeManagedSystemPromptIncludesHTTPHeaderGuidance(t *testing.T) {
 
 	value := "secret-http-header-value"
 	got := composeManagedSystemPrompt(cpstore.RunnableAgent{
-		AgentRecord: cpstore.AgentRecord{
-			AllowNetwork: true,
-		},
+		AgentRecord:  cpstore.AgentRecord{},
 		SystemPrompt: "Handle the current trigger carefully.",
 	}, nil, AgentMemorySpec{Disable: true}, nil, managedAgentNetworkConfig{
 		ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
@@ -82,9 +80,7 @@ func TestComposeManagedSystemPromptIncludesNetworkGuidance(t *testing.T) {
 	t.Parallel()
 
 	got := composeManagedSystemPrompt(cpstore.RunnableAgent{
-		AgentRecord: cpstore.AgentRecord{
-			AllowNetwork: true,
-		},
+		AgentRecord:  cpstore.AgentRecord{},
 		SystemPrompt: "Handle the current trigger carefully.",
 	}, nil, AgentMemorySpec{Disable: true}, nil, managedAgentNetworkConfig{
 		ReachableHosts: []managedAgentHostMatcher{{

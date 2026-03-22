@@ -1618,7 +1618,6 @@ func TestRuntimeManagerAddsHTTPHeaderGuidanceToSystemPrompt(t *testing.T) {
 		ModelName:    "test-model",
 		SystemPrompt: "You are a test worker.",
 		MaxAttempts:  3,
-		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
 			Network: managedAgentNetworkConfig{
 				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},

@@ -60,15 +60,15 @@ schedules:
 	if err != nil {
 		t.Fatalf("GetAgent() error = %v", err)
 	}
-	if !agentRecord.AllowNetwork {
-		t.Fatal("agentRecord.AllowNetwork = false, want true")
-	}
 	network, err := loadAgentNetworkSettings(agentRecord.ConfigJSON)
 	if err != nil {
 		t.Fatalf("loadAgentNetworkSettings() error = %v", err)
 	}
 	if len(network.ReachableHosts) != 1 || network.ReachableHosts[0].Glob != "*" {
 		t.Fatalf("loadAgentNetworkSettings() = %#v, want reachable_hosts glob *", network)
+	}
+	if !GlobalNetworkEnabledFromConfigJSON(agentRecord.ConfigJSON) {
+		t.Fatal("GlobalNetworkEnabledFromConfigJSON(agentRecord.ConfigJSON) = false, want true")
 	}
 	tools, err := loadAgentToolSettings(agentRecord.ConfigJSON)
 	if err != nil {

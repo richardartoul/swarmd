@@ -10,6 +10,7 @@ type migration struct {
 	version int
 	sql     string
 	apply   func(context.Context, *sql.Tx) error
+	foreignKeysOff bool
 }
 
 var migrations = []migration{
@@ -38,7 +39,6 @@ CREATE TABLE IF NOT EXISTS agents (
 	model_provider TEXT NOT NULL,
 	model_name TEXT NOT NULL,
 	model_base_url TEXT NOT NULL DEFAULT '',
-	allow_network INTEGER NOT NULL,
 	preserve_state INTEGER NOT NULL,
 	max_steps INTEGER NOT NULL,
 	step_timeout_millis INTEGER NOT NULL,
@@ -187,7 +187,8 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 	},
 	{
 		version: 5,
-		apply:   applyLegacyNamespaceMigration,
+		apply:           applyLegacyNamespaceMigration,
+		foreignKeysOff: true,
 	},
 	{
 		version: 6,
@@ -204,6 +205,11 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 	{
 		version: 9,
 		apply:   applyRunFinishThoughtMigration,
+	},
+	{
+		version:        10,
+		apply:          applyDropAgentAllowNetworkMigration,
+		foreignKeysOff: true,
 	},
 }
 
@@ -242,7 +248,6 @@ CREATE TABLE agents_new (
 	model_provider TEXT NOT NULL,
 	model_name TEXT NOT NULL,
 	model_base_url TEXT NOT NULL DEFAULT '',
-	allow_network INTEGER NOT NULL,
 	sandbox_commands_json TEXT NOT NULL DEFAULT '',
 	preserve_state INTEGER NOT NULL,
 	max_steps INTEGER NOT NULL,
@@ -264,7 +269,7 @@ SELECT
 		WHEN tenant_id LIKE 'tenant_%' THEN 'namespace_' || substr(tenant_id, 8)
 		ELSE tenant_id
 	END,
-	agent_id, name, role, desired_state, root_path, model_provider, model_name, model_base_url, allow_network,
+	agent_id, name, role, desired_state, root_path, model_provider, model_name, model_base_url,
 	sandbox_commands_json, preserve_state, max_steps, step_timeout_millis, max_output_bytes, lease_duration_millis,
 	retry_delay_millis, max_attempts, config_json, current_prompt_version_id, created_at_ms, updated_at_ms
 FROM agents;
@@ -541,6 +546,62 @@ func applyRunFinishThoughtMigration(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "runs", "finish_thought", "TEXT NOT NULL DEFAULT ''")
+}
+
+func applyDropAgentAllowNetworkMigration(ctx context.Context, tx *sql.Tx) error {
+	exists, err := tableExists(ctx, tx, "agents")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	hasAllowNetwork, err := tableColumnExists(ctx, tx, "agents", "allow_network")
+	if err != nil {
+		return err
+	}
+	if !hasAllowNetwork {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `
+CREATE TABLE agents_new (
+	namespace_id TEXT NOT NULL,
+	agent_id TEXT NOT NULL,
+	name TEXT NOT NULL,
+	role TEXT NOT NULL,
+	desired_state TEXT NOT NULL,
+	root_path TEXT NOT NULL,
+	model_provider TEXT NOT NULL,
+	model_name TEXT NOT NULL,
+	model_base_url TEXT NOT NULL DEFAULT '',
+	sandbox_commands_json TEXT NOT NULL DEFAULT '',
+	preserve_state INTEGER NOT NULL,
+	max_steps INTEGER NOT NULL,
+	step_timeout_millis INTEGER NOT NULL,
+	max_output_bytes INTEGER NOT NULL,
+	lease_duration_millis INTEGER NOT NULL,
+	retry_delay_millis INTEGER NOT NULL,
+	max_attempts INTEGER NOT NULL,
+	config_json TEXT NOT NULL DEFAULT '',
+	current_prompt_version_id TEXT NOT NULL DEFAULT '',
+	created_at_ms INTEGER NOT NULL,
+	updated_at_ms INTEGER NOT NULL,
+	PRIMARY KEY (namespace_id, agent_id),
+	FOREIGN KEY (namespace_id) REFERENCES namespaces(namespace_id) ON DELETE CASCADE
+);
+INSERT INTO agents_new
+SELECT
+	namespace_id, agent_id, name, role, desired_state, root_path, model_provider, model_name, model_base_url,
+	sandbox_commands_json, preserve_state, max_steps, step_timeout_millis, max_output_bytes, lease_duration_millis,
+	retry_delay_millis, max_attempts, config_json, current_prompt_version_id, created_at_ms, updated_at_ms
+FROM agents;
+DROP TABLE agents;
+ALTER TABLE agents_new RENAME TO agents;
+CREATE INDEX IF NOT EXISTS idx_agents_desired_state ON agents(role, desired_state, updated_at_ms);
+`); err != nil {
+		return fmt.Errorf("drop agents.allow_network column: %w", err)
+	}
+	return nil
 }
 
 func addColumnIfMissing(ctx context.Context, tx *sql.Tx, tableName, columnName, definition string) error {

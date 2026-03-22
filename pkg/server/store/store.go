@@ -96,7 +96,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if migration.version <= currentVersion {
 			continue
 		}
-		if migration.version == 5 {
+		if migration.foreignKeysOff {
 			if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
 				return fmt.Errorf("disable foreign keys for migration %d: %w", migration.version, err)
 			}
@@ -121,7 +121,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %d: %w", migration.version, err)
 		}
-		if migration.version == 5 {
+		if migration.foreignKeysOff {
 			if _, err := s.db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
 				return fmt.Errorf("re-enable foreign keys after migration %d: %w", migration.version, err)
 			}
@@ -225,10 +225,10 @@ func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (Runn
 		ctx,
 		`INSERT INTO agents (
 			namespace_id, agent_id, name, role, desired_state, root_path, model_provider, model_name, model_base_url,
-			allow_network, sandbox_commands_json, preserve_state, max_steps, step_timeout_millis, max_output_bytes,
+			sandbox_commands_json, preserve_state, max_steps, step_timeout_millis, max_output_bytes,
 			lease_duration_millis, retry_delay_millis, max_attempts, config_json, current_prompt_version_id,
 			created_at_ms, updated_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		params.NamespaceID,
 		agentID,
 		defaultString(strings.TrimSpace(params.Name), agentID),
@@ -238,7 +238,6 @@ func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (Runn
 		modelProvider,
 		strings.TrimSpace(params.ModelName),
 		strings.TrimSpace(params.ModelBaseURL),
-		boolInt(params.AllowNetwork),
 		"",
 		boolInt(params.PreserveState),
 		maxSteps,
@@ -285,7 +284,6 @@ func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (Runn
 			ModelProvider:          modelProvider,
 			ModelName:              strings.TrimSpace(params.ModelName),
 			ModelBaseURL:           strings.TrimSpace(params.ModelBaseURL),
-			AllowNetwork:           params.AllowNetwork,
 			PreserveState:          params.PreserveState,
 			MaxSteps:               maxSteps,
 			StepTimeout:            stepTimeout,
@@ -406,7 +404,7 @@ func (s *Store) GetAgent(ctx context.Context, namespaceID, agentID string) (Runn
 	row := s.db.QueryRowContext(ctx, `
 SELECT
 	a.namespace_id, a.agent_id, a.name, a.role, a.desired_state, a.root_path, a.model_provider, a.model_name, a.model_base_url,
-	a.allow_network, a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
+	a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
 	a.lease_duration_millis, a.retry_delay_millis, a.max_attempts, a.config_json, a.current_prompt_version_id,
 	a.created_at_ms, a.updated_at_ms,
 	COALESCE(p.prompt, '')
@@ -426,7 +424,7 @@ func (s *Store) ListRunnableAgents(ctx context.Context) ([]RunnableAgent, error)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
 	a.namespace_id, a.agent_id, a.name, a.role, a.desired_state, a.root_path, a.model_provider, a.model_name, a.model_base_url,
-	a.allow_network, a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
+	a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
 	a.lease_duration_millis, a.retry_delay_millis, a.max_attempts, a.config_json, a.current_prompt_version_id,
 	a.created_at_ms, a.updated_at_ms,
 	COALESCE(p.prompt, '')
@@ -489,7 +487,7 @@ func (s *Store) SnapshotNamespace(ctx context.Context, namespaceID string) (Name
 	rows, err := s.db.QueryContext(ctx, `
 SELECT
 	a.namespace_id, a.agent_id, a.name, a.role, a.desired_state, a.root_path, a.model_provider, a.model_name, a.model_base_url,
-	a.allow_network, a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
+	a.sandbox_commands_json, a.preserve_state, a.max_steps, a.step_timeout_millis, a.max_output_bytes,
 	a.lease_duration_millis, a.retry_delay_millis, a.max_attempts, a.config_json, a.current_prompt_version_id,
 	a.created_at_ms, a.updated_at_ms,
 	COALESCE(p.prompt, '')
@@ -653,7 +651,6 @@ func scanRunnableAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecor
 	var record AgentRecord
 	var role string
 	var desiredState string
-	var allowNetwork int
 	var preserveState int
 	var stepTimeoutMS int64
 	var leaseDurationMS int64
@@ -671,7 +668,6 @@ func scanRunnableAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecor
 		&record.ModelProvider,
 		&record.ModelName,
 		&record.ModelBaseURL,
-		&allowNetwork,
 		new(string),
 		&preserveState,
 		&record.MaxSteps,
@@ -693,7 +689,6 @@ func scanRunnableAgent(scanner interface{ Scan(dest ...any) error }) (AgentRecor
 	}
 	record.Role = AgentRole(role)
 	record.DesiredState = AgentDesiredState(desiredState)
-	record.AllowNetwork = intBool(allowNetwork)
 	record.PreserveState = intBool(preserveState)
 	record.StepTimeout = fromDurationMillis(stepTimeoutMS)
 	record.LeaseDuration = fromDurationMillis(leaseDurationMS)
