@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	agentanthropic "github.com/richardartoul/swarmd/pkg/agent/anthropic"
 	agentopenai "github.com/richardartoul/swarmd/pkg/agent/openai"
 	"github.com/richardartoul/swarmd/pkg/server"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
@@ -24,11 +25,12 @@ import (
 )
 
 var (
-	apiKey               = flag.String("api-key", os.Getenv("OPENAI_API_KEY"), "OpenAI API key (or OPENAI_API_KEY)")
-	baseURL              = flag.String("base-url", envOr("OPENAI_BASE_URL", agentopenai.DefaultBaseURL), "OpenAI API base URL (or OPENAI_BASE_URL)")
-	model                = flag.String("model", os.Getenv("OPENAI_MODEL"), "OpenAI model name (or OPENAI_MODEL). Suffixes like -xnone, -xlow, -xmedium, and -xhigh infer reasoning effort. Supported reasoning models request reasoning summaries automatically.")
-	promptCacheKey       = flag.String("prompt-cache-key", "", "OpenAI prompt cache routing key. Empty lets agentrepl choose a default for the OpenAI API.")
-	promptCacheRetention = flag.String("prompt-cache-retention", "", "OpenAI prompt cache retention policy. Supported values are in_memory and 24h. Empty lets agentrepl choose a default for supported OpenAI models.")
+	provider             = flag.String("provider", "", `model provider: "openai" or "anthropic". Empty auto-detects from flags and environment.`)
+	apiKey               = flag.String("api-key", "", "LLM API key. Defaults to OPENAI_API_KEY or ANTHROPIC_API_KEY depending on the selected provider.")
+	baseURL              = flag.String("base-url", "", "LLM API base URL. Defaults to OPENAI_BASE_URL or ANTHROPIC_BASE_URL depending on the selected provider.")
+	model                = flag.String("model", "", "LLM model name. Defaults to OPENAI_MODEL or ANTHROPIC_MODEL depending on the selected provider. OpenAI suffixes like -xnone, -xlow, -xmedium, and -xhigh infer reasoning effort; Anthropic suffixes like -low, -medium, -high, and -max do the same.")
+	promptCacheKey       = flag.String("prompt-cache-key", "", "OpenAI only: prompt cache routing key. Empty lets agentrepl choose a default for the OpenAI API.")
+	promptCacheRetention = flag.String("prompt-cache-retention", "", "OpenAI only: prompt cache retention policy. Supported values are in_memory and 24h. Empty lets agentrepl choose a default for supported OpenAI models.")
 	rootDir              = flag.String("root", ".", "sandbox root directory, or logical root when -memfs is set")
 	useMemFS             = flag.Bool("memfs", false, "use an in-memory filesystem backend")
 	allowNetwork         = flag.Bool("allow-network", true, "allow in-process shell commands like curl to use the host network dialer")
@@ -46,6 +48,9 @@ var (
 const (
 	defaultREPLMaxSteps    = 1000
 	defaultREPLStepTimeout = 5 * time.Minute
+
+	replProviderOpenAI    = "openai"
+	replProviderAnthropic = "anthropic"
 )
 
 func main() {
@@ -76,6 +81,35 @@ type runtimeOptions struct {
 	verbose        bool
 }
 
+type runtimeFlagValues struct {
+	provider             string
+	apiKey               string
+	baseURL              string
+	model                string
+	promptCacheKey       string
+	promptCacheRetention string
+	rootDir              string
+	useMemFS             bool
+	allowNetwork         bool
+	systemPromptFile     string
+	prompt               string
+	maxSteps             int
+	stepTimeout          time.Duration
+	maxOutputBytes       int
+	preserveState        bool
+	verbose              bool
+}
+
+type resolvedProvider struct {
+	name       string
+	apiKeyEnv  string
+	baseURLEnv string
+	modelEnv   string
+	apiKey     string
+	baseURL    string
+	model      string
+}
+
 func runAll() error {
 	opts, err := buildRuntimeOptions()
 	if err != nil {
@@ -91,16 +125,35 @@ func runAll() error {
 }
 
 func buildRuntimeOptions() (runtimeOptions, error) {
-	if strings.TrimSpace(*apiKey) == "" {
-		return runtimeOptions{}, fmt.Errorf("openai api key is required; pass -api-key or set OPENAI_API_KEY")
-	}
-	if strings.TrimSpace(*model) == "" {
-		return runtimeOptions{}, fmt.Errorf("openai model is required; pass -model or set OPENAI_MODEL")
+	return buildRuntimeOptionsFromValues(runtimeFlagValues{
+		provider:             *provider,
+		apiKey:               *apiKey,
+		baseURL:              *baseURL,
+		model:                *model,
+		promptCacheKey:       *promptCacheKey,
+		promptCacheRetention: *promptCacheRetention,
+		rootDir:              *rootDir,
+		useMemFS:             *useMemFS,
+		allowNetwork:         *allowNetwork,
+		systemPromptFile:     *systemPromptFile,
+		prompt:               *prompt,
+		maxSteps:             *maxSteps,
+		stepTimeout:          *stepTimeout,
+		maxOutputBytes:       *maxOutputBytes,
+		preserveState:        *preserveState,
+		verbose:              *verbose,
+	}, os.Getenv)
+}
+
+func buildRuntimeOptionsFromValues(values runtimeFlagValues, lookupEnv func(string) string) (runtimeOptions, error) {
+	selectedProvider, err := resolveREPLProvider(values, lookupEnv)
+	if err != nil {
+		return runtimeOptions{}, err
 	}
 
 	var systemPrompt string
-	if *systemPromptFile != "" {
-		data, err := os.ReadFile(*systemPromptFile)
+	if values.systemPromptFile != "" {
+		data, err := os.ReadFile(values.systemPromptFile)
 		if err != nil {
 			return runtimeOptions{}, err
 		}
@@ -108,47 +161,163 @@ func buildRuntimeOptions() (runtimeOptions, error) {
 	}
 
 	var networkDialer interp.NetworkDialer
-	if *allowNetwork {
+	if values.allowNetwork {
 		networkDialer = interp.OSNetworkDialer{}
 	}
 
-	cacheKey := strings.TrimSpace(*promptCacheKey)
-	cacheRetention := strings.TrimSpace(*promptCacheRetention)
-	if normalizeBaseURL(*baseURL) == agentopenai.DefaultBaseURL {
-		if cacheKey == "" {
-			cacheKey = "agentrepl:" + baseModel(*model)
-		}
-		if cacheRetention == "" && supportsExtendedPromptCache(baseModel(*model)) {
-			cacheRetention = "24h"
-		}
-	}
-
-	openaiDriver, err := agentopenai.New(agentopenai.Config{
-		APIKey:               *apiKey,
-		BaseURL:              *baseURL,
-		Model:                *model,
-		PromptCacheKey:       cacheKey,
-		PromptCacheRetention: cacheRetention,
-	})
+	baseDriver, err := newREPLBaseDriver(selectedProvider, values.promptCacheKey, values.promptCacheRetention)
 	if err != nil {
 		return runtimeOptions{}, err
 	}
 
 	return runtimeOptions{
-		rootDir:        *rootDir,
-		useMemFS:       *useMemFS,
+		rootDir:        values.rootDir,
+		useMemFS:       values.useMemFS,
 		networkDialer:  networkDialer,
 		lookupEnv:      os.Getenv,
 		systemPrompt:   systemPrompt,
-		baseDriver:     openaiDriver,
-		modelName:      *model,
-		singlePrompt:   *prompt,
-		maxSteps:       *maxSteps,
-		stepTimeout:    *stepTimeout,
-		maxOutputBytes: *maxOutputBytes,
-		preserveState:  *preserveState,
-		verbose:        *verbose,
+		baseDriver:     baseDriver,
+		modelName:      selectedProvider.model,
+		singlePrompt:   values.prompt,
+		maxSteps:       values.maxSteps,
+		stepTimeout:    values.stepTimeout,
+		maxOutputBytes: values.maxOutputBytes,
+		preserveState:  values.preserveState,
+		verbose:        values.verbose,
 	}, nil
+}
+
+func resolveREPLProvider(values runtimeFlagValues, lookupEnv func(string) string) (resolvedProvider, error) {
+	lookupEnv = trimmedEnvLookup(lookupEnv)
+	providerName := strings.TrimSpace(values.provider)
+	if providerName == "" {
+		providerName = detectREPLProvider(values, lookupEnv)
+	}
+	selectedProvider, err := newResolvedProvider(providerName)
+	if err != nil {
+		return resolvedProvider{}, err
+	}
+	selectedProvider.apiKey = firstNonEmpty(values.apiKey, lookupEnv(selectedProvider.apiKeyEnv))
+	selectedProvider.baseURL = firstNonEmpty(values.baseURL, lookupEnv(selectedProvider.baseURLEnv))
+	selectedProvider.model = firstNonEmpty(values.model, lookupEnv(selectedProvider.modelEnv))
+	if selectedProvider.apiKey == "" {
+		if strings.TrimSpace(values.apiKey) == "" && lookupEnv("OPENAI_API_KEY") == "" && lookupEnv("ANTHROPIC_API_KEY") == "" {
+			return resolvedProvider{}, fmt.Errorf("llm api key is required; pass -api-key or set OPENAI_API_KEY or ANTHROPIC_API_KEY")
+		}
+		return resolvedProvider{}, fmt.Errorf("%s api key is required; pass -api-key or set %s", selectedProvider.name, selectedProvider.apiKeyEnv)
+	}
+	if selectedProvider.model == "" {
+		return resolvedProvider{}, fmt.Errorf("%s model is required; pass -model or set %s", selectedProvider.name, selectedProvider.modelEnv)
+	}
+	return selectedProvider, nil
+}
+
+func newResolvedProvider(name string) (resolvedProvider, error) {
+	switch strings.TrimSpace(name) {
+	case replProviderOpenAI:
+		return resolvedProvider{
+			name:       replProviderOpenAI,
+			apiKeyEnv:  "OPENAI_API_KEY",
+			baseURLEnv: "OPENAI_BASE_URL",
+			modelEnv:   "OPENAI_MODEL",
+		}, nil
+	case replProviderAnthropic:
+		return resolvedProvider{
+			name:       replProviderAnthropic,
+			apiKeyEnv:  "ANTHROPIC_API_KEY",
+			baseURLEnv: "ANTHROPIC_BASE_URL",
+			modelEnv:   "ANTHROPIC_MODEL",
+		}, nil
+	default:
+		return resolvedProvider{}, fmt.Errorf(`-provider must be empty, "openai", or "anthropic"`)
+	}
+}
+
+func detectREPLProvider(values runtimeFlagValues, lookupEnv func(string) string) string {
+	if providerName := providerFromModel(values.model); providerName != "" {
+		return providerName
+	}
+	if providerName := providerFromBaseURL(values.baseURL); providerName != "" {
+		return providerName
+	}
+	switch openAIAPIKey, anthropicAPIKey := lookupEnv("OPENAI_API_KEY"), lookupEnv("ANTHROPIC_API_KEY"); {
+	case openAIAPIKey == "" && anthropicAPIKey != "":
+		return replProviderAnthropic
+	case anthropicAPIKey == "" && openAIAPIKey != "":
+		return replProviderOpenAI
+	}
+	switch openAIModel, anthropicModel := lookupEnv("OPENAI_MODEL"), lookupEnv("ANTHROPIC_MODEL"); {
+	case openAIModel == "" && anthropicModel != "":
+		return replProviderAnthropic
+	case anthropicModel == "" && openAIModel != "":
+		return replProviderOpenAI
+	}
+	switch openAIBaseURL, anthropicBaseURL := lookupEnv("OPENAI_BASE_URL"), lookupEnv("ANTHROPIC_BASE_URL"); {
+	case openAIBaseURL == "" && anthropicBaseURL != "":
+		return replProviderAnthropic
+	case anthropicBaseURL == "" && openAIBaseURL != "":
+		return replProviderOpenAI
+	default:
+		return replProviderOpenAI
+	}
+}
+
+func providerFromModel(model string) string {
+	model = strings.TrimSpace(model)
+	switch {
+	case strings.HasPrefix(model, "claude-"):
+		return replProviderAnthropic
+	case strings.HasPrefix(model, "chatgpt-"),
+		strings.HasPrefix(model, "gpt-"),
+		strings.HasPrefix(model, "o1"),
+		strings.HasPrefix(model, "o3"),
+		strings.HasPrefix(model, "o4"):
+		return replProviderOpenAI
+	default:
+		return ""
+	}
+}
+
+func providerFromBaseURL(baseURL string) string {
+	switch strings.TrimRight(strings.TrimSpace(baseURL), "/") {
+	case agentopenai.DefaultBaseURL:
+		return replProviderOpenAI
+	case agentanthropic.DefaultBaseURL:
+		return replProviderAnthropic
+	default:
+		return ""
+	}
+}
+
+func newREPLBaseDriver(selectedProvider resolvedProvider, promptCacheKey, promptCacheRetention string) (agent.Driver, error) {
+	switch selectedProvider.name {
+	case replProviderOpenAI:
+		cacheKey := strings.TrimSpace(promptCacheKey)
+		cacheRetention := strings.TrimSpace(promptCacheRetention)
+		if normalizeOpenAIBaseURL(selectedProvider.baseURL) == agentopenai.DefaultBaseURL {
+			if cacheKey == "" {
+				cacheKey = "agentrepl:" + baseModel(selectedProvider.model)
+			}
+			if cacheRetention == "" && supportsExtendedPromptCache(baseModel(selectedProvider.model)) {
+				cacheRetention = "24h"
+			}
+		}
+		return agentopenai.New(agentopenai.Config{
+			APIKey:               selectedProvider.apiKey,
+			BaseURL:              selectedProvider.baseURL,
+			Model:                selectedProvider.model,
+			PromptCacheKey:       cacheKey,
+			PromptCacheRetention: cacheRetention,
+		})
+	case replProviderAnthropic:
+		return agentanthropic.New(agentanthropic.Config{
+			APIKey:  selectedProvider.apiKey,
+			BaseURL: selectedProvider.baseURL,
+			Model:   selectedProvider.model,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported repl provider %q", selectedProvider.name)
+	}
 }
 
 func shouldUseTUI(prompt string, stdinTTY, stdoutTTY bool) bool {
@@ -470,14 +639,25 @@ func prefixLines(prefix, text string) string {
 	return strings.Join(lines, "\n")
 }
 
-func envOr(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
+func trimmedEnvLookup(lookupEnv func(string) string) func(string) string {
+	if lookupEnv == nil {
+		return func(string) string { return "" }
 	}
-	return fallback
+	return func(name string) string {
+		return strings.TrimSpace(lookupEnv(strings.TrimSpace(name)))
+	}
 }
 
-func normalizeBaseURL(baseURL string) string {
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func normalizeOpenAIBaseURL(baseURL string) string {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if baseURL == "" {
 		return agentopenai.DefaultBaseURL

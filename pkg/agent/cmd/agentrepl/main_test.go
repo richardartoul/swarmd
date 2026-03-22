@@ -13,6 +13,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	agentanthropic "github.com/richardartoul/swarmd/pkg/agent/anthropic"
+	agentopenai "github.com/richardartoul/swarmd/pkg/agent/openai"
 	"github.com/richardartoul/swarmd/pkg/server"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
@@ -267,6 +269,104 @@ func TestRuntimeOptionsAgentConfigAppendsSystemPromptFileInstructions(t *testing
 	}
 	if got, want := cfg.SystemPrompt, agent.ComposeSystemPrompt(opts.systemPrompt); got != want {
 		t.Fatalf("cfg.SystemPrompt = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRuntimeOptionsUsesAnthropicProviderWhenOnlyAnthropicEnvPresent(t *testing.T) {
+	t.Parallel()
+
+	opts, err := buildRuntimeOptionsFromValues(testRuntimeFlagValues(t.TempDir()), func(name string) string {
+		switch name {
+		case "ANTHROPIC_API_KEY":
+			return "anthropic-key"
+		case "ANTHROPIC_MODEL":
+			return "claude-sonnet-4-6"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("buildRuntimeOptionsFromValues() error = %v", err)
+	}
+	if _, ok := opts.baseDriver.(*agentanthropic.Driver); !ok {
+		t.Fatalf("opts.baseDriver type = %T, want *anthropic.Driver", opts.baseDriver)
+	}
+	if got, want := opts.modelName, "claude-sonnet-4-6"; got != want {
+		t.Fatalf("opts.modelName = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRuntimeOptionsUsesExplicitAnthropicProviderWhenBothProvidersConfigured(t *testing.T) {
+	t.Parallel()
+
+	values := testRuntimeFlagValues(t.TempDir())
+	values.provider = replProviderAnthropic
+
+	opts, err := buildRuntimeOptionsFromValues(values, func(name string) string {
+		switch name {
+		case "OPENAI_API_KEY":
+			return "openai-key"
+		case "OPENAI_MODEL":
+			return "gpt-5"
+		case "ANTHROPIC_API_KEY":
+			return "anthropic-key"
+		case "ANTHROPIC_MODEL":
+			return "claude-sonnet-4-6"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("buildRuntimeOptionsFromValues() error = %v", err)
+	}
+	if _, ok := opts.baseDriver.(*agentanthropic.Driver); !ok {
+		t.Fatalf("opts.baseDriver type = %T, want *anthropic.Driver", opts.baseDriver)
+	}
+	if got, want := opts.modelName, "claude-sonnet-4-6"; got != want {
+		t.Fatalf("opts.modelName = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRuntimeOptionsDefaultsToOpenAIWhenAmbiguous(t *testing.T) {
+	t.Parallel()
+
+	opts, err := buildRuntimeOptionsFromValues(testRuntimeFlagValues(t.TempDir()), func(name string) string {
+		switch name {
+		case "OPENAI_API_KEY":
+			return "openai-key"
+		case "OPENAI_MODEL":
+			return "gpt-5"
+		case "ANTHROPIC_API_KEY":
+			return "anthropic-key"
+		case "ANTHROPIC_MODEL":
+			return "claude-sonnet-4-6"
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatalf("buildRuntimeOptionsFromValues() error = %v", err)
+	}
+	if _, ok := opts.baseDriver.(*agentopenai.Driver); !ok {
+		t.Fatalf("opts.baseDriver type = %T, want *openai.Driver", opts.baseDriver)
+	}
+	if got, want := opts.modelName, "gpt-5"; got != want {
+		t.Fatalf("opts.modelName = %q, want %q", got, want)
+	}
+}
+
+func TestBuildRuntimeOptionsRequiresEitherProviderAPIKey(t *testing.T) {
+	t.Parallel()
+
+	values := testRuntimeFlagValues(t.TempDir())
+	values.model = "gpt-5"
+
+	_, err := buildRuntimeOptionsFromValues(values, func(string) string { return "" })
+	if err == nil {
+		t.Fatal("buildRuntimeOptionsFromValues() error = nil, want missing api key error")
+	}
+	if got, want := err.Error(), "llm api key is required; pass -api-key or set OPENAI_API_KEY or ANTHROPIC_API_KEY"; got != want {
+		t.Fatalf("error = %q, want %q", got, want)
 	}
 }
 
@@ -808,4 +908,16 @@ func hasToolDefinition(definitions []agent.ToolDefinition, name string) bool {
 		}
 	}
 	return false
+}
+
+func testRuntimeFlagValues(rootDir string) runtimeFlagValues {
+	return runtimeFlagValues{
+		rootDir:        rootDir,
+		allowNetwork:   true,
+		maxSteps:       agent.DefaultMaxSteps,
+		stepTimeout:    defaultREPLStepTimeout,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+		verbose:        true,
+	}
 }
