@@ -149,16 +149,7 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		SystemPrompt:  systemPrompt,
 		Logger:        m.Logger,
 	}
-	var networkDialer interp.NetworkDialer
-	if record.AllowNetwork {
-		networkDialer = interp.OSNetworkDialer{}
-		if len(network.ReachableHosts) > 0 {
-			networkDialer, err = interp.NewAllowlistNetworkDialer(networkDialer, resolveManagedNetworkHostMatchers(network))
-			if err != nil {
-				return fmt.Errorf("resolve network policy for worker %q/%q: %w", record.NamespaceID, record.ID, err)
-			}
-		}
-	}
+	globalReachableHosts := resolveManagedNetworkHostMatchers(network)
 	var fsys sandbox.FileSystem
 	switch filesystem.kind() {
 	case managedAgentFilesystemKindDisk:
@@ -184,15 +175,15 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		return fmt.Errorf("apply mounts for worker %q/%q: %w", record.NamespaceID, record.ID, err)
 	}
 	runtime, err := agent.New(agent.Config{
-		FileSystem:      fsys,
-		NetworkDialer:   networkDialer,
-		NetworkEnabled:  record.AllowNetwork,
-		HTTPHeaders:     resolvedHTTPHeaders,
-		ConfiguredTools: tools,
-		ToolRuntimeData: newServerToolRuntime(record.NamespaceID, record.ID, m.envLookup(), m.Logger),
-		Queue:           queue,
-		Driver:          driver,
-		SystemPrompt:    systemPrompt,
+		FileSystem:           fsys,
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: globalReachableHosts,
+		HTTPHeaders:          resolvedHTTPHeaders,
+		ConfiguredTools:      tools,
+		ToolRuntimeData:      newServerToolRuntime(record.NamespaceID, record.ID, m.envLookup(), m.Logger),
+		Queue:                queue,
+		Driver:               driver,
+		SystemPrompt:         systemPrompt,
 		OnStep:          StepPersister{Store: m.Store, Logger: m.Logger},
 		OnResult: ResultPersister{
 			Store:            m.Store,

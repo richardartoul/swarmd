@@ -61,9 +61,9 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			toolscore.ToolBoundaryKindFunction,
 			toolName,
 		),
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeGlobal,
+		ReadOnly:     true,
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
 func testCurrentStateMessage(step int) string {
@@ -1620,7 +1621,7 @@ func TestDriverNextRejectsPlainAssistantTextOutsideStrictSchema(t *testing.T) {
 func TestBuildOpenAIToolAdaptersFallsBackToFunctionTools(t *testing.T) {
 	t.Parallel()
 
-	allTools, err := agent.ResolveToolDefinitions(nil, true)
+	allTools, err := agent.ResolveToolDefinitions(nil, []interp.HostMatcher{{Glob: "*"}})
 	if err != nil {
 		t.Fatalf("ResolveToolDefinitions() error = %v", err)
 	}

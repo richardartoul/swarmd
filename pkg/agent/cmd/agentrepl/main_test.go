@@ -105,13 +105,13 @@ func TestRuntimeOptionsAgentConfigEnablesFullCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("agentConfig() error = %v", err)
 	}
-	if !cfg.NetworkEnabled {
-		t.Fatal("cfg.NetworkEnabled = false, want true")
+	if len(cfg.GlobalReachableHosts) == 0 {
+		t.Fatal("cfg.GlobalReachableHosts = nil, want wildcard global hosts")
 	}
 	if len(cfg.ConfiguredTools) != 0 {
 		t.Fatalf("cfg.ConfiguredTools = %#v, want no explicit custom tools", cfg.ConfiguredTools)
 	}
-	if got, want := cfg.SystemPrompt, agent.ComposeSystemPrompt("", true); got != want {
+	if got, want := cfg.SystemPrompt, agent.ComposeSystemPrompt(""); got != want {
 		t.Fatalf("cfg.SystemPrompt = %q, want %q", got, want)
 	}
 }
@@ -133,7 +133,7 @@ func TestRuntimeOptionsAgentConfigAppendsSystemPromptFileInstructions(t *testing
 	if err != nil {
 		t.Fatalf("agentConfig() error = %v", err)
 	}
-	if got, want := cfg.SystemPrompt, agent.ComposeSystemPrompt(opts.systemPrompt, false); got != want {
+	if got, want := cfg.SystemPrompt, agent.ComposeSystemPrompt(opts.systemPrompt); got != want {
 		t.Fatalf("cfg.SystemPrompt = %q, want %q", got, want)
 	}
 }

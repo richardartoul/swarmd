@@ -109,6 +109,29 @@ const (
 	ToolBoundaryKindToolSearch ToolBoundaryKind = "tool_search"
 )
 
+// ToolNetworkScope describes how one tool participates in outbound networking.
+type ToolNetworkScope string
+
+const (
+	ToolNetworkScopeNone   ToolNetworkScope = "none"
+	ToolNetworkScopeGlobal ToolNetworkScope = "global"
+	ToolNetworkScopeScoped ToolNetworkScope = "scoped"
+)
+
+// Normalized returns the canonical scope, treating the zero value as "none".
+func (s ToolNetworkScope) Normalized() ToolNetworkScope {
+	switch ToolNetworkScope(strings.TrimSpace(string(s))) {
+	case "", ToolNetworkScopeNone:
+		return ToolNetworkScopeNone
+	case ToolNetworkScopeGlobal:
+		return ToolNetworkScopeGlobal
+	case ToolNetworkScopeScoped:
+		return ToolNetworkScopeScoped
+	default:
+		return ToolNetworkScope(strings.TrimSpace(string(s)))
+	}
+}
+
 // ToolInterop captures provider and MCP adaptation metadata for one tool.
 type ToolInterop struct {
 	MCPToolName            string           `json:"mcp_tool_name,omitempty"`
@@ -130,7 +153,7 @@ type ToolDefinition struct {
 	OutputNotes       string         `json:"output_notes,omitempty"`
 	Interop           ToolInterop    `json:"interop,omitempty"`
 	SafetyTags        []string       `json:"safety_tags,omitempty"`
-	RequiresNetwork   bool           `json:"requires_network,omitempty"`
+	NetworkScope      ToolNetworkScope `json:"network_scope,omitempty"`
 	ReadOnly          bool           `json:"read_only,omitempty"`
 	Mutating          bool           `json:"mutating,omitempty"`
 	Fallback          bool           `json:"fallback,omitempty"`
@@ -200,7 +223,6 @@ type ToolContext interface {
 	WorkingDir() string
 	FileSystem() sandbox.FileSystem
 	ResolvePath(path string) (string, error)
-	NetworkEnabled() bool
 	HTTPClient(opts ToolHTTPClientOptions) *http.Client
 	RuntimeData() any
 	StepTimeout() time.Duration

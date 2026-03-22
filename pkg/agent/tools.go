@@ -2,7 +2,10 @@
 
 package agent
 
-import toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
+import (
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
+	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
+)
 
 const (
 	ToolNameListDir     = "list_dir"
@@ -18,7 +21,7 @@ const (
 var builtInToolDefinitions = loadBuiltInToolDefinitions()
 
 func loadBuiltInToolDefinitions() map[string]ToolDefinition {
-	definitions, err := toolregistry.ResolveToolDefinitions(nil, true)
+	definitions, err := toolregistry.ResolveToolDefinitions(nil, []interp.HostMatcher{{Glob: "*"}})
 	if err != nil {
 		panic(err)
 	}

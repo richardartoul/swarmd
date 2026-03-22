@@ -147,12 +147,12 @@ func composeManagedSystemPrompt(record cpstore.RunnableAgent, capabilities map[s
 	}
 	customPrompt = appendManagedPromptSection(customPrompt, "Mounted resources", mountPromptGuidance(mounts))
 	customPrompt = appendManagedPromptSection(customPrompt, "Large tool outputs", largeToolOutputPromptGuidance())
-	if record.AllowNetwork {
+	if len(network.ReachableHosts) > 0 {
 		customPrompt = appendManagedPromptSection(customPrompt, "Network policy", networkPromptGuidance(network))
 		customPrompt = appendManagedPromptSection(customPrompt, "Automatic HTTP headers", httpHeaderPromptGuidance(httpHeaders))
 	}
 	customPrompt = appendManagedPromptSection(customPrompt, "Persistent memory guidance", memoryPromptGuidance(memory))
-	return agent.ComposeSystemPrompt(customPrompt, record.AllowNetwork)
+	return agent.ComposeSystemPrompt(customPrompt)
 }
 
 func (c managedAgentFilesystemConfig) normalized() managedAgentFilesystemConfig {

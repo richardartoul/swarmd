@@ -45,7 +45,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{SlackUserTokenEnvVar},
+			RequiredEnv:   []string{SlackUserTokenEnvVar},
+			RequiredHosts: slackcommon.RequiredHosts(),
 		})
 	})
 }
@@ -71,10 +72,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"channel":"C12345678","after_ts":"1700.000001"}`,
 			`{"after_ts":"1700.000001","before_ts":"1700.000100","max_messages":25}`,
 		},
-		OutputNotes:     "Returns chronological channel timeline messages with truncation metadata when max_messages stops pagination early.",
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		OutputNotes:  "Returns chronological channel timeline messages with truncation metadata when max_messages stops pagination early.",
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		ReadOnly:     true,
 	}
 }
 
@@ -95,11 +96,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 		toolCtx.SetPolicyError(step, err)
 		return nil
 	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", toolName))
-		return nil
-	}
-
 	channel := toolscommon.FirstNonEmptyString(input.Channel, cfg.DefaultChannel)
 	if channel == "" {
 		toolCtx.SetPolicyError(step, fmt.Errorf(`channel must be provided via "channel" or tools[].config.default_channel`))

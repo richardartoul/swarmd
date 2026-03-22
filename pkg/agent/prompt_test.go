@@ -12,7 +12,7 @@ import (
 func TestComposeSystemPromptWithoutCustomPrompt(t *testing.T) {
 	t.Parallel()
 
-	got := ComposeSystemPrompt("", false)
+	got := ComposeSystemPrompt("")
 	if got != DefaultSystemPrompt {
 		t.Fatalf("ComposeSystemPrompt() = %q, want DefaultSystemPrompt", got)
 	}
@@ -21,7 +21,7 @@ func TestComposeSystemPromptWithoutCustomPrompt(t *testing.T) {
 func TestComposeSystemPromptAppendsCustomPrompt(t *testing.T) {
 	t.Parallel()
 
-	got := ComposeSystemPrompt("Run curl and summarize the result.", true)
+	got := ComposeSystemPrompt("Run curl and summarize the result.")
 	if !strings.Contains(got, `Use the structured tools provided by the runtime as the source of truth`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want tool-aware base instructions", got)
 	}
@@ -34,15 +34,15 @@ func TestComposeSystemPromptAppendsCustomPrompt(t *testing.T) {
 	if !strings.Contains(got, `Run curl and summarize the result.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want appended custom prompt", got)
 	}
-	if !strings.Contains(got, `Network-capable tools may be available through the interpreter-owned dialer`) {
-		t.Fatalf("ComposeSystemPrompt() = %q, want network-aware base prompt", got)
+	if !strings.Contains(got, `Network access depends on the structured tools and shell commands exposed on this turn.`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want host-policy-aware base prompt", got)
 	}
 }
 
 func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	t.Parallel()
 
-	got := ComposeSystemPrompt("", true)
+	got := ComposeSystemPrompt("")
 	if !strings.Contains(got, `use -- before a literal operand that begins with -.`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want literal operand guidance", got)
 	}

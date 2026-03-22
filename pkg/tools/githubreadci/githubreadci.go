@@ -31,7 +31,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{githubcommon.GitHubTokenEnvVar},
+			RequiredEnv:   []string{githubcommon.GitHubTokenEnvVar},
+			RequiredHosts: githubcommon.CIRequiredHosts(),
 		})
 	})
 }
@@ -103,10 +104,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"list_workflow_runs","owner":"acme","repo":"monorepo","branch":"main","event":"pull_request","status":"completed","created":">=2026-03-15","page":1,"per_page":20}`,
 			`{"action":"download_artifact","owner":"acme","repo":"monorepo","artifact_id":701,"extract":true}`,
 		},
-		OutputNotes:     "Returns normalized JSON describing GitHub CI state, including file-backed outputs for logs and artifact downloads.",
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		OutputNotes:  "Returns normalized JSON describing GitHub CI state, including file-backed outputs for logs and artifact downloads.",
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		ReadOnly:     true,
 	}
 }
 
@@ -121,10 +122,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 	input, err := toolscore.DecodeToolInput[input](call.Input)
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
-		return nil
-	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", ToolName))
 		return nil
 	}
 	req, err := normalizeReadRequest(input)

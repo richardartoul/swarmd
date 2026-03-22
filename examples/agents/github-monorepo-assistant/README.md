@@ -5,11 +5,11 @@ This example shows a monorepo-oriented agent that uses the stock `github_read_re
 It adds:
 
 - `tools:` entries for the three GitHub read tools
-- `network.reachable_hosts` scoped to `api.github.com`
+- tool-scoped GitHub host access declared by the tools themselves
 - a sandbox directory where the agent writes a Markdown summary
 - a prompt that combines repository discovery, review context, and CI inspection in one flow
 
-The sample network policy is intentionally narrow. Metadata, reviews, checks, and workflow listings work against `api.github.com`, but `github_read_ci` log and artifact downloads can follow redirects to GitHub storage hosts and need a broader allowlist before those actions will succeed.
+The GitHub tools now carry their own scoped host policies. Metadata, reviews, checks, and `github_read_ci` log or artifact downloads all use tool-owned allowlists, including the extra GitHub redirect and storage hosts that CI downloads need. Add `network.reachable_hosts` only if you also want shell access or the global network tools.
 
 This example requires both `OPENAI_API_KEY` and `GITHUB_TOKEN`, even though the target repository can be public, because the GitHub custom tools are server-owned and token-backed.
 

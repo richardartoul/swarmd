@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/richardartoul/swarmd/pkg/sh/expand"
@@ -58,6 +59,10 @@ type Runner struct {
 
 	// tempDir is either $TMPDIR from [Runner.Env], or [os.TempDir].
 	tempDir string
+
+	// tempFIFOPaths tracks the exact interpreter-created FIFO paths which must
+	// be opened on the host filesystem for process substitution to work.
+	tempFIFOPaths *runnerTempFIFOSet
 
 	// Params are the current shell parameters, e.g. from running a shell
 	// file or calling a function. Accessible via the $@/$* family of vars.
@@ -257,6 +262,38 @@ type bgProc struct {
 type alias struct {
 	args  []*syntax.Word
 	blank bool
+}
+
+type runnerTempFIFOSet struct {
+	mu    sync.RWMutex
+	paths map[string]struct{}
+}
+
+func newRunnerTempFIFOSet() *runnerTempFIFOSet {
+	return &runnerTempFIFOSet{paths: make(map[string]struct{})}
+}
+
+func (s *runnerTempFIFOSet) Add(path string) {
+	s.mu.Lock()
+	s.paths[path] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *runnerTempFIFOSet) Has(path string) bool {
+	s.mu.RLock()
+	_, ok := s.paths[path]
+	s.mu.RUnlock()
+	return ok
+}
+
+func (r *Runner) rememberTempFIFO(path string) {
+	if r.tempFIFOPaths != nil {
+		r.tempFIFOPaths.Add(path)
+	}
+}
+
+func (r *Runner) isTempFIFOPath(path string) bool {
+	return r.tempFIFOPaths != nil && r.tempFIFOPaths.Has(path)
 }
 
 // New creates a new Runner, applying a number of options. If applying any of
@@ -846,13 +883,14 @@ func (r *Runner) Reset() {
 		}
 		// Fill tempDir; only need to do this once given that Env will not change.
 		r.tempDir = runnerTempDir(r.fileSystem, r.Env)
-		// Clean it as we will later do a string prefix match.
+		// Clean it so exact FIFO paths are tracked canonically.
 		r.tempDir = filepath.Clean(r.tempDir)
 	}
 	// reset the internal state
 	*r = Runner{
 		Env:               r.Env,
 		tempDir:           r.tempDir,
+		tempFIFOPaths:     newRunnerTempFIFOSet(),
 		callHandler:       r.callHandler,
 		execHandler:       r.execHandler,
 		fileSystem:        r.fileSystem,
@@ -1039,6 +1077,7 @@ func (r *Runner) subshell(background bool) *Runner {
 	r2 := &Runner{
 		Dir:               r.Dir,
 		tempDir:           r.tempDir,
+		tempFIFOPaths:     r.tempFIFOPaths,
 		Params:            r.Params,
 		callHandler:       r.callHandler,
 		execHandler:       r.execHandler,

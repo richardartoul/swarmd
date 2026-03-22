@@ -262,13 +262,13 @@ func TestSlackDMToolReportsSlackAPIErrorsAsPolicyErrors(t *testing.T) {
 	}
 }
 
-func TestSlackDMToolRequiresNetworkCapability(t *testing.T) {
+func TestSlackDMToolDoesNotRequireGlobalReachableHosts(t *testing.T) {
 	t.Parallel()
 	registerTestTool(t)
 
 	_, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: false,
+		Root:          t.TempDir(),
+		NetworkDialer: interp.OSNetworkDialer{},
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID: toolName,
 		}},
@@ -276,11 +276,8 @@ func TestSlackDMToolRequiresNetworkCapability(t *testing.T) {
 			return agent.Decision{Finish: &agent.FinishAction{Value: "ok"}}, nil
 		}),
 	})
-	if err == nil {
-		t.Fatal("agent.New() error = nil, want slack network requirement")
-	}
-	if !strings.Contains(err.Error(), "requires network") {
-		t.Fatalf("agent.New() error = %v, want requires network error", err)
+	if err != nil {
+		t.Fatalf("agent.New() error = %v, want scoped tool to auto-allow required hosts", err)
 	}
 }
 
@@ -293,13 +290,15 @@ func runSlackDMToolStep(t *testing.T, input any, networkEnabled bool, env map[st
 	}
 	var decisionCount int
 	var networkDialer interp.NetworkDialer
+	var globalReachableHosts []interp.HostMatcher
 	if networkEnabled {
 		networkDialer = interp.OSNetworkDialer{}
+		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
 	}
 	runtime, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: networkEnabled,
-		NetworkDialer:  networkDialer,
+		Root:                 t.TempDir(),
+		NetworkDialer:        networkDialer,
+		GlobalReachableHosts: globalReachableHosts,
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID: toolName,
 		}},

@@ -91,6 +91,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				path = filepath.Join(r.tempDir, fifoNamePrefix+strconv.FormatUint(mathrand.Uint64(), 16))
 				err := fsMkfifo(r.fileSystem, path, 0o666)
 				if err == nil {
+					r.rememberTempFIFO(path)
 					break
 				}
 				if !os.IsExist(err) {
@@ -1129,16 +1130,9 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 		return nil, err
 	}
 	path = resolvedPath
-	// If we are opening a FIFO temporary file created by the interpreter itself,
-	// don't pass this along to the configured filesystem adapter as it will not work at all
-	// unless [os.OpenFile] is used directly with it.
-	// Matching by directory and basename prefix isn't perfect, but works.
-	//
-	// If we want FIFOs to use a custom adapter behavior in the future, they
-	// probably need their own separate API matching Unix-like semantics.
-	dir, name := filepath.Split(path)
-	dir = strings.TrimSuffix(dir, "/")
-	if dir == r.tempDir && strings.HasPrefix(name, fifoNamePrefix) {
+	// Interpreter-created FIFOs for process substitution need a host-backed open,
+	// but only for the exact paths created by this runner tree.
+	if r.isTempFIFOPath(path) {
 		return OSFileSystem{}.OpenFile(path, flags, mode)
 	}
 

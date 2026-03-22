@@ -117,7 +117,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{DatadogAPIKeyEnvVar, DatadogAppKeyEnvVar},
+			RequiredEnv:   []string{DatadogAPIKeyEnvVar, DatadogAppKeyEnvVar},
+			RequiredHosts: RequiredHosts(),
 		})
 	})
 }
@@ -244,10 +245,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"aggregate_logs","query":"service:api","compute":[{"aggregation":"count"}],"group_by":[{"facet":"status","limit":5,"sort":{"aggregation":"count","order":"desc"}}],"from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z"}`,
 			`{"action":"aggregate_logs","query":"service:web","compute":[{"aggregation":"avg","metric":"@duration","type":"timeseries","interval":"5m"}],"group_by":[{"facet":"service","limit":3,"sort":{"aggregation":"avg","metric":"@duration","order":"desc"}}],"from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z"}`,
 		},
-		OutputNotes:     "Returns bounded, normalized JSON for the requested Datadog resource type.",
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		OutputNotes:  "Returns bounded, normalized JSON for the requested Datadog resource type.",
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		ReadOnly:     true,
 	}
 }
 
@@ -262,10 +263,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 	input, err := toolscore.DecodeToolInput[input](call.Input)
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
-		return nil
-	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", toolName))
 		return nil
 	}
 	req, err := normalizeReadRequest(input, time.Now().UTC())

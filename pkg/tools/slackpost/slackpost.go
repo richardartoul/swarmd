@@ -44,7 +44,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{SlackUserTokenEnvVar},
+			RequiredEnv:   []string{SlackUserTokenEnvVar},
+			RequiredHosts: slackcommon.RequiredHosts(),
 		})
 	})
 }
@@ -67,10 +68,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"text":"Build finished successfully."}`,
 			`{"channel":"C12345678","thread_ts":"1700.000001","text":"Following up in-thread."}`,
 		},
-		OutputNotes:     "Returns JSON with the Slack channel, ts, and thread_ts for the posted message.",
-		SafetyTags:      []string{"network", "mutating"},
-		RequiresNetwork: true,
-		Mutating:        true,
+		OutputNotes:  "Returns JSON with the Slack channel, ts, and thread_ts for the posted message.",
+		SafetyTags:   []string{"network", "mutating"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		Mutating:     true,
 	}
 }
 
@@ -89,10 +90,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 	input, err := toolscore.DecodeToolInput[input](call.Input)
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
-		return nil
-	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", toolName))
 		return nil
 	}
 	text := strings.TrimSpace(input.Text)

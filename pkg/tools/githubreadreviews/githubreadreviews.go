@@ -42,7 +42,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{githubcommon.GitHubTokenEnvVar},
+			RequiredEnv:   []string{githubcommon.GitHubTokenEnvVar},
+			RequiredHosts: githubcommon.RequiredHosts(),
 		})
 	})
 }
@@ -107,10 +108,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"get_pull_request","owner":"acme","repo":"monorepo","pull_number":9021}`,
 			`{"action":"compare_refs","owner":"acme","repo":"monorepo","base":"main","head":"fix/flaky-payment-retry"}`,
 		},
-		OutputNotes:     "Returns normalized JSON describing GitHub issues, pull requests, review state, and commit history.",
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		OutputNotes:  "Returns normalized JSON describing GitHub issues, pull requests, review state, and commit history.",
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		ReadOnly:     true,
 	}
 }
 
@@ -125,10 +126,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 	input, err := toolscore.DecodeToolInput[input](call.Input)
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
-		return nil
-	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", ToolName))
 		return nil
 	}
 	req, err := normalizeReadRequest(input)

@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
 func TestBuildResponsesToolsUsesEmptyArrayForNestedRequired(t *testing.T) {
 	t.Parallel()
 
-	allTools, err := agent.ResolveToolDefinitions(nil, true)
+	allTools, err := agent.ResolveToolDefinitions(nil, []interp.HostMatcher{{Glob: "*"}})
 	if err != nil {
 		t.Fatalf("ResolveToolDefinitions() error = %v", err)
 	}

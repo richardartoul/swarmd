@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
@@ -31,7 +32,6 @@ type ToolHost interface {
 	Runtime(toolCtx toolscore.ToolContext) (ToolRuntime, error)
 	FileSystem(toolCtx toolscore.ToolContext) sandbox.FileSystem
 	ResolvePath(toolCtx toolscore.ToolContext, path string) (string, error)
-	NetworkEnabled(toolCtx toolscore.ToolContext) bool
 	HTTPClient(toolCtx toolscore.ToolContext, opts toolscore.ToolHTTPClientOptions) *http.Client
 	TriggerContext(ctx context.Context) (TriggerContext, bool)
 }
@@ -41,7 +41,8 @@ type ToolFactory func(host ToolHost) toolscore.ToolPlugin
 
 // ToolRegistrationOptions configures one server-owned tool registration.
 type ToolRegistrationOptions struct {
-	RequiredEnv []string
+	RequiredEnv   []string
+	RequiredHosts []interp.HostMatcher
 }
 
 // RegisterTool registers one server-owned tool with the shared registry.
@@ -51,7 +52,8 @@ func RegisterTool(factory ToolFactory, opts ToolRegistrationOptions) {
 	}
 	plugin := factory(toolHostBridge{})
 	if err := toolregistry.Register(plugin, toolregistry.RegistrationOptions{
-		RequiredEnv: opts.RequiredEnv,
+		RequiredEnv:   opts.RequiredEnv,
+		RequiredHosts: opts.RequiredHosts,
 	}); err != nil {
 		panic(err)
 	}
@@ -82,10 +84,6 @@ func (toolHostBridge) ResolvePath(toolCtx toolscore.ToolContext, path string) (s
 		return "", fmt.Errorf("tool context is unavailable")
 	}
 	return toolCtx.ResolvePath(path)
-}
-
-func (toolHostBridge) NetworkEnabled(toolCtx toolscore.ToolContext) bool {
-	return toolCtx != nil && toolCtx.NetworkEnabled()
 }
 
 func (toolHostBridge) HTTPClient(toolCtx toolscore.ToolContext, opts toolscore.ToolHTTPClientOptions) *http.Client {

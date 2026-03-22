@@ -244,13 +244,15 @@ func runSlackHistoryToolStep(t *testing.T, input any, config map[string]any, net
 	}
 	var decisionCount int
 	var networkDialer interp.NetworkDialer
+	var globalReachableHosts []interp.HostMatcher
 	if networkEnabled {
 		networkDialer = interp.OSNetworkDialer{}
+		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
 	}
 	runtime, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: networkEnabled,
-		NetworkDialer:  networkDialer,
+		Root:                 t.TempDir(),
+		NetworkDialer:        networkDialer,
+		GlobalReachableHosts: globalReachableHosts,
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID:     toolName,
 			Config: config,

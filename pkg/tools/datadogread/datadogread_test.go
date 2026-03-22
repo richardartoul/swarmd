@@ -22,13 +22,13 @@ func registerTestTool(t *testing.T) {
 	registerTestsOnce.Do(Register)
 }
 
-func TestDatadogReadToolRequiresNetworkCapability(t *testing.T) {
+func TestDatadogReadToolDoesNotRequireGlobalReachableHosts(t *testing.T) {
 	t.Parallel()
 	registerTestTool(t)
 
 	_, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: false,
+		Root:          t.TempDir(),
+		NetworkDialer: interp.OSNetworkDialer{},
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID: ToolName,
 		}},
@@ -36,11 +36,8 @@ func TestDatadogReadToolRequiresNetworkCapability(t *testing.T) {
 			return agent.Decision{Finish: &agent.FinishAction{Value: "ok"}}, nil
 		}),
 	})
-	if err == nil {
-		t.Fatal("agent.New() error = nil, want Datadog network requirement")
-	}
-	if !strings.Contains(err.Error(), "requires network") {
-		t.Fatalf("agent.New() error = %v, want requires network error", err)
+	if err != nil {
+		t.Fatalf("agent.New() error = %v, want scoped tool to auto-allow required hosts", err)
 	}
 }
 
@@ -280,14 +277,16 @@ func runDatadogToolStep(t *testing.T, input any, networkEnabled bool, env map[st
 	}
 	var decisionCount int
 	var networkDialer interp.NetworkDialer
+	var globalReachableHosts []interp.HostMatcher
 	if networkEnabled {
 		networkDialer = interp.OSNetworkDialer{}
+		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
 	}
 	runtime, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: networkEnabled,
-		NetworkDialer:  networkDialer,
-		HTTPHeaders:    append([]interp.HTTPHeaderRule(nil), headers...),
+		Root:                 t.TempDir(),
+		NetworkDialer:        networkDialer,
+		GlobalReachableHosts: globalReachableHosts,
+		HTTPHeaders:          append([]interp.HTTPHeaderRule(nil), headers...),
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID: ToolName,
 		}},

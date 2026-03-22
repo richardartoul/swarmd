@@ -382,7 +382,7 @@ func validateAgentSpec(spec AgentSpec) error {
 	if err != nil {
 		return fmt.Errorf("tools invalid: %w", err)
 	}
-	if _, err := agent.ResolveToolDefinitions(normalizedTools, agentNetworkEnabled(spec.Network)); err != nil {
+	if _, err := agent.ResolveToolDefinitions(normalizedTools, agentNetworkHostMatchers(spec.Network)); err != nil {
 		return fmt.Errorf("tools invalid: %w", err)
 	}
 	if _, err := parseOptionalDuration(spec.Runtime.StepTimeout); err != nil {

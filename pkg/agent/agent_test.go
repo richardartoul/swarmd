@@ -1149,9 +1149,10 @@ func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
 		},
 	}
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		Driver:        driver,
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		Driver:               driver,
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 	})
 
 	if _, err := a.HandleTrigger(context.Background(), agent.Trigger{
@@ -1174,7 +1175,7 @@ func TestHandleTriggerUsesNetworkAwareDefaultSystemPrompt(t *testing.T) {
 		}
 	}
 	combinedPrompts := strings.Join(systemPrompts, "\n")
-	if !strings.Contains(combinedPrompts, "Network-capable tools may be available through the interpreter-owned dialer") {
+	if !strings.Contains(combinedPrompts, "Network access depends on the structured tools and shell commands exposed on this turn.") {
 		t.Fatalf("combined system prompts = %q, want network-enabled instructions", combinedPrompts)
 	}
 	if !strings.Contains(combinedPrompts, "Runtime-only run_shell guidance:") {
@@ -1237,8 +1238,9 @@ func TestHandleTriggerCanUseInjectedNetworkDialer(t *testing.T) {
 	defer server.Close()
 
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				shell("curl " + server.URL),

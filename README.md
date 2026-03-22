@@ -1,5 +1,7 @@
 # swarmd
 
+**WARNING**: `swarmd`is Alpha software. It has not yet been extensively tested at scale and hardened in production environments.
+
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Deployment](#deployment)
@@ -12,11 +14,33 @@
 
 ## Overview
 
-**WARNING**: `swarmd`is Alpha software. It has not yet been extensively tested at scale and hardened in production environments.
+`swarmd` is a multi-tenant runtime for running background Agents in a safe and secure manner. Agents are defined in YAML and run as goroutines in a multi-tenant server with a virtual shell and custom tools. `swarmd` is not a generic sandbox for running existing Agent harnesses in, its a stand-alone Agent harnesses was designed from the ground up with sandboxing in mind.
 
-`swarmd` is a Go runtime for running sandboxed, YAML-defined Agents. Agents run as goroutines in a multi-tenant server with a virtual shell and custom skills. `swarmd` ships with a variety of built-in skills, and new skills can be added and exposed to Agents simply by writing Go functions. It sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents".
+`swarmd` does not rely on any operating system sandboxing primitives. It will run anywhere you can run a Go application, and it works exactly the same in all environments.
 
-Agents have zero direct access to the host operating system: filesystem operations go through a filesystem interface that limits access to a specific subdirectory, and network access goes through a network interface with a custom dialer plus a managed HTTP layer for host-owned header injection.
+`swarmd` Agents have zero direct access to the host operating system: filesystem operations go through a filesystem interface that limits access to a specific subdirectory (or fake in-memory filesystem), and network access goes through a network interface with a custom dialer plus a managed HTTP layer for host-owned header injection.
+
+`swarmd` ships with a variety of built-in tools, and new tools can be added and exposed to Agents simply by writing Go functions. It sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents". The currently supported tools are:
+
+- `apply_patch`: apply a structured patch to local files (built-in)
+- `grep_files`: search local files with a regular expression and return matching paths (built-in)
+- `http_request`: make direct HTTP requests for API-style interactions (built-in)
+- `list_dir`: list entries in a local directory with bounded output (built-in)
+- `read_file`: read a local file with numbered, bounded output (built-in)
+- `read_web_page`: fetch a web page and convert it to markdown or text (built-in)
+- `run_shell`: run one sandboxed shell command when no structured tool fits (built-in)
+- `web_search`: search the public web through the runtime-owned search backend (built-in)
+- `datadog_read`: read incidents, monitors, dashboards, metrics, logs, and events from Datadog (optional)
+- `github_read_ci`: read GitHub statuses, checks, workflows, jobs, logs, and artifacts (optional)
+- `github_read_repo`: read GitHub repository metadata, trees, files, branches, and rulesets (optional)
+- `github_read_reviews`: read GitHub issues, pull requests, reviews, comments, commits, and timelines (optional)
+- `server_log`: write a message to the server logs with namespace and agent context (optional)
+- `slack_dm`: send a Slack direct message to one user (optional)
+- `slack_channel_history`: list Slack channel timeline messages newer than a timestamp (optional)
+- `slack_post`: post a Slack message or thread reply (optional)
+- `slack_replies`: list replies for a Slack thread (optional)
+
+Contribution of new generic custom tools is highly welcome. Instructions on how to deploy `swarmd` with custom tools that are specific to your environment can be found here.
 
 Agent activity and state is tracked in a local SQLite database that can be investigated with a local TUI.
 
@@ -101,6 +125,8 @@ For the full runnable walkthrough, start with [examples/agents/hello-heartbeat](
 `swarmd` is a simple Go binary, so you can deploy it however you want. The easiest place to start is usually a decent-sized virtual machine with the binary, your agent YAML config root, and a persistent disk for the data directory.
 
 The primary database is SQLite, so backups are usually just backups of that database file. In general, agent YAMLs should live in version control, while SQLite is mostly tracking execution history and runtime state. A persistent disk is only required if you want to preserve an agent's filesystem contents or other sandbox state between runs.
+
+Instructions on how to deploy `swarmd` with custom tools that are specific to your environment can be found [here](#adding-custom-tools).
 
 ## Agents as a Library
 
@@ -253,7 +279,7 @@ tools:
   - id: hello_tool
 ```
 
-If the tool needs per-agent configuration, pass it under `tools[].config`; that map is provided to `NewHandler(cfg toolscore.ConfiguredTool)`. If it needs outbound HTTP, set `RequiresNetwork: true` in `Definition()` and configure `network.reachable_hosts` in the agent spec. If it needs host environment variables such as API keys, declare them in `server.ToolRegistrationOptions{RequiredEnv: ...}` so validation fails early when the binary is misconfigured.
+If the tool needs per-agent configuration, pass it under `tools[].config`; that map is provided to `NewHandler(cfg toolscore.ConfiguredTool)`. If it needs outbound HTTP, pick the right `NetworkScope` in `Definition()`: use `toolscore.ToolNetworkScopeGlobal` when it should share the agent's `network.reachable_hosts` policy, or use `toolscore.ToolNetworkScopeScoped` plus `server.ToolRegistrationOptions{RequiredHosts: ...}` when it should auto-allow a fixed host set only for that tool. Scoped tool hosts do not get added to shell access or other tools. If it needs host environment variables such as API keys, declare them in `server.ToolRegistrationOptions{RequiredEnv: ...}` so validation fails early when the binary is misconfigured.
 
 Two rules are easy to miss:
 

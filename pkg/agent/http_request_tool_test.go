@@ -30,8 +30,9 @@ func TestHandleTriggerExecutesHTTPRequestToolWithHeaderArray(t *testing.T) {
 	defer server.Close()
 
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameHTTPRequest, agent.ToolKindFunction, `{"url":"`+server.URL+`","method":"POST","headers":[{"name":"Authorization","value":"Bearer secret"},{"name":"Content-Type","value":"application/json"}],"body":"{}","follow_redirects":true}`),

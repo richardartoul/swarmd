@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
@@ -40,6 +41,7 @@ const (
 )
 
 var registerServerTestToolsOnce sync.Once
+var testToolWildcardHosts = []interp.HostMatcher{{Glob: "*"}}
 
 func init() {
 	registerServerTestTools()
@@ -55,28 +57,28 @@ func registerServerTestTools() {
 		}, ToolRegistrationOptions{})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackPostToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackDMToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackRepliesToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testSlackHistoryToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolSlackUserTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testDatadogReadToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolDatadogAPIKeyEnv, testToolDatadogAppKeyEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolDatadogAPIKeyEnv, testToolDatadogAppKeyEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testGitHubRepoToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testGitHubReviewsToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}, RequiredHosts: testToolWildcardHosts})
 		RegisterTool(func(host ToolHost) toolscore.ToolPlugin {
 			return testGitHubCIToolPlugin{host: host}
-		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}})
+		}, ToolRegistrationOptions{RequiredEnv: []string{testToolGitHubTokenEnv}, RequiredHosts: testToolWildcardHosts})
 	})
 }
 
@@ -217,7 +219,7 @@ func (testSlackPostToolPlugin) Definition() toolscore.ToolDefinition {
 			"text",
 		),
 		RequiredArguments: []string{"text"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		Mutating:          true,
 	}
 }
@@ -233,10 +235,6 @@ func (p testSlackPostToolPlugin) NewHandler(config toolscore.ConfiguredTool) (to
 }
 
 func (p testSlackPostToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction, cfg testSlackToolConfig) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolSlackPostID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Channel  string `json:"channel"`
 		Text     string `json:"text"`
@@ -297,7 +295,7 @@ func (testSlackDMToolPlugin) Definition() toolscore.ToolDefinition {
 		Kind:              toolscore.ToolKindFunction,
 		Parameters:        parameters,
 		RequiredArguments: []string{"text"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		Mutating:          true,
 	}
 }
@@ -310,10 +308,6 @@ func (p testSlackDMToolPlugin) NewHandler(config toolscore.ConfiguredTool) (tool
 }
 
 func (p testSlackDMToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolSlackDMID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		UserID string `json:"user_id"`
 		Email  string `json:"email"`
@@ -420,7 +414,7 @@ func (testSlackRepliesToolPlugin) Definition() toolscore.ToolDefinition {
 			"thread_ts",
 		),
 		RequiredArguments: []string{"thread_ts"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -436,10 +430,6 @@ func (p testSlackRepliesToolPlugin) NewHandler(config toolscore.ConfiguredTool) 
 }
 
 func (p testSlackRepliesToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction, cfg testSlackToolConfig) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolSlackRepliesID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Channel  string `json:"channel"`
 		ThreadTS string `json:"thread_ts"`
@@ -504,7 +494,7 @@ func (testSlackHistoryToolPlugin) Definition() toolscore.ToolDefinition {
 			"after_ts",
 		),
 		RequiredArguments: []string{"after_ts"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -520,10 +510,6 @@ func (p testSlackHistoryToolPlugin) NewHandler(config toolscore.ConfiguredTool) 
 }
 
 func (p testSlackHistoryToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction, cfg testSlackToolConfig) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolSlackHistoryID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Channel     string `json:"channel"`
 		AfterTS     string `json:"after_ts"`
@@ -673,7 +659,7 @@ func (testGitHubRepoToolPlugin) Definition() toolscore.ToolDefinition {
 			"repo",
 		),
 		RequiredArguments: []string{"action", "owner", "repo"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -684,10 +670,6 @@ func (p testGitHubRepoToolPlugin) NewHandler(config toolscore.ConfiguredTool) (t
 }
 
 func (p testGitHubRepoToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubRepoID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Action string `json:"action"`
 		Owner  string `json:"owner"`
@@ -744,7 +726,7 @@ func (testGitHubReviewsToolPlugin) Definition() toolscore.ToolDefinition {
 			"repo",
 		),
 		RequiredArguments: []string{"action", "owner", "repo"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -755,10 +737,6 @@ func (p testGitHubReviewsToolPlugin) NewHandler(config toolscore.ConfiguredTool)
 }
 
 func (p testGitHubReviewsToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubReviewID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Action  string `json:"action"`
 		Owner   string `json:"owner"`
@@ -828,7 +806,7 @@ func (testGitHubCIToolPlugin) Definition() toolscore.ToolDefinition {
 			"repo",
 		),
 		RequiredArguments: []string{"action", "owner", "repo"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -839,10 +817,6 @@ func (p testGitHubCIToolPlugin) NewHandler(config toolscore.ConfiguredTool) (too
 }
 
 func (p testGitHubCIToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolGitHubCIID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Action     string `json:"action"`
 		Owner      string `json:"owner"`
@@ -917,7 +891,7 @@ func (testDatadogReadToolPlugin) Definition() toolscore.ToolDefinition {
 			"action",
 		),
 		RequiredArguments: []string{"action"},
-		RequiresNetwork:   true,
+		NetworkScope:      toolscore.ToolNetworkScopeScoped,
 		ReadOnly:          true,
 	}
 }
@@ -928,10 +902,6 @@ func (p testDatadogReadToolPlugin) NewHandler(config toolscore.ConfiguredTool) (
 }
 
 func (p testDatadogReadToolPlugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.Step, call *toolscore.ToolAction) error {
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", testToolDatadogReadID))
-		return nil
-	}
 	input, err := toolscore.DecodeToolInput[struct {
 		Action   string `json:"action"`
 		PageSize int    `json:"page_size"`

@@ -28,9 +28,10 @@ func TestHandleTriggerExecutesInjectedWebSearchTool(t *testing.T) {
 		},
 	}
 	a := newAgent(t, agent.Config{
-		Root:             t.TempDir(),
-		NetworkEnabled:   true,
-		WebSearchBackend: backend,
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
+		WebSearchBackend:     backend,
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameWebSearch, agent.ToolKindFunction, `{"query":"example docs","limit":1}`),
@@ -64,8 +65,9 @@ func TestHandleTriggerExecutesHTTPRequestTool(t *testing.T) {
 	defer server.Close()
 
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameHTTPRequest, agent.ToolKindFunction, `{"url":"`+server.URL+`","method":"GET","follow_redirects":true}`),
@@ -93,16 +95,10 @@ func TestHandleTriggerHTTPRequestToolRejectsDisallowedHost(t *testing.T) {
 	server := httptest.NewServer(httpTestHandler(`{"ok":true}`, "application/json"))
 	defer server.Close()
 
-	dialer, err := interp.NewAllowlistNetworkDialer(interp.OSNetworkDialer{}, []interp.HostMatcher{{
-		Glob: "example.com",
-	}})
-	if err != nil {
-		t.Fatalf("NewAllowlistNetworkDialer() error = %v", err)
-	}
-
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: dialer,
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "example.com"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameHTTPRequest, agent.ToolKindFunction, `{"url":"`+server.URL+`","method":"GET","follow_redirects":true}`),
@@ -131,8 +127,9 @@ func TestHandleTriggerExecutesReadWebPageTool(t *testing.T) {
 	defer server.Close()
 
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameReadWebPage, agent.ToolKindFunction, `{"url":"`+server.URL+`","format":"markdown","include_links":true}`),
@@ -163,16 +160,10 @@ func TestHandleTriggerReadWebPageToolRejectsDisallowedHost(t *testing.T) {
 	server := httptest.NewServer(httpTestHandler(`<!doctype html><html><body>blocked</body></html>`, "text/html; charset=utf-8"))
 	defer server.Close()
 
-	dialer, err := interp.NewAllowlistNetworkDialer(interp.OSNetworkDialer{}, []interp.HostMatcher{{
-		Glob: "example.com",
-	}})
-	if err != nil {
-		t.Fatalf("NewAllowlistNetworkDialer() error = %v", err)
-	}
-
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: dialer,
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "example.com"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameReadWebPage, agent.ToolKindFunction, `{"url":"`+server.URL+`","format":"markdown","include_links":true}`),
@@ -200,16 +191,10 @@ func TestHandleTriggerWebSearchToolRejectsDisallowedHost(t *testing.T) {
 	server := httptest.NewServer(httpTestHandler(`ok`, "text/plain"))
 	defer server.Close()
 
-	dialer, err := interp.NewAllowlistNetworkDialer(interp.OSNetworkDialer{}, []interp.HostMatcher{{
-		Glob: "example.com",
-	}})
-	if err != nil {
-		t.Fatalf("NewAllowlistNetworkDialer() error = %v", err)
-	}
-
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: dialer,
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "example.com"}},
 		WebSearchBackend: &fetchingWebSearchBackend{
 			url: server.URL,
 		},
@@ -686,8 +671,9 @@ func TestHandleTriggerHTTPRequestEnforcesRedirectLimit(t *testing.T) {
 	defer server.Close()
 
 	a := newAgent(t, agent.Config{
-		Root:          t.TempDir(),
-		NetworkDialer: interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		Driver: &scriptedDriver{
 			decisions: []agent.Decision{
 				tool(agent.ToolNameHTTPRequest, agent.ToolKindFunction, `{"url":"`+server.URL+`/0","follow_redirects":true}`),

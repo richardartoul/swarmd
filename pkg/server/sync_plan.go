@@ -383,7 +383,7 @@ func buildManagedAgentParams(configRoot, defaultRootBase string, spec AgentSpec)
 	if err != nil {
 		return cpstore.CreateAgentParams{}, fmt.Errorf("parse retry_delay for %q/%q: %w", spec.NamespaceID, spec.AgentID, err)
 	}
-	actionSchema, err := agent.ResolveActionSchema(normalizedTools, agentNetworkEnabled(spec.Network))
+	actionSchema, err := agent.ResolveActionSchema(normalizedTools, agentNetworkHostMatchers(spec.Network))
 	if err != nil {
 		return cpstore.CreateAgentParams{}, fmt.Errorf("build action schema for %q/%q: %w", spec.NamespaceID, spec.AgentID, err)
 	}

@@ -616,7 +616,7 @@ func TestRuntimeManagerExecutesSlackChannelHistoryTool(t *testing.T) {
 	}
 }
 
-func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
+func TestRuntimeManagerAllowsScopedSlackToolsWhenGlobalHostDisallowed(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -749,8 +749,8 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 	requestsMu.Lock()
 	gotRequests := requests
 	requestsMu.Unlock()
-	if gotRequests != 0 {
-		t.Fatalf("request count = %d, want 0 for blocked Slack host", gotRequests)
+	if gotRequests != 4 {
+		t.Fatalf("request count = %d, want 4 for scoped Slack tools", gotRequests)
 	}
 	toolsMu.Lock()
 	captured := append([]agent.ToolDefinition(nil), tools...)
@@ -769,7 +769,7 @@ func TestRuntimeManagerBlocksSlackToolsWhenHostDisallowed(t *testing.T) {
 	}
 }
 
-func TestRuntimeManagerBlocksDatadogReadToolWhenHostDisallowed(t *testing.T) {
+func TestRuntimeManagerAllowsScopedDatadogReadToolWhenGlobalHostDisallowed(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -886,8 +886,8 @@ func TestRuntimeManagerBlocksDatadogReadToolWhenHostDisallowed(t *testing.T) {
 	requestsMu.Lock()
 	gotRequests := requests
 	requestsMu.Unlock()
-	if gotRequests != 0 {
-		t.Fatalf("request count = %d, want 0 for blocked Datadog host", gotRequests)
+	if gotRequests != 1 {
+		t.Fatalf("request count = %d, want 1 for scoped Datadog tool", gotRequests)
 	}
 	toolsMu.Lock()
 	captured := append([]agent.ToolDefinition(nil), tools...)
@@ -1294,7 +1294,7 @@ func TestRuntimeManagerExecutesGitHubReadCIToolDownloadArtifact(t *testing.T) {
 	}
 }
 
-func TestRuntimeManagerBlocksGitHubReadRepoToolWhenHostDisallowed(t *testing.T) {
+func TestRuntimeManagerAllowsScopedGitHubReadRepoToolWhenGlobalHostDisallowed(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -1403,8 +1403,8 @@ func TestRuntimeManagerBlocksGitHubReadRepoToolWhenHostDisallowed(t *testing.T) 
 	requestsMu.Lock()
 	gotRequests := requests
 	requestsMu.Unlock()
-	if gotRequests != 0 {
-		t.Fatalf("request count = %d, want 0 for blocked GitHub host", gotRequests)
+	if gotRequests != 1 {
+		t.Fatalf("request count = %d, want 1 for scoped GitHub tool", gotRequests)
 	}
 	toolsMu.Lock()
 	captured := append([]agent.ToolDefinition(nil), tools...)

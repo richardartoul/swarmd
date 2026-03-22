@@ -26,37 +26,7 @@ Rules:
 - Do not invent tools or arguments that are not provided.
 - If a tool call fails validation, correct that tool call instead of switching to an unrelated action.
 - The shell runs in a sandbox. External commands are blocked.
-- Network access is disabled unless network-capable tools are explicitly available.
-- If you use run_shell, prefer concise POSIX shell snippets.
-- Within run_shell, do not use background jobs, coprocesses, process substitution, exec, or exit.
-- Within run_shell, use -- before a literal operand that begins with -.
-- Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
-- Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
-- Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
-- Some large tool outputs may be written to files inside the sandbox temp area for the current run. Read those files only when you need the full content.
-- When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
-- If you include "thought", keep it concise.
-- In the final response envelope, "thought" is optional metadata. Use an empty string when you have nothing useful to add.
-- For ordinary answers, explanations, and conversational replies, result_json should usually contain a JSON string, not an object.
-- Use an object or array inside result_json only when the user asked for structured or machine-readable output, or when the runtime expects structured data.
-- Example ordinary answer: {{strict_final_string_example}}
-- Example structured result when explicitly needed: {{strict_final_object_example}}`
-
-const defaultSystemPromptWithNetworkTemplate = `You are a sandboxed local agent.
-
-Use the structured tools provided by the runtime as the source of truth for what actions are available on this turn.
-
-Rules:
-- Prefer structured tools over shell whenever a built-in tool fits the task.
-- Use at most one tool call per response.
-- When tools are available, either emit exactly one tool call or emit no tool call and return the final response envelope.
-- When a tool is needed, use the runtime's native tool-calling interface instead of writing text JSON wrappers for actions.
-- Never emit multiple tool calls in a single response; do additional tool work in later turns.
-- Use run_shell only as a fallback when no structured tool is a good fit.
-- Do not invent tools or arguments that are not provided.
-- If a tool call fails validation, correct that tool call instead of switching to an unrelated action.
-- The shell runs in a sandbox. External commands are blocked.
-- Network-capable tools may be available through the interpreter-owned dialer and HTTP client stack.
+- Network access depends on the structured tools and shell commands exposed on this turn.
 - If you use run_shell, prefer concise POSIX shell snippets.
 - Within run_shell, do not use background jobs, coprocesses, process substitution, exec, or exit.
 - Within run_shell, use -- before a literal operand that begins with -.
@@ -73,12 +43,8 @@ Rules:
 - Example structured result when explicitly needed: {{strict_final_object_example}}`
 
 var DefaultSystemPrompt = renderDefaultSystemPrompt(defaultSystemPromptTemplate)
-var defaultSystemPromptWithNetwork = renderDefaultSystemPrompt(defaultSystemPromptWithNetworkTemplate)
 
-func defaultSystemPrompt(networkEnabled bool) string {
-	if networkEnabled {
-		return defaultSystemPromptWithNetwork
-	}
+func defaultSystemPrompt() string {
 	return DefaultSystemPrompt
 }
 
@@ -93,9 +59,9 @@ func renderDefaultSystemPrompt(template string) string {
 
 // ComposeSystemPrompt returns the default shell-agent system prompt and appends
 // additional agent-specific instructions when provided.
-func ComposeSystemPrompt(custom string, networkEnabled bool) string {
+func ComposeSystemPrompt(custom string) string {
 	custom = strings.TrimSpace(custom)
-	base := defaultSystemPrompt(networkEnabled)
+	base := defaultSystemPrompt()
 	if custom == "" {
 		return base
 	}
@@ -198,14 +164,14 @@ func (c driverRequestContext) withRunStartedAt(startedAt time.Time) driverReques
 	return c
 }
 
-func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customCommands []sandbox.CommandInfo) string {
+func toolAvailabilityPrompt(tools []ToolDefinition, shellNetworkEnabled bool, customCommands []sandbox.CommandInfo) string {
 	if !hasTool(tools, ToolNameRunShell) {
 		return ""
 	}
 
 	coreutilsNames := make([]string, 0, len(coreutils.Commands()))
 	for _, command := range coreutils.Commands() {
-		if command.RequiresNetwork && !networkEnabled {
+		if command.RequiresNetwork && !shellNetworkEnabled {
 			continue
 		}
 		coreutilsNames = append(coreutilsNames, command.Name)
@@ -213,7 +179,7 @@ func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customC
 	lines := []string{
 		"Runtime-only run_shell guidance:",
 		"- Use run_shell only as a sandboxed fallback when no structured tool fits.",
-		"- Network access is disabled unless this runtime explicitly exposes network-capable tools or shell commands.",
+		"- run_shell only gets network access when network-capable shell commands are explicitly listed below.",
 		"- If you use run_shell, the sandbox command surface is:",
 		"- Shell builtins: echo, printf, pwd, cd, set, shift, unset, true, false, break, continue, test, [, :",
 		"- Coreutils: " + strings.Join(coreutilsNames, ", "),
@@ -222,7 +188,7 @@ func toolAvailabilityPrompt(tools []ToolDefinition, networkEnabled bool, customC
 	if len(customCommands) > 0 {
 		lines = append(lines, "- Additional custom sandbox commands available through run_shell:")
 		for _, command := range customCommands {
-			if command.RequiresNetwork && !networkEnabled {
+			if command.RequiresNetwork && !shellNetworkEnabled {
 				continue
 			}
 			line := "  - " + command.Name
@@ -285,7 +251,7 @@ func (a *Agent) buildDriverRequestWithContext(
 	req.Messages = []Message{
 		{Role: MessageRoleSystem, Content: a.systemPrompt},
 	}
-	if availability := toolAvailabilityPrompt(req.Tools, a.networkEnabled, a.customCommands); availability != "" {
+	if availability := toolAvailabilityPrompt(req.Tools, a.shellNetworkEnabled, a.customCommands); availability != "" {
 		req.Messages = append(req.Messages, Message{
 			Role:    MessageRoleSystem,
 			Content: availability,

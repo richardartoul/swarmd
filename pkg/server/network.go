@@ -87,6 +87,20 @@ func managedAgentNetworkSettings(spec AgentSpec) (*managedAgentNetworkConfig, er
 	return &managedAgentNetworkConfig{ReachableHosts: reachableHosts}, nil
 }
 
+func agentNetworkHostMatchers(spec *AgentNetworkSpec) []interp.HostMatcher {
+	if spec == nil || len(spec.ReachableHosts) == 0 {
+		return nil
+	}
+	matchers := make([]interp.HostMatcher, 0, len(spec.ReachableHosts))
+	for _, matcher := range spec.ReachableHosts {
+		matchers = append(matchers, interp.HostMatcher{
+			Glob:  strings.TrimSpace(matcher.Glob),
+			Regex: strings.TrimSpace(matcher.Regex),
+		})
+	}
+	return matchers
+}
+
 func resolveManagedNetworkHostMatchers(network managedAgentNetworkConfig) []interp.HostMatcher {
 	if len(network.ReachableHosts) == 0 {
 		return nil

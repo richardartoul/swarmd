@@ -33,7 +33,8 @@ func Register() {
 		server.RegisterTool(func(host server.ToolHost) toolscore.ToolPlugin {
 			return plugin{host: host}
 		}, server.ToolRegistrationOptions{
-			RequiredEnv: []string{githubcommon.GitHubTokenEnvVar},
+			RequiredEnv:   []string{githubcommon.GitHubTokenEnvVar},
+			RequiredHosts: githubcommon.RequiredHosts(),
 		})
 	})
 }
@@ -91,10 +92,10 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"search_code","owner":"acme","repo":"monorepo","query":"FlakyTest path:services/payments language:go","page":1,"per_page":25}`,
 			`{"action":"get_file_contents","owner":"acme","repo":"monorepo","path":"services/payments/flaky_test.go","ref":"main"}`,
 		},
-		OutputNotes:     "Returns normalized JSON describing repository discovery and branch-policy state.",
-		SafetyTags:      []string{"network", "read_only"},
-		RequiresNetwork: true,
-		ReadOnly:        true,
+		OutputNotes:  "Returns normalized JSON describing repository discovery and branch-policy state.",
+		SafetyTags:   []string{"network", "read_only"},
+		NetworkScope: toolscore.ToolNetworkScopeScoped,
+		ReadOnly:     true,
 	}
 }
 
@@ -109,10 +110,6 @@ func (p plugin) handle(ctx context.Context, toolCtx toolscore.ToolContext, step 
 	input, err := toolscore.DecodeToolInput[input](call.Input)
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
-		return nil
-	}
-	if !p.host.NetworkEnabled(toolCtx) {
-		toolCtx.SetPolicyError(step, fmt.Errorf("%s requires network.reachable_hosts to be configured", ToolName))
 		return nil
 	}
 	req, err := normalizeReadRequest(input)

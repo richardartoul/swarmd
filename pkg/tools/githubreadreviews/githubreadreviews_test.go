@@ -219,9 +219,9 @@ func runReviewsToolStep(t *testing.T, input any, env map[string]string) agent.St
 	}
 	var decisionCount int
 	runtime, err := agent.New(agent.Config{
-		Root:           t.TempDir(),
-		NetworkEnabled: true,
-		NetworkDialer:  interp.OSNetworkDialer{},
+		Root:                 t.TempDir(),
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "*"}},
 		ConfiguredTools: []agent.ConfiguredTool{{
 			ID: ToolName,
 		}},

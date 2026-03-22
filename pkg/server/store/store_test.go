@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
 func TestOpenWorksWithRelativePath(t *testing.T) {
@@ -369,7 +370,7 @@ func TestPutAgentUpdatesPromptWhenActionSchemaChanges(t *testing.T) {
 	namespace := createTestNamespace(t, ctx, s, "namespace-action-schema")
 	root := filepath.Join(t.TempDir(), "worker")
 
-	firstSchema, err := agent.ResolveActionSchema(nil, false)
+	firstSchema, err := agent.ResolveActionSchema(nil, nil)
 	if err != nil {
 		t.Fatalf("ResolveActionSchema() first error = %v", err)
 	}
@@ -388,7 +389,7 @@ func TestPutAgentUpdatesPromptWhenActionSchemaChanges(t *testing.T) {
 		t.Fatalf("CreateAgent() error = %v", err)
 	}
 
-	secondSchema, err := agent.ResolveActionSchema(nil, true)
+	secondSchema, err := agent.ResolveActionSchema(nil, []interp.HostMatcher{{Glob: "*"}})
 	if err != nil {
 		t.Fatalf("ResolveActionSchema() second error = %v", err)
 	}

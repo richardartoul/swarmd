@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/moreinterp/coreutils"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	"github.com/richardartoul/swarmd/pkg/sh/syntax"
+	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
 )
 
 // ErrQueueRequired is returned when [Agent.Serve] is called without a queue.
@@ -31,7 +33,7 @@ type Agent struct {
 	runner                   *interp.Runner
 	fileSystem               sandbox.FileSystem
 	sandboxRoot              string
-	httpClientFactory        interp.HTTPClientFactory
+	globalHTTPClientFactory  interp.HTTPClientFactory
 	stdout                   *switchWriter
 	stderr                   *switchWriter
 	maxSteps                 int
@@ -44,10 +46,13 @@ type Agent struct {
 	liveStderr               io.Writer
 	spillBaseDir             string
 	currentRunSpillDir       string
-	networkEnabled           bool
+	shellNetworkEnabled      bool
+	globalReachableHosts     []interp.HostMatcher
 	toolDefinitions          []ToolDefinition
 	toolByName               map[string]ToolDefinition
 	toolHandlerByName        map[string]ToolHandler
+	toolRequiredHosts        map[string][]interp.HostMatcher
+	toolHTTPClientFactories  map[string]interp.HTTPClientFactory
 	toolRuntimeData          any
 	webSearchBackend         WebSearchBackend
 	customCommands           []sandbox.CommandInfo
@@ -85,34 +90,53 @@ func New(cfg Config) (*Agent, error) {
 
 	stdout := newSwitchWriter()
 	stderr := newSwitchWriter()
-	networkEnabled := cfg.NetworkEnabled || cfg.NetworkDialer != nil
-	httpClientFactory, err := interp.NewHTTPClientFactory(cfg.NetworkDialer, cfg.HTTPHeaders)
+	globalReachableHosts := slices.Clone(cfg.GlobalReachableHosts)
+	globalHTTPClientFactory, err := newAgentHTTPClientFactory(cfg.NetworkDialer, globalReachableHosts, cfg.HTTPHeaders)
 	if err != nil {
-		return nil, fmt.Errorf("create agent HTTP client factory: %w", err)
+		return nil, fmt.Errorf("create agent global HTTP client factory: %w", err)
 	}
-	toolBindings, err := resolveToolBindings(cfg.ConfiguredTools, networkEnabled)
+	toolBindings, err := resolveToolBindings(cfg.ConfiguredTools, globalReachableHosts)
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent tools: %w", err)
 	}
 	toolDefinitions := make([]ToolDefinition, 0, len(toolBindings))
 	toolByName := make(map[string]ToolDefinition, len(toolBindings))
 	toolHandlerByName := make(map[string]ToolHandler, len(toolBindings))
+	toolRequiredHosts := make(map[string][]interp.HostMatcher, len(toolBindings))
+	toolHTTPClientFactories := make(map[string]interp.HTTPClientFactory, len(toolBindings))
 	for _, binding := range toolBindings {
 		toolDefinitions = append(toolDefinitions, binding.Definition)
 		toolByName[binding.Definition.Name] = binding.Definition
 		toolHandlerByName[binding.Definition.Name] = binding.Handler
+		requiredHosts := toolregistry.RequiredHostsForTool(binding.Definition.Name)
+		if len(requiredHosts) > 0 {
+			toolRequiredHosts[binding.Definition.Name] = requiredHosts
+		}
+		factory, err := newAgentHTTPClientFactory(
+			cfg.NetworkDialer,
+			effectiveToolReachableHosts(binding.Definition.NetworkScope, globalReachableHosts, requiredHosts),
+			cfg.HTTPHeaders,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("create HTTP client factory for tool %q: %w", binding.Definition.Name, err)
+		}
+		toolHTTPClientFactories[binding.Definition.Name] = factory
 	}
 	webSearchBackend := cfg.WebSearchBackend
 	if webSearchBackend == nil {
 		webSearchBackend = NewDuckDuckGoWebSearchBackend()
 	}
+	globalNetworkDialer, err := newAgentScopedNetworkDialer(cfg.NetworkDialer, globalReachableHosts)
+	if err != nil {
+		return nil, fmt.Errorf("create agent shell network dialer: %w", err)
+	}
 	runner, err := sandbox.NewRunnerWithConfig(policy, sandbox.RunnerConfig{
 		Stdout:            stdout,
 		Stderr:            stderr,
-		NetworkDialer:     cfg.NetworkDialer,
-		NetworkEnabled:    networkEnabled,
+		NetworkDialer:     globalNetworkDialer,
+		NetworkEnabled:    len(globalReachableHosts) > 0,
 		HTTPHeaders:       cfg.HTTPHeaders,
-		HTTPClientFactory: httpClientFactory,
+		HTTPClientFactory: globalHTTPClientFactory,
 		ProgramValidator:  validateProgram,
 		CustomCommands:    cfg.CustomCommands,
 		CallHandlers: []interp.CallHandlerFunc{
@@ -138,7 +162,7 @@ func New(cfg Config) (*Agent, error) {
 	spillBaseDir := outputSpillBaseDir(policy, sandboxRoot)
 	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
 	if systemPrompt == "" {
-		systemPrompt = defaultSystemPrompt(networkEnabled)
+		systemPrompt = defaultSystemPrompt()
 	}
 
 	return &Agent{
@@ -150,7 +174,7 @@ func New(cfg Config) (*Agent, error) {
 		runner:                   runner,
 		fileSystem:               policy,
 		sandboxRoot:              sandboxRoot,
-		httpClientFactory:        httpClientFactory,
+		globalHTTPClientFactory:  globalHTTPClientFactory,
 		stdout:                   stdout,
 		stderr:                   stderr,
 		maxSteps:                 maxSteps,
@@ -162,10 +186,13 @@ func New(cfg Config) (*Agent, error) {
 		liveStdout:               cfg.Stdout,
 		liveStderr:               cfg.Stderr,
 		spillBaseDir:             spillBaseDir,
-		networkEnabled:           networkEnabled,
+		shellNetworkEnabled:      len(globalReachableHosts) > 0,
+		globalReachableHosts:     globalReachableHosts,
 		toolDefinitions:          toolDefinitions,
 		toolByName:               toolByName,
 		toolHandlerByName:        toolHandlerByName,
+		toolRequiredHosts:        toolRequiredHosts,
+		toolHTTPClientFactories:  toolHTTPClientFactories,
 		toolRuntimeData:          cfg.ToolRuntimeData,
 		webSearchBackend:         webSearchBackend,
 		customCommands:           commandInfosFromCustomCommands(cfg.CustomCommands),
@@ -437,4 +464,74 @@ func cloneSteps(steps []Step) []Step {
 func mergeUsage(dst, src Usage) Usage {
 	dst.CachedTokens += src.CachedTokens
 	return dst
+}
+
+func (a *Agent) toolHTTPClient(toolName string, opts ToolHTTPClientOptions) *http.Client {
+	if a == nil {
+		return nil
+	}
+	factory := a.toolHTTPClientFactories[toolName]
+	if factory == nil {
+		return nil
+	}
+	return factory.NewClient(interp.HTTPClientOptions{
+		ConnectTimeout:  opts.ConnectTimeout,
+		FollowRedirects: opts.FollowRedirects,
+	})
+}
+
+func newAgentScopedNetworkDialer(base interp.NetworkDialer, reachableHosts []interp.HostMatcher) (interp.NetworkDialer, error) {
+	if len(reachableHosts) == 0 || base == nil {
+		return nil, nil
+	}
+	return interp.NewAllowlistNetworkDialer(base, reachableHosts)
+}
+
+func newAgentHTTPClientFactory(
+	base interp.NetworkDialer,
+	reachableHosts []interp.HostMatcher,
+	headers []interp.HTTPHeaderRule,
+) (interp.HTTPClientFactory, error) {
+	dialer, err := newAgentScopedNetworkDialer(base, reachableHosts)
+	if err != nil {
+		return nil, err
+	}
+	return interp.NewHTTPClientFactory(dialer, headers)
+}
+
+func effectiveToolReachableHosts(
+	scope ToolNetworkScope,
+	globalReachableHosts []interp.HostMatcher,
+	requiredHosts []interp.HostMatcher,
+) []interp.HostMatcher {
+	switch scope.Normalized() {
+	case ToolNetworkScopeNone:
+		return nil
+	case ToolNetworkScopeGlobal:
+		return slices.Clone(globalReachableHosts)
+	case ToolNetworkScopeScoped:
+		return mergeHostMatchers(globalReachableHosts, requiredHosts)
+	default:
+		return nil
+	}
+}
+
+func mergeHostMatchers(left, right []interp.HostMatcher) []interp.HostMatcher {
+	if len(left) == 0 && len(right) == 0 {
+		return nil
+	}
+	seen := make(map[interp.HostMatcher]struct{}, len(left)+len(right))
+	merged := make([]interp.HostMatcher, 0, len(left)+len(right))
+	appendMatchers := func(values []interp.HostMatcher) {
+		for _, value := range values {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			merged = append(merged, value)
+		}
+	}
+	appendMatchers(left)
+	appendMatchers(right)
+	return merged
 }

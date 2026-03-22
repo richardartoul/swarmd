@@ -2,24 +2,28 @@ package registry
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
 // RegistrationOptions describes how a tool participates in the shared registry.
 type RegistrationOptions struct {
-	BuiltIn     bool
-	RequiredEnv []string
+	BuiltIn      bool
+	RequiredEnv  []string
+	RequiredHosts []interp.HostMatcher
 }
 
 type toolRegistration struct {
-	plugin      toolscore.ToolPlugin
-	builtIn     bool
-	requiredEnv []string
+	plugin        toolscore.ToolPlugin
+	builtIn       bool
+	requiredEnv   []string
+	requiredHosts []interp.HostMatcher
 }
 
 // ResolvedToolBinding is one fully constructed tool definition and handler pair.
@@ -55,7 +59,15 @@ func Register(plugin toolscore.ToolPlugin, opts RegistrationOptions) error {
 		return fmt.Errorf("tool plugin name %q must contain only letters, numbers, dots, underscores, or hyphens", name)
 	}
 	definition.Name = name
+	definition.NetworkScope = definition.NetworkScope.Normalized()
 	requiredEnv := normalizedRequiredEnv(opts.RequiredEnv)
+	requiredHosts, err := normalizedRequiredHosts(opts.RequiredHosts)
+	if err != nil {
+		return fmt.Errorf("tool plugin %q required hosts invalid: %w", name, err)
+	}
+	if err := validateRegistrationNetworkScope(definition, requiredHosts); err != nil {
+		return fmt.Errorf("tool plugin %q invalid: %w", name, err)
+	}
 
 	registryMu.Lock()
 	defer registryMu.Unlock()
@@ -67,8 +79,9 @@ func Register(plugin toolscore.ToolPlugin, opts RegistrationOptions) error {
 			definition: definition,
 			next:       plugin,
 		},
-		builtIn:     opts.BuiltIn,
-		requiredEnv: requiredEnv,
+		builtIn:       opts.BuiltIn,
+		requiredEnv:   requiredEnv,
+		requiredHosts: requiredHosts,
 	}
 	if opts.BuiltIn {
 		builtInToolOrder = append(builtInToolOrder, name)
@@ -97,6 +110,17 @@ func RequiredEnvForTool(name string) []string {
 		return nil
 	}
 	return slices.Clone(registration.requiredEnv)
+}
+
+// RequiredHostsForTool returns the host matchers required by one tool's scoped policy.
+func RequiredHostsForTool(name string) []interp.HostMatcher {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	registration, ok := toolRegistry[name]
+	if !ok || len(registration.requiredHosts) == 0 {
+		return nil
+	}
+	return slices.Clone(registration.requiredHosts)
 }
 
 // NormalizeConfiguredTools validates and normalizes explicit custom tool references.
@@ -135,8 +159,8 @@ func NormalizeConfiguredTools(tools []toolscore.ConfiguredTool) ([]toolscore.Con
 }
 
 // ResolveToolDefinitions returns the built-in tool surface plus any explicitly configured custom tools.
-func ResolveToolDefinitions(tools []toolscore.ConfiguredTool, networkEnabled bool) ([]toolscore.ToolDefinition, error) {
-	bindings, err := ResolveToolBindings(tools, networkEnabled)
+func ResolveToolDefinitions(tools []toolscore.ConfiguredTool, globalReachableHosts []interp.HostMatcher) ([]toolscore.ToolDefinition, error) {
+	bindings, err := ResolveToolBindings(tools, globalReachableHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +172,8 @@ func ResolveToolDefinitions(tools []toolscore.ConfiguredTool, networkEnabled boo
 }
 
 // ResolveActionSchema returns a stable, JSON-marshalable schema document for the tool surface exposed to an agent.
-func ResolveActionSchema(tools []toolscore.ConfiguredTool, networkEnabled bool) (map[string]any, error) {
-	definitions, err := ResolveToolDefinitions(tools, networkEnabled)
+func ResolveActionSchema(tools []toolscore.ConfiguredTool, globalReachableHosts []interp.HostMatcher) (map[string]any, error) {
+	definitions, err := ResolveToolDefinitions(tools, globalReachableHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -164,8 +188,8 @@ func ResolveActionSchema(tools []toolscore.ConfiguredTool, networkEnabled bool) 
 }
 
 // ResolveToolBindings returns fully constructed built-in and explicit tool bindings.
-func ResolveToolBindings(tools []toolscore.ConfiguredTool, networkEnabled bool) ([]ResolvedToolBinding, error) {
-	explicitTools, err := resolveCustomToolBindings(tools, networkEnabled)
+func ResolveToolBindings(tools []toolscore.ConfiguredTool, globalReachableHosts []interp.HostMatcher) ([]ResolvedToolBinding, error) {
+	explicitTools, err := resolveCustomToolBindings(tools, globalReachableHosts)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +200,7 @@ func ResolveToolBindings(tools []toolscore.ConfiguredTool, networkEnabled bool) 
 			return nil, fmt.Errorf("built-in tool %q is not registered", name)
 		}
 		definition := registration.plugin.Definition()
-		if definition.RequiresNetwork && !networkEnabled {
+		if !toolIsAvailable(definition.NetworkScope, registration.requiredHosts, globalReachableHosts) {
 			continue
 		}
 		handler, err := registration.plugin.NewHandler(toolscore.ConfiguredTool{ID: name})
@@ -192,7 +216,7 @@ func ResolveToolBindings(tools []toolscore.ConfiguredTool, networkEnabled bool) 
 	return bindings, nil
 }
 
-func resolveCustomToolBindings(tools []toolscore.ConfiguredTool, networkEnabled bool) ([]ResolvedToolBinding, error) {
+func resolveCustomToolBindings(tools []toolscore.ConfiguredTool, globalReachableHosts []interp.HostMatcher) ([]ResolvedToolBinding, error) {
 	normalized, err := NormalizeConfiguredTools(tools)
 	if err != nil {
 		return nil, err
@@ -204,8 +228,8 @@ func resolveCustomToolBindings(tools []toolscore.ConfiguredTool, networkEnabled 
 			return nil, fmt.Errorf("tool %q is not registered", tool.ID)
 		}
 		definition := registration.plugin.Definition()
-		if definition.RequiresNetwork && !networkEnabled {
-			return nil, fmt.Errorf("tool %q requires network but network.reachable_hosts is not configured", tool.ID)
+		if !toolIsAvailable(definition.NetworkScope, registration.requiredHosts, globalReachableHosts) {
+			return nil, unavailableToolNetworkScopeError(tool.ID, definition.NetworkScope)
 		}
 		handler, err := registration.plugin.NewHandler(tool)
 		if err != nil {
@@ -247,6 +271,96 @@ func normalizedRequiredEnv(values []string) []string {
 		return nil
 	}
 	return normalized
+}
+
+func normalizedRequiredHosts(values []interp.HostMatcher) ([]interp.HostMatcher, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]interp.HostMatcher, 0, len(values))
+	for _, value := range values {
+		matcher := interp.HostMatcher{
+			Glob:  strings.TrimSpace(value.Glob),
+			Regex: strings.TrimSpace(value.Regex),
+		}
+		hasGlob := matcher.Glob != ""
+		hasRegex := matcher.Regex != ""
+		if hasGlob == hasRegex {
+			return nil, fmt.Errorf("each host matcher must set exactly one of glob or regex")
+		}
+		if hasGlob {
+			if err := interp.ValidateHostPattern(matcher.Glob); err != nil {
+				return nil, fmt.Errorf("glob %q invalid: %w", matcher.Glob, err)
+			}
+			if _, err := path.Match(matcher.Glob, "example.test"); err != nil {
+				return nil, fmt.Errorf("glob %q invalid: %w", matcher.Glob, err)
+			}
+		} else {
+			if _, err := interp.NormalizeHostRegexPattern(matcher.Regex); err != nil {
+				return nil, fmt.Errorf("regex %q invalid: %w", matcher.Regex, err)
+			}
+		}
+		key := matcher.Glob
+		if key != "" {
+			key = "glob:" + key
+		} else {
+			key = "regex:" + matcher.Regex
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, matcher)
+	}
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+	return normalized, nil
+}
+
+func validateRegistrationNetworkScope(definition toolscore.ToolDefinition, requiredHosts []interp.HostMatcher) error {
+	switch definition.NetworkScope.Normalized() {
+	case toolscore.ToolNetworkScopeNone:
+		if len(requiredHosts) > 0 {
+			return fmt.Errorf(`network_scope "none" must not declare required hosts`)
+		}
+	case toolscore.ToolNetworkScopeGlobal:
+		if len(requiredHosts) > 0 {
+			return fmt.Errorf(`network_scope "global" must not declare required hosts`)
+		}
+	case toolscore.ToolNetworkScopeScoped:
+		if len(requiredHosts) == 0 {
+			return fmt.Errorf(`network_scope "scoped" must declare at least one required host`)
+		}
+	default:
+		return fmt.Errorf("unsupported network_scope %q", definition.NetworkScope)
+	}
+	return nil
+}
+
+func toolIsAvailable(scope toolscore.ToolNetworkScope, requiredHosts, globalReachableHosts []interp.HostMatcher) bool {
+	switch scope.Normalized() {
+	case toolscore.ToolNetworkScopeNone:
+		return true
+	case toolscore.ToolNetworkScopeGlobal:
+		return len(globalReachableHosts) > 0
+	case toolscore.ToolNetworkScopeScoped:
+		return len(requiredHosts) > 0
+	default:
+		return false
+	}
+}
+
+func unavailableToolNetworkScopeError(toolID string, scope toolscore.ToolNetworkScope) error {
+	switch scope.Normalized() {
+	case toolscore.ToolNetworkScopeGlobal:
+		return fmt.Errorf("tool %q requires network.reachable_hosts to be configured", toolID)
+	case toolscore.ToolNetworkScopeScoped:
+		return fmt.Errorf("tool %q has no scoped host policy", toolID)
+	default:
+		return fmt.Errorf("tool %q is not available", toolID)
+	}
 }
 
 type wrappedToolPlugin struct {

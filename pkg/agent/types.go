@@ -78,14 +78,16 @@ type Config struct {
 	// Root constructs a default disk-backed sandbox filesystem when FileSystem is nil.
 	Root string
 
-	// NetworkDialer enables interpreter-owned outbound networking such as curl.
-	// If nil, shell steps reject all network dialing.
+	// NetworkDialer is the raw outbound dialer used to construct host-scoped
+	// clients for shell commands and structured tools. If nil, any tool or shell
+	// path that needs outbound networking will reject dialing.
 	NetworkDialer interp.NetworkDialer
 
-	// NetworkEnabled controls whether network-requiring sandbox commands are
-	// surfaced in prompt and discovery layers. If false, it falls back to whether
-	// NetworkDialer was provided.
-	NetworkEnabled bool
+	// GlobalReachableHosts controls outbound networking for shell commands and
+	// generic URL tools such as curl, http_request, read_web_page, and web_search.
+	// Structured tools with fixed endpoints may carry their own scoped hosts in
+	// registry metadata and do not need to be repeated here.
+	GlobalReachableHosts []interp.HostMatcher
 
 	// HTTPHeaders are automatically applied to outbound interpreter-owned HTTP
 	// requests such as curl when their domain matchers apply.
@@ -191,6 +193,14 @@ const (
 	ToolBoundaryKindLocalShell = toolscore.ToolBoundaryKindLocalShell
 	ToolBoundaryKindWebSearch  = toolscore.ToolBoundaryKindWebSearch
 	ToolBoundaryKindToolSearch = toolscore.ToolBoundaryKindToolSearch
+)
+
+type ToolNetworkScope = toolscore.ToolNetworkScope
+
+const (
+	ToolNetworkScopeNone   = toolscore.ToolNetworkScopeNone
+	ToolNetworkScopeGlobal = toolscore.ToolNetworkScopeGlobal
+	ToolNetworkScopeScoped = toolscore.ToolNetworkScopeScoped
 )
 
 type ToolInterop = toolscore.ToolInterop

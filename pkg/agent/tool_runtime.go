@@ -53,8 +53,9 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 		return step, nil
 	}
 	toolCtx := runtimeToolContext{
-		agent:   a,
-		stepNum: stepIndex,
+		agent:    a,
+		stepNum:  stepIndex,
+		toolName: decision.Tool.Name,
 	}
 	err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool)
 	if err != nil {

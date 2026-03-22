@@ -1620,6 +1620,9 @@ func TestRuntimeManagerAddsHTTPHeaderGuidanceToSystemPrompt(t *testing.T) {
 		MaxAttempts:  3,
 		AllowNetwork: true,
 		Config: managedAgentRuntimeConfig{
+			Network: managedAgentNetworkConfig{
+				ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
+			},
 			HTTP: managedAgentHTTPConfig{
 				Headers: []managedAgentHTTPHeader{{
 					Name:  "Authorization",

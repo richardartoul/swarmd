@@ -118,7 +118,7 @@ These fields define what model the runtime uses and what instructions the agent 
 Behavior notes:
 
 - the YAML `prompt` is not the entire runtime prompt; the runtime prepends built-in shell-agent instructions, then appends your text under an agent-specific section
-- `network.reachable_hosts` changes both runtime behavior and the built-in prompt; network-capable commands and tools only appear when that block is configured
+- `network.reachable_hosts` changes both runtime behavior and the built-in prompt for shell access plus the global network tools; scoped custom tools can still appear with their own declared host policies
 
 ## Sandboxed Filesystem
 
@@ -192,7 +192,7 @@ Recognized capability fields:
 | `capabilities.allow_message_send` | bool | `false` | Allows a managed agent to enqueue same-namespace outbox messages by returning an `outbox` array in its final result envelope. |
 
 Built-in structured tools such as `list_dir`, `read_file`, `grep_files`, `apply_patch`, and `run_shell` are always available by default, subject to capability gates such as networking.
-When `network.reachable_hosts` is configured, built-in tools such as `http_request`, `read_web_page`, and `web_search` are also surfaced.
+When `network.reachable_hosts` is configured, the global network tools `http_request`, `read_web_page`, and `web_search` are also surfaced.
 
 Outbound networking is configured through the top-level `network` block:
 
@@ -212,6 +212,8 @@ Rules:
 - regex values may omit leading `^` and trailing `$`; the runtime anchors them internally
 - use `glob: "*"` when you intentionally want unrestricted host reachability
 
+`network.reachable_hosts` is the global host policy for shell access and the global network tools. Custom tools can instead register scoped host policies; when such a tool is enabled, its declared hosts are automatically available only to that tool's HTTP client and are not merged into shell access or unrelated tools.
+
 The YAML `tools` field is only for explicit custom structured tools compiled into the current swarmd binary. Each entry may be either:
 
 - a bare string id for a no-config custom tool
@@ -219,17 +221,17 @@ The YAML `tools` field is only for explicit custom structured tools compiled int
 
 The stock swarmd binary currently exposes these custom tools:
 
-| Tool ID | Requires network | Tool config | Effect |
+| Tool ID | Network policy | Tool config | Effect |
 | --- | --- | --- | --- |
-| `server_log` | No | none | Writes a message to the server logs with namespace and agent context attached automatically. |
-| `slack_post` | Yes | `default_channel` | Posts a new Slack message or thread reply. |
-| `slack_dm` | Yes | none | Sends a direct message to one Slack user by `user_id` or `email`. |
-| `slack_replies` | Yes | `default_channel` | Reads replies from one Slack thread, optionally after a cursor timestamp. |
-| `slack_channel_history` | Yes | `default_channel` | Reads channel timeline messages newer than a timestamp without expanding thread replies automatically. |
-| `datadog_read` | Yes | none | Reads incidents, monitors, dashboards, metrics, log search results, log aggregates, and events through the server-owned Datadog client. |
-| `github_read_repo` | Yes | none | Reads repository metadata, code search, tree or file contents, branches, and rulesets through the server-owned GitHub client. |
-| `github_read_reviews` | Yes | none | Reads issues, pull requests, comments, reviews, commits, and comparisons through the server-owned GitHub client. |
-| `github_read_ci` | Yes | none | Reads statuses, checks, workflows, runs, jobs, logs, and artifacts through the server-owned GitHub client. |
+| `server_log` | none | none | Writes a message to the server logs with namespace and agent context attached automatically. |
+| `slack_post` | scoped auto-allow | `default_channel` | Posts a new Slack message or thread reply. |
+| `slack_dm` | scoped auto-allow | none | Sends a direct message to one Slack user by `user_id` or `email`. |
+| `slack_replies` | scoped auto-allow | `default_channel` | Reads replies from one Slack thread, optionally after a cursor timestamp. |
+| `slack_channel_history` | scoped auto-allow | `default_channel` | Reads channel timeline messages newer than a timestamp without expanding thread replies automatically. |
+| `datadog_read` | scoped auto-allow | none | Reads incidents, monitors, dashboards, metrics, log search results, log aggregates, and events through the server-owned Datadog client. |
+| `github_read_repo` | scoped auto-allow | none | Reads repository metadata, code search, tree or file contents, branches, and rulesets through the server-owned GitHub client. |
+| `github_read_reviews` | scoped auto-allow | none | Reads issues, pull requests, comments, reviews, commits, and comparisons through the server-owned GitHub client. |
+| `github_read_ci` | scoped auto-allow | none | Reads statuses, checks, workflows, runs, jobs, logs, and artifacts through the server-owned GitHub client. |
 
 Tool notes:
 
@@ -244,17 +246,17 @@ Tool notes:
 - Slack read tools require a token with the relevant `*:history` scopes plus access to the target conversation; a user token can read public channels and any private conversation the user is a member of
 - `slack_dm` needs a token that can open DMs and post messages, which typically means `im:write` plus `chat:write`; when using `email`, Slack also requires `users:read.email` and Slack recommends requesting it alongside `users:read`
 - `slack_dm` caches successful normalized `email` -> `user_id` lookups in memory without eviction; cached mappings remain until the server process restarts
-- `slack_post`, `slack_dm`, `slack_replies`, `slack_channel_history`, and `datadog_read` all require `network.reachable_hosts`
+- `slack_post`, `slack_dm`, `slack_replies`, `slack_channel_history`, and `datadog_read` each auto-allow the tool-owned hosts they need when the tool is enabled; no extra `network.reachable_hosts` entry is required unless you also want shell or global-tool network access
 - `datadog_read` is a curated read-only tool, not a generic Datadog API proxy
 - `query_metrics`, `search_logs`, and `aggregate_logs` require a `query` argument
 - `search_logs` and `aggregate_logs` both accept optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
 - `aggregate_logs` also accepts optional `indexes`, `compute`, `group_by`, and `page_cursor` inputs for Datadog log analytics queries
-- `github_read_repo`, `github_read_reviews`, and `github_read_ci` all require `GITHUB_TOKEN` plus `network.reachable_hosts`
+- `github_read_repo`, `github_read_reviews`, and `github_read_ci` require `GITHUB_TOKEN`; they auto-allow the GitHub hosts they need when the tool is enabled
 - every GitHub tool call requires explicit `action`, `owner`, and `repo` fields
 - `github_read_repo` is repository-scoped only; it does not search across the whole of GitHub
 - `github_read_repo.search_code` is discovery-only, remains scoped to the repository default branch, and should usually be followed by `get_file_contents` or `list_tree`
 - `github_read_ci` log and artifact download actions write files under `github/actions/...` inside the agent root instead of inlining large payloads into the prompt
-- `github_read_ci` download actions may follow GitHub-issued redirects, so agents that need logs or artifacts may need broader `network.reachable_hosts` than `api.github.com` alone
+- `github_read_ci` download actions already declare the extra GitHub redirect and storage hosts they need; you only need `network.reachable_hosts` if you also want shell access or the global network tools
 - `github_read_security`, `github_read_org`, and `github_write` are reserved follow-on tool IDs rather than stock tools in the current binary; security reads will need broader `security_events`-style access, org reads will need broader `read:org`-style access, and writes stay separate because they are mutating
 
 Example:
@@ -265,9 +267,6 @@ model:
   name: gpt-5
 prompt: |
   Watch the release channel for new deployment messages and summarize anything that looks risky.
-network:
-  reachable_hosts:
-    - glob: slack.com
 tools:
   - id: slack_channel_history
     config:
@@ -328,7 +327,7 @@ Rules:
 - built-in tools must not be listed in `tools`; they are already available
 - disabled entries (`enabled: false`) are ignored during normalization
 - unknown or duplicate custom tool ids fail validation
-- if a custom tool requires network access, configure `network.reachable_hosts`
+- if a custom tool should share shell/global network policy, configure `network.reachable_hosts`; if it should own a fixed host set, register it as a scoped tool with required hosts instead
 
 Managed HTTP headers are configured through `http.headers` and are injected into matching outbound interpreter-owned requests such as `curl`.
 
@@ -346,7 +345,7 @@ Regex matchers may omit leading `^` and trailing `$`; the runtime anchors them i
 
 ### Network Sandboxing Examples
 
-`swarmd` is deny-by-default. If you omit `network`, the agent gets no outbound access, and network-capable tools such as `http_request`, `read_web_page`, and `web_search` stay hidden.
+`swarmd` is deny-by-default for shell access and the global network tools. If you omit `network`, the agent gets no shell/global outbound access, and tools such as `http_request`, `read_web_page`, and `web_search` stay hidden. Scoped custom tools can still use the hosts they declare for themselves.
 
 Minimal agent with networking disabled:
 
@@ -517,6 +516,6 @@ Some YAML features depend on environment variables provided to the server proces
 ## Behavior Notes
 
 - built-in structured tools are always available unless gated by capabilities such as networking; use `tools` only to add custom structured tools compiled into your fork
-- when `network.reachable_hosts` is configured, the agent is told that `curl` and the HTTP tool surface can use the runtime-owned network dialer, limited to the configured hosts
+- when `network.reachable_hosts` is configured, the agent is told that `curl` and the global HTTP tool surface can use the runtime-owned network dialer, limited to the configured hosts; scoped custom-tool hosts are kept separate from that global policy
 - `server_log`, `slack_post`, `slack_replies`, and `slack_channel_history` are normal structured tools; they appear in the model-facing tool surface rather than as shell commands
 - during sync, schedules for an agent are deleted and recreated from YAML, so set `schedules[].id` explicitly if you rely on stable schedule IDs

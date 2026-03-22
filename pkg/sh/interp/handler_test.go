@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/richardartoul/swarmd/pkg/sh/expand"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	"github.com/richardartoul/swarmd/pkg/sh/moreinterp/coreutils"
 	"github.com/richardartoul/swarmd/pkg/sh/syntax"
@@ -467,6 +469,30 @@ func TestRunnerHandlers(t *testing.T) {
 				t.Fatalf("want:\n%q\ngot:\n%q", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestRunnerUsesConfiguredFSForTempFIFOLookalikes(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	lookalike := filepath.Join(tmpDir, "sh-interp-lookalike")
+	file := parse(t, nil, "echo $(<"+lookalike+")")
+	var cb concBuffer
+	r, err := interp.New(
+		interp.FileSystem(mockFileFS{}),
+		interp.Env(expand.ListEnviron("TMPDIR="+tmpDir)),
+		interp.StdIO(nil, &cb, &cb),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Run(context.Background(), file); err != nil {
+		fmt.Fprintf(&cb, "Runner.Run error: %v", err)
+	}
+	want := fmt.Sprintf("body of %s\n", lookalike)
+	if got := cb.String(); got != want {
+		t.Fatalf("want:\n%q\ngot:\n%q", want, got)
 	}
 }
 

@@ -23,8 +23,9 @@ type ToolHandlerFunc = toolscore.ToolHandlerFunc
 type ToolPlugin = toolscore.ToolPlugin
 
 type runtimeToolContext struct {
-	agent   *Agent
-	stepNum int
+	agent    *Agent
+	stepNum  int
+	toolName string
 }
 
 // WorkingDir returns the sandbox working directory for the current step.
@@ -51,20 +52,12 @@ func (c runtimeToolContext) ResolvePath(path string) (string, error) {
 	return c.agent.resolveToolPath(path)
 }
 
-// NetworkEnabled reports whether runtime-owned network access is enabled.
-func (c runtimeToolContext) NetworkEnabled() bool {
-	return c.agent != nil && c.agent.networkEnabled
-}
-
-// HTTPClient returns an HTTP client backed by the runtime-owned dialer and header rules.
+// HTTPClient returns an HTTP client backed by the current tool's effective host policy.
 func (c runtimeToolContext) HTTPClient(opts ToolHTTPClientOptions) *http.Client {
-	if c.agent == nil || c.agent.httpClientFactory == nil {
+	if c.agent == nil {
 		return nil
 	}
-	return c.agent.httpClientFactory.NewClient(interp.HTTPClientOptions{
-		ConnectTimeout:  opts.ConnectTimeout,
-		FollowRedirects: opts.FollowRedirects,
-	})
+	return c.agent.toolHTTPClient(c.toolName, opts)
 }
 
 // RuntimeData returns host-owned, per-agent runtime data that structured tool handlers can type-assert.
@@ -83,10 +76,10 @@ func (c runtimeToolContext) StepTimeout() time.Duration {
 }
 
 func (c runtimeToolContext) SearchWeb(ctx context.Context, query string, limit int) (toolscore.WebSearchResponse, error) {
-	if c.agent == nil || c.agent.webSearchBackend == nil {
+	if c.agent == nil || c.agent.webSearchBackend == nil || c.agent.globalHTTPClientFactory == nil {
 		return toolscore.WebSearchResponse{}, fmt.Errorf("web_search backend is not configured")
 	}
-	response, err := c.agent.webSearchBackend.Search(ctx, c.agent.httpClientFactory, query, limit)
+	response, err := c.agent.webSearchBackend.Search(ctx, c.agent.globalHTTPClientFactory, query, limit)
 	if err != nil {
 		return toolscore.WebSearchResponse{}, err
 	}
@@ -155,15 +148,15 @@ func NormalizeConfiguredTools(tools []ConfiguredTool) ([]ConfiguredTool, error) 
 }
 
 // ResolveToolDefinitions returns the built-in tool surface plus any explicitly configured custom tools.
-func ResolveToolDefinitions(tools []ConfiguredTool, networkEnabled bool) ([]ToolDefinition, error) {
-	return toolregistry.ResolveToolDefinitions(tools, networkEnabled)
+func ResolveToolDefinitions(tools []ConfiguredTool, globalReachableHosts []interp.HostMatcher) ([]ToolDefinition, error) {
+	return toolregistry.ResolveToolDefinitions(tools, globalReachableHosts)
 }
 
 // ResolveActionSchema returns a stable, JSON-marshalable schema document for the tool surface exposed to an agent.
-func ResolveActionSchema(tools []ConfiguredTool, networkEnabled bool) (map[string]any, error) {
-	return toolregistry.ResolveActionSchema(tools, networkEnabled)
+func ResolveActionSchema(tools []ConfiguredTool, globalReachableHosts []interp.HostMatcher) (map[string]any, error) {
+	return toolregistry.ResolveActionSchema(tools, globalReachableHosts)
 }
 
-func resolveToolBindings(tools []ConfiguredTool, networkEnabled bool) ([]toolregistry.ResolvedToolBinding, error) {
-	return toolregistry.ResolveToolBindings(tools, networkEnabled)
+func resolveToolBindings(tools []ConfiguredTool, globalReachableHosts []interp.HostMatcher) ([]toolregistry.ResolvedToolBinding, error) {
+	return toolregistry.ResolveToolBindings(tools, globalReachableHosts)
 }

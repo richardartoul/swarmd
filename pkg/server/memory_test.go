@@ -54,7 +54,9 @@ func TestComposeManagedSystemPromptIncludesHTTPHeaderGuidance(t *testing.T) {
 			AllowNetwork: true,
 		},
 		SystemPrompt: "Handle the current trigger carefully.",
-	}, nil, AgentMemorySpec{Disable: true}, nil, managedAgentNetworkConfig{}, []managedAgentHTTPHeader{{
+	}, nil, AgentMemorySpec{Disable: true}, nil, managedAgentNetworkConfig{
+		ReachableHosts: []managedAgentHostMatcher{{Glob: "*"}},
+	}, []managedAgentHTTPHeader{{
 		Name:  "Authorization",
 		Value: &value,
 		Domains: []managedAgentHTTPDomainMatcher{{

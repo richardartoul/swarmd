@@ -57,4 +57,4 @@ An example that configures `network.reachable_hosts` and uses the built-in `http
 
 ### [github-monorepo-assistant](github-monorepo-assistant/README.md)
 
-A GitHub custom-tool example that combines `github_read_repo`, `github_read_reviews`, and `github_read_ci` to inspect one shared repository and write a summary into a sandbox directory.
+A GitHub custom-tool example that combines `github_read_repo`, `github_read_reviews`, and `github_read_ci` to inspect one shared repository and write a summary into a sandbox directory, using tool-scoped GitHub host policies instead of a global network allowlist.

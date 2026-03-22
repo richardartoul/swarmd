@@ -170,10 +170,14 @@ func (opts runtimeOptions) agentConfig(
 	if err != nil {
 		return agent.Config{}, err
 	}
+	var globalReachableHosts []interp.HostMatcher
+	if opts.networkDialer != nil {
+		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
+	}
 	cfg := agent.Config{
 		FileSystem:                   fsys,
 		NetworkDialer:                opts.networkDialer,
-		NetworkEnabled:               opts.networkDialer != nil,
+		GlobalReachableHosts:         globalReachableHosts,
 		Queue:                        queue,
 		Driver:                       driver,
 		OnStep:                       onStep,
@@ -182,7 +186,7 @@ func (opts runtimeOptions) agentConfig(
 		StepTimeout:                  opts.stepTimeout,
 		MaxOutputBytes:               opts.maxOutputBytes,
 		PreserveStateBetweenTriggers: opts.preserveState,
-		SystemPrompt:                 agent.ComposeSystemPrompt(opts.systemPrompt, opts.networkDialer != nil),
+		SystemPrompt:                 agent.ComposeSystemPrompt(opts.systemPrompt),
 		Stdout:                       stdout,
 		Stderr:                       stderr,
 	}
