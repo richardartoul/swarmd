@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
@@ -281,7 +282,7 @@ func TestTUIWheelScrollsDetailPaneUnderMouse(t *testing.T) {
 	model.height = 30
 	model.resize()
 	model.focus = tuiPaneList
-	model.setDetailContent(strings.TrimSpace(strings.Repeat("line\n", 64)))
+	model.setDetailContent(strings.TrimSpace(strings.Repeat("line\n", 64)), false)
 
 	listWidth, _, _ := model.paneDimensions()
 	mouseY := lipgloss.Height(model.headerView()) + 1
@@ -323,7 +324,7 @@ func TestTUIManualTriggerAllowsEmptyPrompt(t *testing.T) {
 	model.width = 120
 	model.height = 30
 	model.resize()
-	if err := model.switchSection(sectionIndex(tuiSectionRuns)); err != nil {
+	if _, err := model.switchSection(sectionIndex(tuiSectionRuns)); err != nil {
 		t.Fatalf("switchSection(runs) error = %v", err)
 	}
 
@@ -476,6 +477,186 @@ func TestTUIManualTriggerWorksOnScopedRunsPageWithoutRuns(t *testing.T) {
 	}
 	if messages[0].MaxAttempts != 7 {
 		t.Fatalf("MaxAttempts = %d, want %d", messages[0].MaxAttempts, 7)
+	}
+}
+
+func TestTUIRefreshPreservesSelectionAndFilter(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := seedCommandRunFixture(t)
+	store, err := cpstore.OpenReadOnly(ctx, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("cpstore.OpenReadOnly() error = %v", err)
+	}
+	defer store.Close()
+
+	model, err := newTUIModel(ctx, store, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("newTUIModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.resize()
+
+	cmd, err := model.switchSection(sectionIndex(tuiSectionRuns))
+	if err != nil {
+		t.Fatalf("switchSection(runs) error = %v", err)
+	}
+	if cmd != nil {
+		updated, next := model.Update(cmd())
+		model = updated.(tuiModel)
+		if next != nil {
+			updated, _ = model.Update(next())
+			model = updated.(tuiModel)
+		}
+	}
+
+	if len(model.list.Items()) < 1 {
+		t.Fatalf("len(list.Items()) = %d, want at least 1 run", len(model.list.Items()))
+	}
+	model.list.Select(0)
+	selected, ok := model.selectedItem()
+	if !ok {
+		t.Fatal("selectedItem() = !ok, want selected run")
+	}
+	expectedKey := model.itemKey(selected)
+	model.list.SetFilterText(selected.runID)
+	model.updateListTitleForCurrentPage()
+
+	reload := model.requestPageReload("manual")
+	if reload == nil {
+		t.Fatal("requestPageReload() = nil, want reload command")
+	}
+	updated, next := model.Update(reload())
+	model = updated.(tuiModel)
+	if next != nil {
+		updated, _ = model.Update(next())
+		model = updated.(tuiModel)
+	}
+
+	if got := model.list.FilterValue(); got != selected.runID {
+		t.Fatalf("FilterValue() = %q, want %q", got, selected.runID)
+	}
+	refreshed, ok := model.selectedItem()
+	if !ok {
+		t.Fatal("selectedItem() after refresh = !ok, want preserved selection")
+	}
+	if got := model.itemKey(refreshed); got != expectedKey {
+		t.Fatalf("selected item key after refresh = %q, want %q", got, expectedKey)
+	}
+	if model.lastRefreshAt.IsZero() {
+		t.Fatal("lastRefreshAt was zero after refresh")
+	}
+}
+
+func TestTUISetDetailContentPreservesScrollOnRefresh(t *testing.T) {
+	t.Parallel()
+
+	model := tuiModel{
+		detail: viewport.New(32, 6),
+	}
+	model.detail.Width = 32
+	model.detail.Height = 6
+
+	initial := strings.TrimSpace(strings.Repeat("line\n", 40))
+	model.setDetailContent(initial, false)
+	model.detail.LineDown(4)
+	wantOffset := model.detail.YOffset
+
+	updated := strings.TrimSpace(strings.Repeat("line\n", 45))
+	model.setDetailContent(updated, true)
+	if got := model.detail.YOffset; got != wantOffset {
+		t.Fatalf("detail.YOffset after preserve refresh = %d, want %d", got, wantOffset)
+	}
+
+	model.setDetailContent(updated, false)
+	if got := model.detail.YOffset; got != 0 {
+		t.Fatalf("detail.YOffset after reset refresh = %d, want 0", got)
+	}
+}
+
+func TestTUIHeaderIncludesBreadcrumbAndAutoRefreshMeta(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := seedCommandRunFixture(t)
+	store, err := cpstore.OpenReadOnly(ctx, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("cpstore.OpenReadOnly() error = %v", err)
+	}
+	defer store.Close()
+
+	model, err := newTUIModel(ctx, store, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("newTUIModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.resize()
+
+	cmd, err := model.openAction(tuiActionEnter)
+	if err != nil {
+		t.Fatalf("openAction(enter) error = %v", err)
+	}
+	if cmd != nil {
+		updated, _ := model.Update(cmd())
+		model = updated.(tuiModel)
+	}
+
+	header := model.headerView()
+	if !strings.Contains(header, "path: Namespaces > Agents / "+fixture.namespaceID) {
+		t.Fatalf("headerView() = %q, want breadcrumb path", header)
+	}
+	if !strings.Contains(header, "auto: on/"+defaultTUIAutoRefreshInterval.String()) {
+		t.Fatalf("headerView() = %q, want auto refresh summary", header)
+	}
+}
+
+func TestTUIAliasKeysNavigateAndToggleAutoRefresh(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	fixture := seedCommandRunFixture(t)
+	store, err := cpstore.OpenReadOnly(ctx, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("cpstore.OpenReadOnly() error = %v", err)
+	}
+	defer store.Close()
+
+	model, err := newTUIModel(ctx, store, fixture.dbPath)
+	if err != nil {
+		t.Fatalf("newTUIModel() error = %v", err)
+	}
+	model.width = 120
+	model.height = 30
+	model.resize()
+
+	update := func(msg tea.Msg) {
+		updated, _ := model.Update(msg)
+		next, ok := updated.(tuiModel)
+		if !ok {
+			t.Fatalf("Update() model type = %T, want tuiModel", updated)
+		}
+		model = next
+	}
+
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'l'}})
+	if model.focus != tuiPaneDetail {
+		t.Fatalf("focus after 'l' = %v, want %v", model.focus, tuiPaneDetail)
+	}
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'h'}})
+	if model.focus != tuiPaneList {
+		t.Fatalf("focus after 'h' = %v, want %v", model.focus, tuiPaneList)
+	}
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	if model.autoRefresh {
+		t.Fatal("autoRefresh = true after 'u', want false")
+	}
+	update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	page := model.currentPage()
+	if page == nil || page.title != "Agents / "+fixture.namespaceID {
+		t.Fatalf("current page after 'o' = %#v, want Agents page", page)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
@@ -42,6 +43,7 @@ type tuiKeyMap struct {
 	selectItem  key.Binding
 	back        key.Binding
 	refresh     key.Binding
+	toggleAuto  key.Binding
 	trigger     key.Binding
 	openAgent   key.Binding
 	openMailbox key.Binding
@@ -55,13 +57,14 @@ type tuiKeyMap struct {
 
 func newTUIKeyMap() tuiKeyMap {
 	return tuiKeyMap{
-		nextSection: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next section")),
-		prevSection: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev section")),
-		focusList:   key.NewBinding(key.WithKeys("left"), key.WithHelp("left", "focus list")),
-		focusDetail: key.NewBinding(key.WithKeys("right"), key.WithHelp("right", "focus detail")),
-		selectItem:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open")),
-		back:        key.NewBinding(key.WithKeys("esc", "backspace"), key.WithHelp("esc", "back")),
-		refresh:     key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "refresh")),
+		nextSection: key.NewBinding(key.WithKeys("tab", "]"), key.WithHelp("tab ]", "next section")),
+		prevSection: key.NewBinding(key.WithKeys("shift+tab", "["), key.WithHelp("shift+tab [", "prev section")),
+		focusList:   key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("left h", "focus list")),
+		focusDetail: key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("right l", "focus detail")),
+		selectItem:  key.NewBinding(key.WithKeys("enter", "o"), key.WithHelp("enter o", "open")),
+		back:        key.NewBinding(key.WithKeys("esc", "backspace", "b"), key.WithHelp("esc b", "back")),
+		refresh:     key.NewBinding(key.WithKeys("ctrl+r", "f5"), key.WithHelp("ctrl+r", "refresh")),
+		toggleAuto:  key.NewBinding(key.WithKeys("u"), key.WithHelp("u", "auto refresh")),
 		trigger:     key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "trigger")),
 		openAgent:   key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "agent")),
 		openMailbox: key.NewBinding(key.WithKeys("m"), key.WithHelp("m", "mailbox")),
@@ -75,14 +78,15 @@ func newTUIKeyMap() tuiKeyMap {
 }
 
 func (k tuiKeyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.nextSection, k.selectItem, k.trigger, k.back, k.refresh, k.help, k.quit}
+	return []key.Binding{k.nextSection, k.selectItem, k.trigger, k.refresh, k.toggleAuto, k.back, k.quit}
 }
 
 func (k tuiKeyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.nextSection, k.prevSection, k.selectItem, k.back},
-		{k.focusList, k.focusDetail, k.trigger, k.openAgent, k.openMailbox, k.openRuns, k.openSched},
-		{k.openThread, k.openSteps, k.refresh, k.help, k.quit},
+		{k.focusList, k.focusDetail, k.trigger, k.refresh, k.toggleAuto},
+		{k.openAgent, k.openMailbox, k.openRuns, k.openSched, k.openThread, k.openSteps},
+		{k.help, k.quit},
 	}
 }
 
@@ -103,9 +107,26 @@ type tuiModel struct {
 	height         int
 	showHelp       bool
 	status         string
+	autoRefresh    bool
+	autoInterval   time.Duration
+	autoRefreshSeq int
+	pageLoading    bool
+	pageLoadSeq    int
+	pageLoadReason string
+	detailLoading  bool
+	detailLoadSeq  int
+	detailCache    map[string]string
+	currentDetail  string
+	lastRefreshAt  time.Time
 	triggering     bool
 	triggerInput   textinput.Model
 	triggerTarget  tuiTriggerTarget
+}
+
+type tuiPageApplyOptions struct {
+	preserveFilter       bool
+	preserveSelectionKey string
+	preserveDetailScroll bool
 }
 
 func newTUIModel(ctx context.Context, store *cpstore.Store, dbPath string) (tuiModel, error) {
@@ -132,6 +153,9 @@ func newTUIModel(ctx context.Context, store *cpstore.Store, dbPath string) (tuiM
 		help:         help.New(),
 		keys:         newTUIKeyMap(),
 		focus:        tuiPaneList,
+		autoRefresh:  true,
+		autoInterval: defaultTUIAutoRefreshInterval,
+		detailCache:  make(map[string]string),
 		triggerInput: newTUITriggerInput(),
 	}
 	root, err := loadTUIPage(ctx, store, tuiSectionNamespaces.rootPage())
@@ -141,11 +165,13 @@ func newTUIModel(ctx context.Context, store *cpstore.Store, dbPath string) (tuiM
 	model.stack = []tuiPage{root}
 	model.currentSection = 0
 	model.applyCurrentPage(root)
+	model.lastRefreshAt = time.Now()
+	model.syncDetailNow()
 	return model, nil
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return nil
+	return m.nextAutoRefreshCmd()
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -155,6 +181,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.resize()
 		return m, nil
+	case tuiAutoRefreshTickMsg:
+		return m.handleAutoRefreshTick(msg)
+	case tuiPageLoadedMsg:
+		return m.handlePageLoaded(msg)
+	case tuiDetailLoadedMsg:
+		return m.handleDetailLoaded(msg)
 	case tea.MouseMsg:
 		if m.triggering {
 			return m, nil
@@ -221,13 +253,24 @@ func (m tuiModel) View() string {
 func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, tea.Cmd, error) {
 	switch {
 	case directSectionKey(msg.String()):
-		return true, nil, m.switchSection(directSectionIndex(msg.String()))
+		cmd, err := m.switchSection(directSectionIndex(msg.String()))
+		return true, cmd, err
 	case key.Matches(msg, m.keys.nextSection):
-		return true, nil, m.switchSectionByOffset(1)
+		cmd, err := m.switchSectionByOffset(1)
+		return true, cmd, err
 	case key.Matches(msg, m.keys.prevSection):
-		return true, nil, m.switchSectionByOffset(-1)
+		cmd, err := m.switchSectionByOffset(-1)
+		return true, cmd, err
 	case key.Matches(msg, m.keys.refresh):
-		return true, nil, m.reloadCurrentPage()
+		return true, m.requestPageReload("manual"), nil
+	case key.Matches(msg, m.keys.toggleAuto):
+		m.autoRefresh = !m.autoRefresh
+		if m.autoRefresh {
+			m.status = fmt.Sprintf("Auto refresh enabled (%s)", m.autoInterval)
+			return true, m.nextAutoRefreshCmd(), nil
+		}
+		m.status = "Auto refresh paused"
+		return true, nil, nil
 	case key.Matches(msg, m.keys.trigger):
 		cmd, ok := m.startTriggerMode()
 		return ok, cmd, nil
@@ -241,8 +284,8 @@ func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, tea.Cmd, error) {
 		return true, nil, nil
 	case key.Matches(msg, m.keys.back) && m.list.FilterState() == list.Unfiltered:
 		if len(m.stack) > 1 {
-			m.popPage()
-			return true, nil, nil
+			cmd, err := m.popPage()
+			return true, cmd, err
 		}
 		if m.focus == tuiPaneDetail {
 			m.focus = tuiPaneList
@@ -250,19 +293,26 @@ func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, tea.Cmd, error) {
 			return true, nil, nil
 		}
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.selectItem):
-		return true, nil, m.openAction(tuiActionEnter)
+		cmd, err := m.openAction(tuiActionEnter)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openAgent):
-		return true, nil, m.openAction(tuiActionAgent)
+		cmd, err := m.openAction(tuiActionAgent)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openMailbox):
-		return true, nil, m.openAction(tuiActionMailbox)
+		cmd, err := m.openAction(tuiActionMailbox)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openRuns):
-		return true, nil, m.openAction(tuiActionRuns)
+		cmd, err := m.openAction(tuiActionRuns)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openSched):
-		return true, nil, m.openAction(tuiActionSchedules)
+		cmd, err := m.openAction(tuiActionSchedules)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openThread):
-		return true, nil, m.openAction(tuiActionThread)
+		cmd, err := m.openAction(tuiActionThread)
+		return true, cmd, err
 	case m.focus == tuiPaneList && key.Matches(msg, m.keys.openSteps):
-		return true, nil, m.openAction(tuiActionSteps)
+		cmd, err := m.openAction(tuiActionSteps)
+		return true, cmd, err
 	case m.focus == tuiPaneDetail && msg.String() == "/":
 		m.focus = tuiPaneList
 		m.status = ""
@@ -309,81 +359,102 @@ func (m *tuiModel) updateMouse(msg tea.MouseMsg) tea.Cmd {
 	return m.updateList(msg)
 }
 
-func (m *tuiModel) switchSectionByOffset(delta int) error {
+func (m *tuiModel) switchSectionByOffset(delta int) (tea.Cmd, error) {
 	next := (m.currentSection + delta + len(m.sections)) % len(m.sections)
 	return m.switchSection(next)
 }
 
-func (m *tuiModel) switchSection(index int) error {
+func (m *tuiModel) switchSection(index int) (tea.Cmd, error) {
 	if index < 0 || index >= len(m.sections) {
-		return fmt.Errorf("invalid section index %d", index)
+		return nil, fmt.Errorf("invalid section index %d", index)
 	}
 	page, err := loadTUIPage(m.ctx, m.store, m.sections[index].rootPage())
 	if err != nil {
-		return err
+		return nil, err
 	}
+	m.cancelPageLoad()
+	m.cancelDetailLoad()
+	m.resetDetailCache()
 	m.stack = []tuiPage{page}
 	m.currentSection = index
 	m.focus = tuiPaneList
 	m.status = ""
-	m.applyCurrentPage(page)
-	return nil
+	m.lastRefreshAt = time.Now()
+	return m.applyCurrentPage(page), nil
 }
 
-func (m *tuiModel) reloadCurrentPage() error {
+func (m *tuiModel) requestPageReload(reason string) tea.Cmd {
 	page := m.currentPage()
-	if page == nil {
+	if page == nil || m.pageLoading {
 		return nil
 	}
-	page.cursor = m.list.Index()
-	loaded, err := loadTUIPage(m.ctx, m.store, *page)
-	if err != nil {
-		return err
+	m.pageLoading = true
+	m.pageLoadSeq++
+	m.pageLoadReason = reason
+	if reason == "manual" {
+		m.status = "Refreshing current view..."
 	}
-	m.stack[len(m.stack)-1] = loaded
-	m.status = ""
-	m.applyCurrentPage(loaded)
-	return nil
+	return loadTUIPageCmd(m.ctx, m.store, *page, m.pageLoadSeq)
 }
 
-func (m *tuiModel) openAction(action tuiNavigationAction) error {
+func (m *tuiModel) openAction(action tuiNavigationAction) (tea.Cmd, error) {
 	page := m.currentPage()
 	if page == nil {
-		return nil
+		return nil, nil
 	}
 	item, ok := m.selectedItem()
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	next, ok := nextTUIPage(*page, item, action)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	page.cursor = m.list.Index()
 	loaded, err := loadTUIPage(m.ctx, m.store, next)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	m.cancelPageLoad()
+	m.cancelDetailLoad()
+	m.resetDetailCache()
 	m.stack[len(m.stack)-1] = *page
 	m.stack = append(m.stack, loaded)
 	m.focus = tuiPaneList
 	m.status = ""
-	m.applyCurrentPage(loaded)
-	return nil
+	m.lastRefreshAt = time.Now()
+	return m.applyCurrentPage(loaded), nil
 }
 
-func (m *tuiModel) popPage() {
+func (m *tuiModel) popPage() (tea.Cmd, error) {
 	if len(m.stack) <= 1 {
-		return
+		return nil, nil
 	}
+	prev := m.stack[len(m.stack)-2]
+	loaded, err := loadTUIPage(m.ctx, m.store, prev)
+	if err != nil {
+		return nil, err
+	}
+	m.cancelPageLoad()
+	m.cancelDetailLoad()
+	m.resetDetailCache()
 	m.stack = m.stack[:len(m.stack)-1]
-	page := m.stack[len(m.stack)-1]
+	page := loaded
 	m.focus = tuiPaneList
 	m.status = ""
-	m.applyCurrentPage(page)
+	m.lastRefreshAt = time.Now()
+	return m.applyCurrentPage(page), nil
 }
 
-func (m *tuiModel) applyCurrentPage(page tuiPage) {
+func (m *tuiModel) applyCurrentPage(page tuiPage) tea.Cmd {
+	return m.applyCurrentPageWithOptions(page, tuiPageApplyOptions{})
+}
+
+func (m *tuiModel) applyCurrentPageWithOptions(page tuiPage, opts tuiPageApplyOptions) tea.Cmd {
+	filterText := ""
+	if opts.preserveFilter {
+		filterText = strings.TrimSpace(m.list.FilterValue())
+	}
 	page.cursor = page.clampCursor()
 	if len(m.stack) == 0 {
 		m.stack = []tuiPage{page}
@@ -391,15 +462,15 @@ func (m *tuiModel) applyCurrentPage(page tuiPage) {
 		m.stack[len(m.stack)-1] = page
 	}
 	m.currentSection = sectionIndex(page.section)
-	m.list.ResetFilter()
-	m.list.Title = page.title
 	_ = m.list.SetItems(page.items)
-	if len(page.items) > 0 {
-		m.list.Select(page.cursor)
+	if opts.preserveFilter && filterText != "" {
+		m.list.SetFilterText(filterText)
 	} else {
-		m.list.Select(0)
+		m.list.ResetFilter()
 	}
-	m.syncDetail()
+	m.selectVisibleItem(page, opts.preserveSelectionKey)
+	m.updateListTitle(page)
+	return m.syncDetail(opts.preserveDetailScroll)
 }
 
 func (m *tuiModel) captureCursor() {
@@ -410,29 +481,73 @@ func (m *tuiModel) captureCursor() {
 	page.cursor = m.list.Index()
 }
 
-func (m *tuiModel) syncDetail() {
+func (m *tuiModel) syncDetailNow() {
 	page := m.currentPage()
 	if page == nil {
-		m.setDetailContent("No page selected.")
+		m.currentDetail = ""
+		m.detailLoading = false
+		m.setDetailContent("No page selected.", false)
 		return
 	}
 	item, ok := m.selectedItem()
 	if !ok {
-		m.setDetailContent(page.title + "\n\n" + page.empty)
+		m.currentDetail = ""
+		m.detailLoading = false
+		m.setDetailContent(page.title+"\n\n"+page.empty, false)
 		return
 	}
+	key := m.itemKey(item)
 	detail, err := renderTUIDetail(m.ctx, m.store, *page, item)
 	if err != nil {
-		m.setDetailContent(page.title + "\n\nError:\n" + err.Error())
+		m.currentDetail = key
+		m.detailLoading = false
+		m.setDetailContent(page.title+"\n\nError:\n"+err.Error(), false)
 		return
 	}
-	m.setDetailContent(detail)
+	m.currentDetail = key
+	m.detailLoading = false
+	m.detailCache[key] = detail
+	m.setDetailContent(detail, false)
 }
 
-func (m *tuiModel) setDetailContent(detail string) {
+func (m *tuiModel) syncDetail(preserveScroll bool) tea.Cmd {
+	page := m.currentPage()
+	if page == nil {
+		m.currentDetail = ""
+		m.detailLoading = false
+		m.setDetailContent("No page selected.", false)
+		return nil
+	}
+	item, ok := m.selectedItem()
+	if !ok {
+		m.currentDetail = ""
+		m.detailLoading = false
+		m.setDetailContent(page.title+"\n\n"+page.empty, false)
+		return nil
+	}
+	key := m.itemKey(item)
+	if detail, ok := m.detailCache[key]; ok {
+		m.currentDetail = key
+		m.detailLoading = false
+		m.setDetailContent(detail, preserveScroll)
+		return nil
+	}
+	preserveScroll = preserveScroll && m.currentDetail == key && strings.TrimSpace(m.detailRaw) != ""
+	m.currentDetail = key
+	m.detailLoading = true
+	m.detailLoadSeq++
+	if !preserveScroll {
+		m.setDetailContent(m.loadingDetailText(*page, item), false)
+	}
+	return loadTUIDetailCmd(m.ctx, m.store, *page, item, m.detailLoadSeq, key, preserveScroll)
+}
+
+func (m *tuiModel) setDetailContent(detail string, preserveScroll bool) {
 	m.detailRaw = detail
 	m.refreshDetailContent()
-	m.detail.GotoTop()
+	if !preserveScroll {
+		m.detail.GotoTop()
+	}
 }
 
 func (m *tuiModel) currentPage() *tuiPage {
@@ -454,12 +569,14 @@ func (m tuiModel) selectedItem() (tuiItem, bool) {
 func (m *tuiModel) updateList(msg tea.Msg) tea.Cmd {
 	prevIndex := m.list.Index()
 	prevFilter := m.list.FilterValue()
+	prevFilterState := m.list.FilterState()
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
-	if prevIndex != m.list.Index() || prevFilter != m.list.FilterValue() {
+	if prevIndex != m.list.Index() || prevFilter != m.list.FilterValue() || prevFilterState != m.list.FilterState() {
 		m.status = ""
 		m.captureCursor()
-		m.syncDetail()
+		m.updateListTitleForCurrentPage()
+		return tea.Batch(cmd, m.syncDetail(false))
 	}
 	return cmd
 }
@@ -520,15 +637,21 @@ func (m tuiModel) headerView() string {
 		}
 		tabs = append(tabs, inactiveTab.Render(label))
 	}
-	title := ""
-	if page := m.currentPage(); page != nil {
-		title = page.title
+	meta := []string{
+		fmt.Sprintf("focus: %s", m.focus.label()),
+		"auto: " + m.autoRefreshSummary(),
 	}
-	meta := fmt.Sprintf("focus: %s | db: %s", m.focus.label(), m.dbPath)
+	if !m.lastRefreshAt.IsZero() {
+		meta = append(meta, "updated: "+m.lastRefreshAt.Format("15:04:05"))
+	}
+	if loading := m.loadingSummary(); loading != "" {
+		meta = append(meta, loading)
+	}
+	meta = append(meta, "db: "+m.dbPath)
 	return strings.Join([]string{
 		lipgloss.JoinHorizontal(lipgloss.Top, tabs...),
-		title,
-		meta,
+		m.breadcrumbView(),
+		strings.Join(meta, " | "),
 	}, "\n")
 }
 
@@ -550,21 +673,32 @@ func (m tuiModel) statusLine() string {
 	if strings.TrimSpace(m.status) != "" {
 		return m.status
 	}
-	status := fmt.Sprintf("focus=%s", m.focus.label())
+	status := []string{fmt.Sprintf("focus=%s", m.focus.label())}
+	if visible := len(m.list.VisibleItems()); visible > 0 {
+		status = append(status, fmt.Sprintf("item=%d/%d", m.list.Index()+1, visible))
+	}
+	if total := len(m.list.Items()); total > 0 && total != len(m.list.VisibleItems()) {
+		status = append(status, fmt.Sprintf("total=%d", total))
+	}
 	if page := m.currentPage(); page != nil {
 		if item, ok := m.selectedItem(); ok {
 			actions := availableTUIActions(*page, item)
 			if len(actions) > 0 {
-				status += " | shortcuts: " + strings.Join(actions, " ")
+				status = append(status, "shortcuts: "+strings.Join(actions, " "))
 			}
 		}
 	}
-	if m.list.FilterState() == list.Filtering {
-		status += " | filtering list"
-	} else if m.list.IsFiltered() {
-		status += fmt.Sprintf(" | filter=%q", m.list.FilterValue())
+	if m.pageLoading {
+		status = append(status, "refreshing view")
+	} else if m.detailLoading {
+		status = append(status, "loading details")
 	}
-	return status
+	if m.list.FilterState() == list.Filtering {
+		status = append(status, "filtering list")
+	} else if m.list.IsFiltered() {
+		status = append(status, fmt.Sprintf("filter=%q", m.list.FilterValue()))
+	}
+	return strings.Join(status, " | ")
 }
 
 func paneStyle(focused bool) lipgloss.Style {
@@ -577,6 +711,200 @@ func paneStyle(focused bool) lipgloss.Style {
 
 func (m *tuiModel) refreshDetailContent() {
 	m.detail.SetContent(wrapTUIDetail(m.detailRaw, m.detail.Width))
+}
+
+func (m *tuiModel) nextAutoRefreshCmd() tea.Cmd {
+	if !m.autoRefresh || m.autoInterval <= 0 {
+		return nil
+	}
+	m.autoRefreshSeq++
+	seq := m.autoRefreshSeq
+	interval := m.autoInterval
+	return tea.Tick(interval, func(at time.Time) tea.Msg {
+		return tuiAutoRefreshTickMsg{sequence: seq, at: at}
+	})
+}
+
+func (m tuiModel) handleAutoRefreshTick(msg tuiAutoRefreshTickMsg) (tea.Model, tea.Cmd) {
+	if msg.sequence != m.autoRefreshSeq {
+		return m, nil
+	}
+	next := m.nextAutoRefreshCmd()
+	if !m.autoRefresh || m.triggering || m.pageLoading || m.list.FilterState() == list.Filtering {
+		return m, next
+	}
+	return m, tea.Batch(next, m.requestPageReload("auto"))
+}
+
+func (m tuiModel) handlePageLoaded(msg tuiPageLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.requestID != m.pageLoadSeq {
+		return m, nil
+	}
+	m.pageLoading = false
+	reason := m.pageLoadReason
+	m.pageLoadReason = ""
+	if msg.err != nil {
+		m.status = "Refresh failed: " + msg.err.Error()
+		return m, nil
+	}
+	selectionKey := m.currentSelectionKey()
+	preserveScroll := selectionKey != "" && selectionKey == m.currentDetail
+	m.resetDetailCache()
+	if preserveScroll {
+		m.currentDetail = selectionKey
+	}
+	m.lastRefreshAt = msg.loadedAt
+	cmd := m.applyCurrentPageWithOptions(msg.page, tuiPageApplyOptions{
+		preserveFilter:       true,
+		preserveSelectionKey: selectionKey,
+		preserveDetailScroll: preserveScroll,
+	})
+	if reason == "manual" {
+		m.status = fmt.Sprintf("Refreshed %s at %s", msg.page.title, msg.loadedAt.Format("15:04:05"))
+	}
+	return m, cmd
+}
+
+func (m tuiModel) handleDetailLoaded(msg tuiDetailLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.requestID != m.detailLoadSeq || msg.itemKey != m.currentDetail {
+		return m, nil
+	}
+	m.detailLoading = false
+	if msg.err != nil {
+		m.status = "Detail load failed: " + msg.err.Error()
+		m.setDetailContent("Error loading details:\n"+msg.err.Error(), msg.preserveScroll)
+		return m, nil
+	}
+	m.detailCache[msg.itemKey] = msg.detail
+	m.setDetailContent(msg.detail, msg.preserveScroll)
+	return m, nil
+}
+
+func (m *tuiModel) selectVisibleItem(page tuiPage, selectionKey string) {
+	visible := m.list.VisibleItems()
+	if len(visible) == 0 {
+		m.list.Select(0)
+		return
+	}
+	index := page.cursor
+	if selectionKey != "" {
+		for idx, item := range visible {
+			tuiItem, ok := item.(tuiItem)
+			if ok && m.itemKey(tuiItem) == selectionKey {
+				index = idx
+				break
+			}
+		}
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(visible) {
+		index = len(visible) - 1
+	}
+	m.list.Select(index)
+}
+
+func (m *tuiModel) updateListTitleForCurrentPage() {
+	page := m.currentPage()
+	if page == nil {
+		m.list.Title = "List"
+		return
+	}
+	m.updateListTitle(*page)
+}
+
+func (m *tuiModel) updateListTitle(page tuiPage) {
+	total := len(page.items)
+	if m.list.FilterState() == list.Filtering || m.list.IsFiltered() {
+		m.list.Title = fmt.Sprintf("%s (%d/%d)", page.title, len(m.list.VisibleItems()), total)
+		return
+	}
+	m.list.Title = fmt.Sprintf("%s (%d)", page.title, total)
+}
+
+func (m *tuiModel) cancelPageLoad() {
+	if m.pageLoading {
+		m.pageLoadSeq++
+	}
+	m.pageLoading = false
+	m.pageLoadReason = ""
+}
+
+func (m *tuiModel) cancelDetailLoad() {
+	if m.detailLoading {
+		m.detailLoadSeq++
+	}
+	m.detailLoading = false
+}
+
+func (m *tuiModel) resetDetailCache() {
+	m.detailCache = make(map[string]string)
+	m.currentDetail = ""
+}
+
+func (m tuiModel) itemKey(item tuiItem) string {
+	return strings.Join([]string{
+		string(item.kind),
+		item.namespaceID,
+		item.agentID,
+		item.messageID,
+		item.runID,
+		item.threadID,
+		item.title,
+	}, "|")
+}
+
+func (m tuiModel) currentSelectionKey() string {
+	item, ok := m.selectedItem()
+	if !ok {
+		return ""
+	}
+	return m.itemKey(item)
+}
+
+func (m tuiModel) loadingDetailText(page tuiPage, item tuiItem) string {
+	lines := []string{
+		page.title,
+		"",
+		fmt.Sprintf("Loading details for %s...", item.title),
+	}
+	if m.pageLoading {
+		lines = append(lines, "", "Refreshing view in the background...")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m tuiModel) breadcrumbView() string {
+	if len(m.stack) == 0 {
+		return "path: no page selected"
+	}
+	parts := make([]string, 0, len(m.stack))
+	for _, page := range m.stack {
+		parts = append(parts, page.title)
+	}
+	return "path: " + strings.Join(parts, " > ")
+}
+
+func (m tuiModel) autoRefreshSummary() string {
+	if !m.autoRefresh {
+		return "off"
+	}
+	return "on/" + m.autoInterval.String()
+}
+
+func (m tuiModel) loadingSummary() string {
+	parts := make([]string, 0, 2)
+	if m.pageLoading {
+		parts = append(parts, "page")
+	}
+	if m.detailLoading {
+		parts = append(parts, "detail")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "loading: " + strings.Join(parts, "+")
 }
 
 func wrapTUIDetail(detail string, width int) string {

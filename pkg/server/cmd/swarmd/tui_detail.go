@@ -16,15 +16,22 @@ import (
 func renderTUIDetail(ctx context.Context, store *cpstore.Store, page tuiPage, selected tuiItem) (string, error) {
 	switch page.kind {
 	case tuiPageNamespaces:
+		if snapshot, ok := selected.value.(cpstore.NamespaceSnapshot); ok {
+			return renderNamespaceSnapshotDetail(snapshot), nil
+		}
 		snapshot, err := store.SnapshotNamespace(ctx, selected.namespaceID)
 		if err != nil {
 			return "", err
 		}
 		return renderNamespaceSnapshotDetail(snapshot), nil
 	case tuiPageAgents:
-		agent, err := store.GetAgent(ctx, selected.namespaceID, selected.agentID)
-		if err != nil {
-			return "", err
+		agent, ok := selected.value.(cpstore.RunnableAgent)
+		if !ok {
+			var err error
+			agent, err = store.GetAgent(ctx, selected.namespaceID, selected.agentID)
+			if err != nil {
+				return "", err
+			}
 		}
 		schedules, err := loadSchedules(ctx, store, selected.namespaceID, selected.agentID)
 		if err != nil {
@@ -37,17 +44,25 @@ func renderTUIDetail(ctx context.Context, store *cpstore.Store, page tuiPage, se
 			})
 		}), nil
 	case tuiPageMailbox:
-		message, err := store.GetMailboxMessage(ctx, selected.namespaceID, selected.messageID)
-		if err != nil {
-			return "", err
+		message, ok := selected.value.(cpstore.MailboxMessageRecord)
+		if !ok {
+			var err error
+			message, err = store.GetMailboxMessage(ctx, selected.namespaceID, selected.messageID)
+			if err != nil {
+				return "", err
+			}
 		}
 		return renderText(func(w io.Writer) {
 			renderMailboxShow(w, message)
 		}), nil
 	case tuiPageRuns:
-		run, err := store.GetRun(ctx, selected.namespaceID, selected.runID)
-		if err != nil {
-			return "", err
+		run, ok := selected.value.(cpstore.RunRecord)
+		if !ok {
+			var err error
+			run, err = store.GetRun(ctx, selected.namespaceID, selected.runID)
+			if err != nil {
+				return "", err
+			}
 		}
 		steps, err := store.ListStepsByRun(ctx, selected.namespaceID, selected.runID)
 		if err != nil {

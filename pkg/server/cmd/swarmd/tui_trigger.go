@@ -76,7 +76,7 @@ func (m *tuiModel) handleTriggerKey(msg tea.KeyMsg) (tea.Cmd, error) {
 		m.triggerInput.SetValue("")
 		return nil, nil
 	case "enter":
-		return nil, m.submitTriggerPrompt()
+		return m.submitTriggerPrompt()
 	default:
 		m.status = ""
 		var cmd tea.Cmd
@@ -85,14 +85,14 @@ func (m *tuiModel) handleTriggerKey(msg tea.KeyMsg) (tea.Cmd, error) {
 	}
 }
 
-func (m *tuiModel) submitTriggerPrompt() error {
+func (m *tuiModel) submitTriggerPrompt() (tea.Cmd, error) {
 	if !m.triggering {
-		return nil
+		return nil, nil
 	}
 	prompt := m.triggerInput.Value()
 	agentRecord, err := m.store.GetAgent(m.ctx, m.triggerTarget.NamespaceID, m.triggerTarget.AgentID)
 	if err != nil {
-		return fmt.Errorf("load agent %s: %w", m.triggerTarget.Label, err)
+		return nil, fmt.Errorf("load agent %s: %w", m.triggerTarget.Label, err)
 	}
 	params := cpstore.CreateMailboxMessageParams{
 		NamespaceID:      m.triggerTarget.NamespaceID,
@@ -107,14 +107,11 @@ func (m *tuiModel) submitTriggerPrompt() error {
 	targetLabel := m.triggerTarget.Label
 	record, err := m.store.EnqueueMessage(m.ctx, params)
 	if err != nil {
-		return fmt.Errorf("enqueue manual trigger for %s: %w", targetLabel, err)
+		return nil, fmt.Errorf("enqueue manual trigger for %s: %w", targetLabel, err)
 	}
 	m.exitTriggerMode()
-	if err := m.reloadCurrentPage(); err != nil {
-		return err
-	}
 	m.status = fmt.Sprintf("queued prompt for %s (message=%s thread=%s)", targetLabel, record.ID, record.ThreadID)
-	return nil
+	return m.requestPageReload("post-trigger"), nil
 }
 
 func (m tuiModel) footerActionView() string {
@@ -129,11 +126,12 @@ func (m tuiModel) footerActionView() string {
 			}, " "),
 		}, "\n")
 	}
+	buttons := []string{renderFooterButton("u", "Auto "+m.autoRefreshSummary())}
 	target, ok := m.currentTriggerTarget()
-	if !ok {
-		return ""
+	if ok {
+		buttons = append([]string{renderFooterButton("x", target.ActionLabel)}, buttons...)
 	}
-	return renderFooterButton("x", target.ActionLabel)
+	return strings.Join(buttons, " ")
 }
 
 func renderFooterButton(keyLabel, label string) string {
