@@ -152,3 +152,83 @@ func TestBuildStepReplayIncludesObservationSummaryAndTruncationMarkers(t *testin
 		t.Fatalf("replay.Output = %q, want stderr truncation marker", replay.Output)
 	}
 }
+
+func TestBuildStepReplayIncludesFileReferencesForSpilledOutputs(t *testing.T) {
+	t.Parallel()
+
+	replay, ok := BuildStepReplay(Step{
+		Index:                 6,
+		ActionName:            ToolNameReadFile,
+		ActionToolKind:        ToolKindFunction,
+		ActionInput:           `{"file_path":"/tmp/demo.txt"}`,
+		Status:                StepStatusOK,
+		CWDAfter:              "/workspace",
+		ActionOutput:          "preview output",
+		ActionOutputTruncated: true,
+		ActionOutputFiles: []FileReference{{
+			Path:        "/workspace/.tmp/tool-outputs/run-1/step_6/action_output.txt",
+			MimeType:    "text/plain",
+			Description: "Full tool output",
+			SizeBytes:   2048,
+		}},
+		Stdout:          "stdout preview",
+		StdoutTruncated: true,
+		StdoutFile: &FileReference{
+			Path:        "/workspace/.tmp/tool-outputs/run-1/step_6/stdout.txt",
+			MimeType:    "text/plain",
+			Description: "Full stdout from run_shell",
+			SizeBytes:   4096,
+		},
+		Stderr:          "stderr preview",
+		StderrTruncated: true,
+		StderrFile: &FileReference{
+			Path:        "/workspace/.tmp/tool-outputs/run-1/step_6/stderr.txt",
+			MimeType:    "text/plain",
+			Description: "Full stderr from run_shell",
+			SizeBytes:   128,
+		},
+	})
+	if !ok {
+		t.Fatal("BuildStepReplay() ok = false, want true")
+	}
+	if !strings.Contains(replay.Output, "Output files:") {
+		t.Fatalf("replay.Output = %q, want output file references", replay.Output)
+	}
+	if !strings.Contains(replay.Output, "Stdout file:") {
+		t.Fatalf("replay.Output = %q, want stdout file reference", replay.Output)
+	}
+	if !strings.Contains(replay.Output, "Stderr file:") {
+		t.Fatalf("replay.Output = %q, want stderr file reference", replay.Output)
+	}
+	if !strings.Contains(replay.Output, "Full output is available in files.") {
+		t.Fatalf("replay.Output = %q, want output spill marker", replay.Output)
+	}
+	if !strings.Contains(replay.Output, "Full stdout is available in a file.") {
+		t.Fatalf("replay.Output = %q, want stdout spill marker", replay.Output)
+	}
+	if !strings.Contains(replay.Output, "Full stderr is available in a file.") {
+		t.Fatalf("replay.Output = %q, want stderr spill marker", replay.Output)
+	}
+}
+
+func TestBuildStepReplayMarksCompactedStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	replay, ok := BuildStepReplay(Step{
+		Index:                 7,
+		ActionName:            ToolNameReadFile,
+		ActionToolKind:        ToolKindFunction,
+		ActionInput:           `{"file_path":"/tmp/demo.json"}`,
+		Status:                StepStatusOK,
+		CWDAfter:              "/workspace",
+		ActionOutput:          `{"tool":"demo","_meta":{"kind":"json_stub_v1","compacted":true}}`,
+		ActionOutputTruncated: true,
+		ActionOutputCompacted: true,
+	})
+	if !ok {
+		t.Fatal("BuildStepReplay() ok = false, want true")
+	}
+	if !strings.Contains(replay.Output, "Output was compacted.") {
+		t.Fatalf("replay.Output = %q, want compaction marker", replay.Output)
+	}
+}

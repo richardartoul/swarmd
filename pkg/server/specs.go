@@ -58,15 +58,16 @@ type AgentMemorySpec struct {
 }
 
 type AgentRuntimeSpec struct {
-	DesiredState   string              `yaml:"desired_state,omitempty"`
-	Filesystem     AgentFilesystemSpec `yaml:"filesystem,omitempty"`
-	PreserveState  bool                `yaml:"preserve_state,omitempty"`
-	MaxSteps       int                 `yaml:"max_steps,omitempty"`
-	StepTimeout    string              `yaml:"step_timeout,omitempty"`
-	MaxOutputBytes int                 `yaml:"max_output_bytes,omitempty"`
-	LeaseDuration  string              `yaml:"lease_duration,omitempty"`
-	RetryDelay     string              `yaml:"retry_delay,omitempty"`
-	MaxAttempts    int                 `yaml:"max_attempts,omitempty"`
+	DesiredState             string              `yaml:"desired_state,omitempty"`
+	Filesystem               AgentFilesystemSpec `yaml:"filesystem,omitempty"`
+	PreserveState            bool                `yaml:"preserve_state,omitempty"`
+	MaxSteps                 int                 `yaml:"max_steps,omitempty"`
+	StepTimeout              string              `yaml:"step_timeout,omitempty"`
+	MaxOutputBytes           int                 `yaml:"max_output_bytes,omitempty"`
+	OutputFileThresholdBytes int                 `yaml:"output_file_threshold_bytes,omitempty"`
+	LeaseDuration            string              `yaml:"lease_duration,omitempty"`
+	RetryDelay               string              `yaml:"retry_delay,omitempty"`
+	MaxAttempts              int                 `yaml:"max_attempts,omitempty"`
 }
 
 type AgentFilesystemSpec struct {

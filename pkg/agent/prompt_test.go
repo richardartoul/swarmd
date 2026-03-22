@@ -70,6 +70,9 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	if !strings.Contains(got, `Use an object or array inside result_json only when the user asked for structured or machine-readable output`) {
 		t.Fatalf("ComposeSystemPrompt() = %q, want structured-output exception guidance", got)
 	}
+	if !strings.Contains(got, `Some large tool outputs may be written to files inside the sandbox temp area for the current run.`) {
+		t.Fatalf("ComposeSystemPrompt() = %q, want large-output file guidance", got)
+	}
 }
 
 func TestFormatCurrentStateIncludesSingleToolCallReminder(t *testing.T) {

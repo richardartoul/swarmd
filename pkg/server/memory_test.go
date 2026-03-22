@@ -103,6 +103,21 @@ func TestComposeManagedSystemPromptIncludesNetworkGuidance(t *testing.T) {
 	}
 }
 
+func TestComposeManagedSystemPromptIncludesLargeToolOutputGuidance(t *testing.T) {
+	t.Parallel()
+
+	got := composeManagedSystemPrompt(cpstore.RunnableAgent{
+		SystemPrompt: "Handle the current trigger carefully.",
+	}, nil, AgentMemorySpec{Disable: true}, nil, managedAgentNetworkConfig{}, nil)
+
+	if !strings.Contains(got, "Large tool outputs:") {
+		t.Fatalf("composeManagedSystemPrompt() = %q, want large-output guidance header", got)
+	}
+	if !strings.Contains(got, "These runtime spill files are temporary and are separate from pre-run mounts.") {
+		t.Fatalf("composeManagedSystemPrompt() = %q, want mount-separation guidance", got)
+	}
+}
+
 func TestMemoryPromptGuidanceEncouragesPersistingUsefulLearnings(t *testing.T) {
 	t.Parallel()
 

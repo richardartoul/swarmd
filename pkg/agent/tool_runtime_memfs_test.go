@@ -2,7 +2,9 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -84,5 +86,59 @@ func TestToolRuntimeSupportsMemFS(t *testing.T) {
 	}
 	if got := string(data); got != "before\nnew\nafter\n" {
 		t.Fatalf("note.txt = %q, want %q", got, "before\nnew\nafter\n")
+	}
+}
+
+func TestToolRuntimeCleansUpSpillFilesInMemFS(t *testing.T) {
+	t.Parallel()
+
+	fsys, err := memfs.New("/workspace")
+	if err != nil {
+		t.Fatalf("memfs.New() error = %v", err)
+	}
+	if err := fsys.WriteFile("/workspace/big.txt", []byte(strings.Repeat("line\n", 256)), 0o644); err != nil {
+		t.Fatalf("WriteFile(big.txt) error = %v", err)
+	}
+
+	var spillPath string
+	a := newAgent(t, agent.Config{
+		FileSystem:     fsys,
+		MaxOutputBytes: 96,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				tool(agent.ToolNameReadFile, agent.ToolKindFunction, `{"file_path":"big.txt","offset":1,"limit":256}`),
+				finish("done"),
+			},
+		},
+		OnStep: agent.StepHandlerFunc(func(_ context.Context, _ agent.Trigger, step agent.Step) error {
+			if len(step.ActionOutputFiles) != 1 {
+				t.Fatalf("len(step.ActionOutputFiles) = %d, want 1", len(step.ActionOutputFiles))
+			}
+			spillPath = step.ActionOutputFiles[0].Path
+			file, err := fsys.Open(spillPath)
+			if err != nil {
+				t.Fatalf("Open(spillPath) error = %v", err)
+			}
+			defer file.Close()
+			data, err := io.ReadAll(file)
+			if err != nil {
+				t.Fatalf("ReadAll(spillPath) error = %v", err)
+			}
+			if !strings.Contains(string(data), "256|line") {
+				t.Fatalf("spill data = %q, want full read_file output", string(data))
+			}
+			return nil
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "memfs-spill"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if !result.Steps[0].ActionOutputTruncated {
+		t.Fatal("result.Steps[0].ActionOutputTruncated = false, want true")
+	}
+	if _, err := fsys.Stat(spillPath); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Stat(spillPath) error = %v, want %v after cleanup", err, fs.ErrNotExist)
 	}
 }

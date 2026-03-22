@@ -556,6 +556,9 @@ func managedAgentConfig(spec AgentSpec, normalizedTools []agent.ConfiguredTool) 
 		}
 		config["http"] = managedAgentHTTPConfig{Headers: headers}
 	}
+	if spec.Runtime.OutputFileThresholdBytes > 0 {
+		config["output_file_threshold_bytes"] = spec.Runtime.OutputFileThresholdBytes
+	}
 	return config, nil
 }
 

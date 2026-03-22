@@ -58,6 +58,14 @@ type WebSearchResult struct {
 	Snippet string
 }
 
+// FileReference points at one sandbox-visible file produced or surfaced by a tool.
+type FileReference struct {
+	Path        string `json:"path"`
+	MimeType    string `json:"mime_type,omitempty"`
+	Description string `json:"description,omitempty"`
+	SizeBytes   int64  `json:"size_bytes,omitempty"`
+}
+
 // WebSearchBackend is one runtime-owned provider used by the web_search tool.
 type WebSearchBackend interface {
 	Search(ctx context.Context, clientFactory interp.HTTPClientFactory, query string, limit int) (WebSearchResponse, error)
@@ -164,6 +172,9 @@ type Step struct {
 	ActionInput           string
 	ActionOutput          string
 	ActionOutputTruncated bool
+	ActionOutputFiles     []FileReference
+	ActionOutputBytes     int64
+	ActionOutputCompacted bool
 	Shell                 string
 	Usage                 Usage
 	CWDBefore             string
@@ -172,6 +183,10 @@ type Step struct {
 	Stderr                string
 	StdoutTruncated       bool
 	StderrTruncated       bool
+	StdoutFile            *FileReference
+	StderrFile            *FileReference
+	StdoutBytes           int64
+	StderrBytes           int64
 	StartedAt             time.Time
 	FinishedAt            time.Time
 	Duration              time.Duration

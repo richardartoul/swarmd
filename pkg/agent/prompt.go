@@ -33,6 +33,7 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
+- Some large tool outputs may be written to files inside the sandbox temp area for the current run. Read those files only when you need the full content.
 - When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
 - If you include "thought", keep it concise.
 - In the final response envelope, "thought" is optional metadata. Use an empty string when you have nothing useful to add.
@@ -62,6 +63,7 @@ Rules:
 - Within run_shell, keep options before delegated patterns, scripts, expressions, or subcommands for commands like grep, sed, jq, awk, env, xargs, and find.
 - Within run_shell, this sandbox grep requires grep -F for literal matches or grep -E for regex patterns; plain grep without -E or -F is rejected.
 - Use the observations from prior steps, including tool inputs and outputs, to decide what to do next.
+- Some large tool outputs may be written to files inside the sandbox temp area for the current run. Read those files only when you need the full content.
 - When the task is complete, finish without another tool call by returning the final response envelope {{strict_final_shape}}.
 - If you include "thought", keep it concise.
 - In the final response envelope, "thought" is optional metadata. Use an empty string when you have nothing useful to add.

@@ -135,6 +135,11 @@ type Config struct {
 	// If zero, [DefaultMaxOutputBytes] is used.
 	MaxOutputBytes int
 
+	// OutputFileThresholdBytes controls when the runtime should spill tool output
+	// or shell streams into per-run sandbox files while keeping only bounded
+	// previews inline. If zero, the runtime uses the current preview budget.
+	OutputFileThresholdBytes int
+
 	// PreserveStateBetweenTriggers keeps shell state warm across triggers.
 	// The zero value resets state before each new trigger.
 	PreserveStateBetweenTriggers bool
@@ -190,6 +195,7 @@ const (
 
 type ToolInterop = toolscore.ToolInterop
 type ToolDefinition = toolscore.ToolDefinition
+type FileReference = toolscore.FileReference
 
 // Request is the input to one [Driver.Next] call.
 // Messages holds the fully prepared prompt context. The remaining fields expose

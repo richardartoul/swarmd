@@ -177,20 +177,23 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 			err,
 		)
 	}
+	if err := agent.SweepStaleOutputSpillDirs(fsys); err != nil {
+		return fmt.Errorf("sweep stale spill directories for worker %q/%q: %w", record.NamespaceID, record.ID, err)
+	}
 	if err := materializeAgentMounts(fsys, mounts, m.envLookup()); err != nil {
 		return fmt.Errorf("apply mounts for worker %q/%q: %w", record.NamespaceID, record.ID, err)
 	}
 	runtime, err := agent.New(agent.Config{
-		FileSystem:           fsys,
-		NetworkDialer:        networkDialer,
-		NetworkEnabled:       record.AllowNetwork,
-		HTTPHeaders:          resolvedHTTPHeaders,
-		ConfiguredTools:      tools,
-		ToolRuntimeData:      newServerToolRuntime(record.NamespaceID, record.ID, m.envLookup(), m.Logger),
-		Queue:                queue,
-		Driver:               driver,
-		SystemPrompt:         systemPrompt,
-		OnStep:               StepPersister{Store: m.Store, Logger: m.Logger},
+		FileSystem:      fsys,
+		NetworkDialer:   networkDialer,
+		NetworkEnabled:  record.AllowNetwork,
+		HTTPHeaders:     resolvedHTTPHeaders,
+		ConfiguredTools: tools,
+		ToolRuntimeData: newServerToolRuntime(record.NamespaceID, record.ID, m.envLookup(), m.Logger),
+		Queue:           queue,
+		Driver:          driver,
+		SystemPrompt:    systemPrompt,
+		OnStep:          StepPersister{Store: m.Store, Logger: m.Logger},
 		OnResult: ResultPersister{
 			Store:            m.Store,
 			RetryDelay:       record.RetryDelay,
@@ -200,6 +203,7 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		MaxSteps:                     record.MaxSteps,
 		StepTimeout:                  record.StepTimeout,
 		MaxOutputBytes:               record.MaxOutputBytes,
+		OutputFileThresholdBytes:     runtimeConfig.outputFileThresholdBytes(),
 		PreserveStateBetweenTriggers: record.PreserveState,
 		Stdout:                       m.Stdout,
 		Stderr:                       m.Stderr,

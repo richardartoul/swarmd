@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
 func TestLoadAgentSpecs(t *testing.T) {
@@ -27,6 +29,7 @@ tools:
 runtime:
   max_steps: 4
   step_timeout: 45s
+  output_file_threshold_bytes: 2048
 schedules:
   - cron: "* * * * *"
 `)
@@ -51,6 +54,9 @@ schedules:
 	if spec.Model.Name != "gpt-5" {
 		t.Fatalf("spec.Model.Name = %q, want %q", spec.Model.Name, "gpt-5")
 	}
+	if spec.Runtime.OutputFileThresholdBytes != 2048 {
+		t.Fatalf("spec.Runtime.OutputFileThresholdBytes = %d, want 2048", spec.Runtime.OutputFileThresholdBytes)
+	}
 	if spec.Network == nil || len(spec.Network.ReachableHosts) != 1 || spec.Network.ReachableHosts[0].Glob != "*" {
 		t.Fatalf("spec.Network = %#v, want reachable_hosts glob *", spec.Network)
 	}
@@ -59,6 +65,31 @@ schedules:
 	}
 	if len(spec.Schedules) != 1 || spec.Schedules[0].CronExpr != "* * * * *" {
 		t.Fatalf("spec.Schedules = %#v, want one every-minute schedule", spec.Schedules)
+	}
+}
+
+func TestManagedAgentConfigIncludesOutputFileThresholdBytes(t *testing.T) {
+	t.Parallel()
+
+	config, err := managedAgentConfig(AgentSpec{
+		SourcePath: "agents/default/worker.yaml",
+		Runtime: AgentRuntimeSpec{
+			OutputFileThresholdBytes: 321,
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("managedAgentConfig() error = %v", err)
+	}
+	encoded, err := cpstore.MarshalOptionalEnvelope("agent_config", config)
+	if err != nil {
+		t.Fatalf("MarshalOptionalEnvelope() error = %v", err)
+	}
+	decoded, err := loadManagedAgentRuntimeConfig(encoded)
+	if err != nil {
+		t.Fatalf("loadManagedAgentRuntimeConfig() error = %v", err)
+	}
+	if decoded.OutputFileThresholdBytes != 321 {
+		t.Fatalf("decoded.OutputFileThresholdBytes = %d, want 321", decoded.OutputFileThresholdBytes)
 	}
 }
 

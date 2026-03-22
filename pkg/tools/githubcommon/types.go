@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
+	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
 const (
@@ -41,12 +42,7 @@ type PageInfo struct {
 	NextPage    *int `json:"next_page"`
 }
 
-type FileReference struct {
-	Path        string `json:"path"`
-	MimeType    string `json:"mime_type,omitempty"`
-	Description string `json:"description,omitempty"`
-	SizeBytes   int64  `json:"size_bytes,omitempty"`
-}
+type FileReference = toolscore.FileReference
 
 type ToolError struct {
 	Code             string `json:"code"`
@@ -337,24 +333,5 @@ func normalizeWarnings(warnings []string) []string {
 }
 
 func normalizeFiles(files []FileReference) []FileReference {
-	if len(files) == 0 {
-		return []FileReference{}
-	}
-	normalized := make([]FileReference, 0, len(files))
-	for _, file := range files {
-		path := strings.TrimSpace(file.Path)
-		if path == "" {
-			continue
-		}
-		normalized = append(normalized, FileReference{
-			Path:        path,
-			MimeType:    strings.TrimSpace(file.MimeType),
-			Description: strings.TrimSpace(file.Description),
-			SizeBytes:   file.SizeBytes,
-		})
-	}
-	if len(normalized) == 0 {
-		return []FileReference{}
-	}
-	return normalized
+	return toolscommon.NormalizeFileReferences(files)
 }

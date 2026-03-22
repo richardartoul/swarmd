@@ -18,13 +18,14 @@ const (
 )
 
 type managedAgentRuntimeConfig struct {
-	Capabilities map[string]any               `json:"capabilities,omitempty"`
-	Tools        []agent.ConfiguredTool       `json:"tools,omitempty"`
-	Filesystem   managedAgentFilesystemConfig `json:"filesystem,omitempty"`
-	Memory       AgentMemorySpec              `json:"memory"`
-	Mounts       []managedAgentMount          `json:"mounts,omitempty"`
-	Network      managedAgentNetworkConfig    `json:"network,omitempty"`
-	HTTP         managedAgentHTTPConfig       `json:"http,omitempty"`
+	Capabilities             map[string]any               `json:"capabilities,omitempty"`
+	Tools                    []agent.ConfiguredTool       `json:"tools,omitempty"`
+	Filesystem               managedAgentFilesystemConfig `json:"filesystem,omitempty"`
+	Memory                   AgentMemorySpec              `json:"memory"`
+	Mounts                   []managedAgentMount          `json:"mounts,omitempty"`
+	Network                  managedAgentNetworkConfig    `json:"network,omitempty"`
+	HTTP                     managedAgentHTTPConfig       `json:"http,omitempty"`
+	OutputFileThresholdBytes int                          `json:"output_file_threshold_bytes,omitempty"`
 }
 
 type managedAgentFilesystemConfig struct {
@@ -66,6 +67,10 @@ func (c managedAgentRuntimeConfig) networkSettings() managedAgentNetworkConfig {
 
 func (c managedAgentRuntimeConfig) httpHeaderSettings() []managedAgentHTTPHeader {
 	return append([]managedAgentHTTPHeader(nil), c.HTTP.Headers...)
+}
+
+func (c managedAgentRuntimeConfig) outputFileThresholdBytes() int {
+	return c.OutputFileThresholdBytes
 }
 
 func loadManagedAgentRuntimeConfig(configJSON string) (managedAgentRuntimeConfig, error) {
@@ -141,6 +146,7 @@ func composeManagedSystemPrompt(record cpstore.RunnableAgent, capabilities map[s
 		customPrompt = appendManagedPromptSection(customPrompt, "Agent-to-agent messaging", mailboxPromptGuidance())
 	}
 	customPrompt = appendManagedPromptSection(customPrompt, "Mounted resources", mountPromptGuidance(mounts))
+	customPrompt = appendManagedPromptSection(customPrompt, "Large tool outputs", largeToolOutputPromptGuidance())
 	if record.AllowNetwork {
 		customPrompt = appendManagedPromptSection(customPrompt, "Network policy", networkPromptGuidance(network))
 		customPrompt = appendManagedPromptSection(customPrompt, "Automatic HTTP headers", httpHeaderPromptGuidance(httpHeaders))
@@ -241,4 +247,10 @@ func mountPromptGuidance(mounts []managedAgentMount) string {
 		builder.WriteString("\n")
 	}
 	return strings.TrimSpace(builder.String())
+}
+
+func largeToolOutputPromptGuidance() string {
+	return strings.TrimSpace(`Some large tool outputs may be written into sandbox temp files for the current run instead of being fully inlined.
+When a step summary references one of those files, read it only if you need the full content.
+These runtime spill files are temporary and are separate from pre-run mounts.`)
 }

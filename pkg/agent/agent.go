@@ -23,31 +23,34 @@ var ErrQueueRequired = errors.New("agent queue is required for Serve")
 
 // Agent runs a queue-driven agent loop on top of a sandboxed shell.
 type Agent struct {
-	queue             Queue
-	driver            Driver
-	onResult          ResultHandler
-	onStep            StepHandler
-	parser            *syntax.Parser
-	runner            *interp.Runner
-	fileSystem        sandbox.FileSystem
-	sandboxRoot       string
-	httpClientFactory interp.HTTPClientFactory
-	stdout            *switchWriter
-	stderr            *switchWriter
-	maxSteps          int
-	maxOutputBytes    int
-	stepTimeout       time.Duration
-	preserveState     bool
-	systemPrompt      string
-	liveStdout        io.Writer
-	liveStderr        io.Writer
-	networkEnabled    bool
-	toolDefinitions   []ToolDefinition
-	toolByName        map[string]ToolDefinition
-	toolHandlerByName map[string]ToolHandler
-	toolRuntimeData   any
-	webSearchBackend  WebSearchBackend
-	customCommands    []sandbox.CommandInfo
+	queue                    Queue
+	driver                   Driver
+	onResult                 ResultHandler
+	onStep                   StepHandler
+	parser                   *syntax.Parser
+	runner                   *interp.Runner
+	fileSystem               sandbox.FileSystem
+	sandboxRoot              string
+	httpClientFactory        interp.HTTPClientFactory
+	stdout                   *switchWriter
+	stderr                   *switchWriter
+	maxSteps                 int
+	maxOutputBytes           int
+	outputFileThresholdBytes int
+	stepTimeout              time.Duration
+	preserveState            bool
+	systemPrompt             string
+	liveStdout               io.Writer
+	liveStderr               io.Writer
+	spillBaseDir             string
+	currentRunSpillDir       string
+	networkEnabled           bool
+	toolDefinitions          []ToolDefinition
+	toolByName               map[string]ToolDefinition
+	toolHandlerByName        map[string]ToolHandler
+	toolRuntimeData          any
+	webSearchBackend         WebSearchBackend
+	customCommands           []sandbox.CommandInfo
 }
 
 type turnRunInput struct {
@@ -128,37 +131,44 @@ func New(cfg Config) (*Agent, error) {
 	if maxOutputBytes <= 0 {
 		maxOutputBytes = DefaultMaxOutputBytes
 	}
+	outputFileThresholdBytes := cfg.OutputFileThresholdBytes
+	if outputFileThresholdBytes <= 0 {
+		outputFileThresholdBytes = maxOutputBytes
+	}
+	spillBaseDir := outputSpillBaseDir(policy, sandboxRoot)
 	systemPrompt := strings.TrimSpace(cfg.SystemPrompt)
 	if systemPrompt == "" {
 		systemPrompt = defaultSystemPrompt(networkEnabled)
 	}
 
 	return &Agent{
-		queue:             cfg.Queue,
-		driver:            cfg.Driver,
-		onResult:          cfg.OnResult,
-		onStep:            cfg.OnStep,
-		parser:            syntax.NewParser(syntax.Variant(syntax.LangPOSIX)),
-		runner:            runner,
-		fileSystem:        policy,
-		sandboxRoot:       sandboxRoot,
-		httpClientFactory: httpClientFactory,
-		stdout:            stdout,
-		stderr:            stderr,
-		maxSteps:          maxSteps,
-		maxOutputBytes:    maxOutputBytes,
-		stepTimeout:       cfg.StepTimeout,
-		preserveState:     cfg.PreserveStateBetweenTriggers,
-		systemPrompt:      systemPrompt,
-		liveStdout:        cfg.Stdout,
-		liveStderr:        cfg.Stderr,
-		networkEnabled:    networkEnabled,
-		toolDefinitions:   toolDefinitions,
-		toolByName:        toolByName,
-		toolHandlerByName: toolHandlerByName,
-		toolRuntimeData:   cfg.ToolRuntimeData,
-		webSearchBackend:  webSearchBackend,
-		customCommands:    commandInfosFromCustomCommands(cfg.CustomCommands),
+		queue:                    cfg.Queue,
+		driver:                   cfg.Driver,
+		onResult:                 cfg.OnResult,
+		onStep:                   cfg.OnStep,
+		parser:                   syntax.NewParser(syntax.Variant(syntax.LangPOSIX)),
+		runner:                   runner,
+		fileSystem:               policy,
+		sandboxRoot:              sandboxRoot,
+		httpClientFactory:        httpClientFactory,
+		stdout:                   stdout,
+		stderr:                   stderr,
+		maxSteps:                 maxSteps,
+		maxOutputBytes:           maxOutputBytes,
+		outputFileThresholdBytes: outputFileThresholdBytes,
+		stepTimeout:              cfg.StepTimeout,
+		preserveState:            cfg.PreserveStateBetweenTriggers,
+		systemPrompt:             systemPrompt,
+		liveStdout:               cfg.Stdout,
+		liveStderr:               cfg.Stderr,
+		spillBaseDir:             spillBaseDir,
+		networkEnabled:           networkEnabled,
+		toolDefinitions:          toolDefinitions,
+		toolByName:               toolByName,
+		toolHandlerByName:        toolHandlerByName,
+		toolRuntimeData:          cfg.ToolRuntimeData,
+		webSearchBackend:         webSearchBackend,
+		customCommands:           commandInfosFromCustomCommands(cfg.CustomCommands),
 	}, nil
 }
 
@@ -202,6 +212,13 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		Trigger:   input.Trigger,
 		StartedAt: time.Now(),
 	}
+	cleanupSpill, err := a.beginRunSpillDir(input.Trigger)
+	if err != nil {
+		result.Status = ResultStatusFatalError
+		result.Error = err.Error()
+		return a.finishResult(result, input.RequestContext.withRunStartedAt(result.StartedAt)), err
+	}
+	defer cleanupSpill()
 
 	if input.ResetRunner {
 		a.runner.Reset()
@@ -395,7 +412,26 @@ func finishStep(step *Step) {
 }
 
 func cloneSteps(steps []Step) []Step {
-	return slices.Clone(steps)
+	if len(steps) == 0 {
+		return nil
+	}
+	cloned := make([]Step, 0, len(steps))
+	for _, step := range steps {
+		current := step
+		if len(step.ActionOutputFiles) > 0 {
+			current.ActionOutputFiles = slices.Clone(step.ActionOutputFiles)
+		}
+		if step.StdoutFile != nil {
+			file := *step.StdoutFile
+			current.StdoutFile = &file
+		}
+		if step.StderrFile != nil {
+			file := *step.StderrFile
+			current.StderrFile = &file
+		}
+		cloned = append(cloned, current)
+	}
+	return cloned
 }
 
 func mergeUsage(dst, src Usage) Usage {

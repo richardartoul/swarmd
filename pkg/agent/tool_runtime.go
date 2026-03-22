@@ -67,6 +67,12 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 		step.Error = err.Error()
 		return step, err
 	}
+	if step.Status == StepStatusFatalError {
+		if strings.TrimSpace(step.Error) == "" {
+			step.Error = "tool step failed"
+		}
+		return step, errors.New(step.Error)
+	}
 	if step.Status == "" {
 		step.Status = StepStatusOK
 	}
@@ -119,8 +125,26 @@ func (a *Agent) runShellTool(ctx context.Context, stepNum int, step *Step, exec 
 		return nil
 	}
 
-	stdoutCapture := newCaptureWriter(a.maxOutputBytes, a.liveStdout)
-	stderrCapture := newCaptureWriter(a.maxOutputBytes, a.liveStderr)
+	stdoutPath, stdoutRef, err := a.stepSpillFile(stepNum, "stdout.txt", "text/plain", "Full stdout from run_shell")
+	if err != nil {
+		return err
+	}
+	stderrPath, stderrRef, err := a.stepSpillFile(stepNum, "stderr.txt", "text/plain", "Full stderr from run_shell")
+	if err != nil {
+		return err
+	}
+	stdoutCapture := newCaptureWriter(a.maxOutputBytes, a.outputFileThreshold(), &captureSpillConfig{
+		FileSystem:  a.fileSystem,
+		Path:        stdoutPath,
+		MimeType:    stdoutRef.MimeType,
+		Description: stdoutRef.Description,
+	}, a.liveStdout)
+	stderrCapture := newCaptureWriter(a.maxOutputBytes, a.outputFileThreshold(), &captureSpillConfig{
+		FileSystem:  a.fileSystem,
+		Path:        stderrPath,
+		MimeType:    stderrRef.MimeType,
+		Description: stderrRef.Description,
+	}, a.liveStderr)
 	a.stdout.Set(stdoutCapture)
 	a.stderr.Set(stderrCapture)
 	defer func() {
@@ -135,13 +159,27 @@ func (a *Agent) runShellTool(ctx context.Context, stepNum int, step *Step, exec 
 	}
 	defer cancel()
 
-	err = a.runner.Run(runCtx, prog)
+	runErr := a.runner.Run(runCtx, prog)
 	restoreDir = false
 	step.CWDAfter = a.runner.Dir
-	step.Stdout, step.StdoutTruncated = stdoutCapture.Snapshot()
-	step.Stderr, step.StderrTruncated = stderrCapture.Snapshot()
+	stdoutSnapshot, err := stdoutCapture.Snapshot()
+	if err != nil {
+		return err
+	}
+	stderrSnapshot, err := stderrCapture.Snapshot()
+	if err != nil {
+		return err
+	}
+	step.Stdout = stdoutSnapshot.Preview
+	step.StdoutTruncated = stdoutSnapshot.Truncated
+	step.StdoutBytes = stdoutSnapshot.TotalBytes
+	step.StdoutFile = stdoutSnapshot.File
+	step.Stderr = stderrSnapshot.Preview
+	step.StderrTruncated = stderrSnapshot.Truncated
+	step.StderrBytes = stderrSnapshot.TotalBytes
+	step.StderrFile = stderrSnapshot.File
 
-	classified, runErr := classifyRunResult(*step, err)
+	classified, runErr := classifyRunResult(*step, runErr)
 	*step = classified
 	return runErr
 }
@@ -155,7 +193,89 @@ func (a *Agent) setToolOutput(step *Step, output string) {
 	if limit <= 0 {
 		limit = DefaultMaxOutputBytes
 	}
+	step.ActionOutputBytes = int64(len(output))
+	step.ActionOutputFiles = nil
+	step.ActionOutputCompacted = false
+
+	applied, err := a.applyStructuredToolOutput(step, output)
+	if err != nil {
+		step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+		step.Status = StepStatusFatalError
+		step.Error = err.Error()
+		return
+	}
+	if applied {
+		return
+	}
+
+	threshold := a.outputFileThreshold()
+	if threshold > 0 && len(output) > threshold {
+		ref, err := a.writeStepSpillFile(step.Index, "action_output.txt", "text/plain", "Full tool output", []byte(output))
+		if err != nil {
+			step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+			step.Status = StepStatusFatalError
+			step.Error = err.Error()
+			return
+		}
+		step.ActionOutputFiles = []toolscore.FileReference{*ref}
+	}
 	step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+}
+
+func (a *Agent) applyStructuredToolOutput(step *Step, output string) (bool, error) {
+	limit := a.maxOutputBytes
+	if limit <= 0 {
+		limit = DefaultMaxOutputBytes
+	}
+	if len(output) <= limit {
+		return false, nil
+	}
+	budget := toolscommon.MaxInt(1, toolscommon.MinInt(limit, toolscommon.DefaultJSONStubBytes))
+	probe, ok, err := toolscommon.CompactStructuredJSONOutput(output, toolscommon.JSONCompactOptions{
+		Budget: budget,
+	})
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	fullOutputRef, err := a.writeStepSpillFile(step.Index, "full_output.json", "application/json", "Full structured tool output", []byte(output))
+	if err != nil {
+		return false, err
+	}
+	compacted, _, err := toolscommon.CompactStructuredJSONOutput(output, toolscommon.JSONCompactOptions{
+		Budget:         budget,
+		FullOutputFile: fullOutputRef,
+	})
+	if err != nil {
+		return false, err
+	}
+	if len(compacted.Output) > limit {
+		step.ActionOutput = fallbackStructuredOutputPreview(*fullOutputRef, step.ActionOutputBytes, limit)
+		step.ActionOutputTruncated = true
+		step.ActionOutputFiles = toolscommon.NormalizeFileReferences(append(probe.Files, *fullOutputRef))
+		step.ActionOutputCompacted = false
+		return true, nil
+	}
+	step.ActionOutput = compacted.Output
+	step.ActionOutputTruncated = compacted.Compacted
+	step.ActionOutputFiles = compacted.Files
+	step.ActionOutputCompacted = compacted.Compacted
+	if len(step.ActionOutputFiles) == 0 {
+		step.ActionOutputFiles = probe.Files
+	}
+	return true, nil
+}
+
+func fallbackStructuredOutputPreview(file toolscore.FileReference, originalBytes int64, limit int) string {
+	message := fmt.Sprintf(
+		"Structured JSON output was spilled to %s (%d bytes). Read the file for the full payload.",
+		strings.TrimSpace(file.Path),
+		originalBytes,
+	)
+	preview, _ := truncateText(message, toolscommon.MaxInt(1, limit))
+	return preview
 }
 
 func truncateText(text string, limit int) (string, bool) {

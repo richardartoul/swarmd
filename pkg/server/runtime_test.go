@@ -256,6 +256,58 @@ func TestRuntimeManagerStoresRunPromptSnapshots(t *testing.T) {
 	}
 }
 
+func TestRuntimeManagerSweepsStaleSpillDirsOnWorkerStart(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-spill-sweep")
+	root := filepath.Join(t.TempDir(), "worker")
+	record := createServerWorker(t, ctx, s, namespace.ID, "worker", root)
+
+	staleDir := filepath.Join(root, ".tmp", "tool-outputs", "stale-run", "step_1")
+	if err := os.MkdirAll(staleDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(staleDir) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(staleDir, "leftover.txt"), []byte("leftover"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(leftover.txt) error = %v", err)
+	}
+
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, agentRecord cpstore.RunnableAgent) (agent.Driver, error) {
+			if agentRecord.NamespaceID != namespace.ID || agentRecord.ID != record.ID {
+				return nil, fmt.Errorf("unexpected worker %s/%s", agentRecord.NamespaceID, agentRecord.ID)
+			}
+			return &scriptedDriver{
+				decisions: []agent.Decision{
+					{Finish: &agent.FinishAction{Value: "done"}},
+				},
+			}, nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		_, err := os.Stat(filepath.Join(root, ".tmp", "tool-outputs"))
+		if errors.Is(err, os.ErrNotExist) {
+			return true, nil
+		}
+		return false, err
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+}
+
 func TestResultPersisterRetriesThenDeadLetters(t *testing.T) {
 	t.Parallel()
 
