@@ -37,12 +37,17 @@ go run ./pkg/server/cmd/swarmd server \
   --data-dir ./.tmp/swarmd/workspace-summary
 ```
 
-Embedding examples are ordinary Go programs. They use scripted drivers, so they do not require `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a running server:
+Embedding examples are ordinary Go programs. The scripted ones do not require `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or a running server. The provider-backed ones require the matching API key:
 
 ```sh
+# scripted examples
 go run ./examples/embedding/minimal-agent
 go run ./examples/embedding/custom-tool
 go run ./examples/embedding/network-policy
+
+# provider-backed examples
+OPENAI_API_KEY=... go run ./examples/embedding/minimal-agent-openai
+ANTHROPIC_API_KEY=... go run ./examples/embedding/minimal-agent-anthropic
 ```
 
 ## Directory Map
