@@ -60,6 +60,10 @@ func (blocklistNondevFS) OpenFile(path string, flags int, mode os.FileMode) (io.
 
 type mockFileFS struct{ interp.OSFileSystem }
 
+func (mockFileFS) ResolvePath(dir, path string) (string, error) {
+	return path, nil
+}
+
 func (mockFileFS) OpenFile(path string, flags int, mode os.FileMode) (io.ReadWriteCloser, error) {
 	return nopWriterCloser{strings.NewReader(fmt.Sprintf("body of %s", path))}, nil
 }

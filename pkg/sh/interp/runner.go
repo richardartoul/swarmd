@@ -1139,7 +1139,7 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 	dir, name := filepath.Split(path)
 	dir = strings.TrimSuffix(dir, "/")
 	if dir == r.tempDir && strings.HasPrefix(name, fifoNamePrefix) {
-		return r.fileSystem.OpenFile(path, flags, mode)
+		return OSFileSystem{}.OpenFile(path, flags, mode)
 	}
 
 	f, err := r.fileSystem.OpenFile(path, flags, mode)
