@@ -226,6 +226,11 @@ func (a *Agent) Serve(ctx context.Context) error {
 	}
 }
 
+// Close releases any runtime-owned temporary spill files for this agent.
+func (a *Agent) Close() error {
+	return a.clearSpillBaseDir()
+}
+
 // HandleTrigger handles a single trigger synchronously.
 func (a *Agent) HandleTrigger(ctx context.Context, trigger Trigger) (Result, error) {
 	return a.runTurn(ctx, turnRunInput{

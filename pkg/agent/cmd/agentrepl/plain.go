@@ -10,7 +10,7 @@ import (
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
 
-func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
+func runPlainCommand(ctx context.Context, opts runtimeOptions) (runErr error) {
 	driver := opts.baseDriver
 	if opts.verbose {
 		driver = verboseDriver{
@@ -43,6 +43,11 @@ func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
 		if err != nil {
 			return err
 		}
+		defer func() {
+			if closeErr := runtime.Close(); runErr == nil {
+				runErr = closeErr
+			}
+		}()
 		return runtime.Serve(ctx)
 	}
 
@@ -54,5 +59,10 @@ func runPlainCommand(ctx context.Context, opts runtimeOptions) error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := runtime.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
 	return runSessionLoop(ctx, queue, agent.NewSession(runtime))
 }

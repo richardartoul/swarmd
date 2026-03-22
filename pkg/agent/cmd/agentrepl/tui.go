@@ -71,7 +71,7 @@ func runTUICommand(ctx context.Context, opts runtimeOptions) error {
 	return runtimeErr
 }
 
-func runTUIAgent(ctx context.Context, opts runtimeOptions, queue agent.Queue, events *tuiEventBus) error {
+func runTUIAgent(ctx context.Context, opts runtimeOptions, queue agent.Queue, events *tuiEventBus) (runErr error) {
 	driver := tuiDriver{
 		next:    opts.baseDriver,
 		events:  events,
@@ -98,6 +98,11 @@ func runTUIAgent(ctx context.Context, opts runtimeOptions, queue agent.Queue, ev
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := runtime.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
 	return runSessionLoop(ctx, queue, agent.NewSession(runtime))
 }
 

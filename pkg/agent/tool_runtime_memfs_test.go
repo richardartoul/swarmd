@@ -89,7 +89,7 @@ func TestToolRuntimeSupportsMemFS(t *testing.T) {
 	}
 }
 
-func TestToolRuntimeCleansUpSpillFilesInMemFS(t *testing.T) {
+func TestToolRuntimeRetainsSpillFilesInMemFSUntilAgentClose(t *testing.T) {
 	t.Parallel()
 
 	fsys, err := memfs.New("/workspace")
@@ -138,7 +138,13 @@ func TestToolRuntimeCleansUpSpillFilesInMemFS(t *testing.T) {
 	if !result.Steps[0].ActionOutputTruncated {
 		t.Fatal("result.Steps[0].ActionOutputTruncated = false, want true")
 	}
+	if _, err := fsys.Stat(spillPath); err != nil {
+		t.Fatalf("Stat(spillPath) error = %v, want retained spill file before Agent.Close()", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
 	if _, err := fsys.Stat(spillPath); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("Stat(spillPath) error = %v, want %v after cleanup", err, fs.ErrNotExist)
+		t.Fatalf("Stat(spillPath) error = %v, want %v after Agent.Close()", err, fs.ErrNotExist)
 	}
 }

@@ -184,7 +184,7 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		Queue:                queue,
 		Driver:               driver,
 		SystemPrompt:         systemPrompt,
-		OnStep:          StepPersister{Store: m.Store, Logger: m.Logger},
+		OnStep:               StepPersister{Store: m.Store, Logger: m.Logger},
 		OnResult: ResultPersister{
 			Store:            m.Store,
 			RetryDelay:       record.RetryDelay,
@@ -223,6 +223,9 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 		err := runtime.Serve(workerCtx)
 		if err != nil && errors.Is(err, context.Canceled) {
 			err = nil
+		}
+		if closeErr := runtime.Close(); err == nil && closeErr != nil {
+			err = closeErr
 		}
 		handle.done <- err
 		close(handle.done)

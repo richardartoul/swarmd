@@ -23,7 +23,7 @@ const (
 
 var registerStructuredOutputToolOnce sync.Once
 
-func TestHandleTriggerSpillsLargeToolOutputAndCleansItUp(t *testing.T) {
+func TestHandleTriggerRetainsLargeToolOutputUntilAgentClose(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -75,8 +75,17 @@ func TestHandleTriggerSpillsLargeToolOutputAndCleansItUp(t *testing.T) {
 	if !strings.Contains(spillData, "256|line") {
 		t.Fatalf("spillData = %q, want full numbered read_file contents", spillData)
 	}
+	if _, err := os.Stat(spillPath); err != nil {
+		t.Fatalf("os.Stat(spillPath) error = %v, want retained spill file before Agent.Close()", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("second a.Close() error = %v", err)
+	}
 	if _, err := os.Stat(spillPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(spillPath) error = %v, want %v after cleanup", err, os.ErrNotExist)
+		t.Fatalf("os.Stat(spillPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
 	}
 }
 
@@ -105,7 +114,7 @@ func TestSweepStaleOutputSpillDirsRemovesStaleDirectories(t *testing.T) {
 	}
 }
 
-func TestHandleTriggerSpillsShellStdoutAndCleansItUp(t *testing.T) {
+func TestHandleTriggerRetainsShellStdoutUntilAgentClose(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -160,12 +169,18 @@ func TestHandleTriggerSpillsShellStdoutAndCleansItUp(t *testing.T) {
 	if len(stdoutData) != 512 {
 		t.Fatalf("len(stdoutData) = %d, want 512", len(stdoutData))
 	}
+	if _, err := os.Stat(stdoutPath); err != nil {
+		t.Fatalf("os.Stat(stdoutPath) error = %v, want retained spill file before Agent.Close()", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
 	if _, err := os.Stat(stdoutPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(stdoutPath) error = %v, want %v after cleanup", err, os.ErrNotExist)
+		t.Fatalf("os.Stat(stdoutPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
 	}
 }
 
-func TestHandleTriggerSpillsStructuredJSONOutputAsStubAndCleansItUp(t *testing.T) {
+func TestHandleTriggerRetainsStructuredJSONOutputUntilAgentClose(t *testing.T) {
 	t.Parallel()
 	ensureStructuredOutputTestTool()
 
@@ -231,8 +246,14 @@ func TestHandleTriggerSpillsStructuredJSONOutputAsStubAndCleansItUp(t *testing.T
 	if !strings.Contains(fullOutput, structuredOutputNeedle) {
 		t.Fatalf("fullOutput = %q, want original large payload", fullOutput)
 	}
+	if _, err := os.Stat(fullOutputPath); err != nil {
+		t.Fatalf("os.Stat(fullOutputPath) error = %v, want retained spill file before Agent.Close()", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
 	if _, err := os.Stat(fullOutputPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(fullOutputPath) error = %v, want %v after cleanup", err, os.ErrNotExist)
+		t.Fatalf("os.Stat(fullOutputPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
 	}
 }
 
@@ -362,7 +383,7 @@ func TestHandleTriggerFailsWhenToolSpillWriteFails(t *testing.T) {
 	}
 }
 
-func TestSessionCarriesCompactedStructuredOutputAfterCleanup(t *testing.T) {
+func TestSessionCarriesCompactedStructuredOutputWithRetainedSpillFiles(t *testing.T) {
 	t.Parallel()
 	ensureStructuredOutputTestTool()
 
@@ -434,8 +455,71 @@ func TestSessionCarriesCompactedStructuredOutputAfterCleanup(t *testing.T) {
 	if fullOutputPath == "" {
 		t.Fatal("prior step did not retain a full_output.json file reference")
 	}
+	if _, err := os.Stat(fullOutputPath); err != nil {
+		t.Fatalf("os.Stat(fullOutputPath) error = %v, want retained spill file during later session turn", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
 	if _, err := os.Stat(fullOutputPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(fullOutputPath) error = %v, want %v after cleanup", err, os.ErrNotExist)
+		t.Fatalf("os.Stat(fullOutputPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
+	}
+}
+
+func TestHandleTriggerRetainsDistinctRunSpillDirsUntilAgentClose(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.WriteFile(root+"/note.txt", []byte(strings.Repeat("line\n", 256)), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(note.txt) error = %v", err)
+	}
+
+	a := newAgent(t, agent.Config{
+		Root:           root,
+		MaxOutputBytes: 96,
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				tool(agent.ToolNameReadFile, agent.ToolKindFunction, `{"file_path":"note.txt","offset":1,"limit":256}`),
+				finish("first"),
+				tool(agent.ToolNameReadFile, agent.ToolKindFunction, `{"file_path":"note.txt","offset":1,"limit":256}`),
+				finish("second"),
+			},
+		},
+	})
+
+	first, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "spill-run-one"})
+	if err != nil {
+		t.Fatalf("first HandleTrigger() error = %v", err)
+	}
+	second, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "spill-run-two"})
+	if err != nil {
+		t.Fatalf("second HandleTrigger() error = %v", err)
+	}
+	if len(first.Steps) != 1 || len(first.Steps[0].ActionOutputFiles) != 1 {
+		t.Fatalf("first step files = %#v, want one spill file", first.Steps)
+	}
+	if len(second.Steps) != 1 || len(second.Steps[0].ActionOutputFiles) != 1 {
+		t.Fatalf("second step files = %#v, want one spill file", second.Steps)
+	}
+	firstPath := first.Steps[0].ActionOutputFiles[0].Path
+	secondPath := second.Steps[0].ActionOutputFiles[0].Path
+	if firstPath == secondPath {
+		t.Fatalf("firstPath = %q, secondPath = %q, want distinct retained spill paths", firstPath, secondPath)
+	}
+	if _, err := os.Stat(firstPath); err != nil {
+		t.Fatalf("os.Stat(firstPath) error = %v, want retained spill file", err)
+	}
+	if _, err := os.Stat(secondPath); err != nil {
+		t.Fatalf("os.Stat(secondPath) error = %v, want retained spill file", err)
+	}
+	if err := a.Close(); err != nil {
+		t.Fatalf("a.Close() error = %v", err)
+	}
+	if _, err := os.Stat(firstPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(firstPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
+	}
+	if _, err := os.Stat(secondPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(secondPath) error = %v, want %v after Agent.Close()", err, os.ErrNotExist)
 	}
 }
 

@@ -51,8 +51,22 @@ func (a *Agent) beginRunSpillDir(trigger Trigger) (func(), error) {
 	a.currentRunSpillDir = runDir
 	return func() {
 		a.currentRunSpillDir = previous
-		_ = a.fileSystem.RemoveAll(runDir)
 	}, nil
+}
+
+func (a *Agent) clearSpillBaseDir() error {
+	if a == nil || a.fileSystem == nil {
+		return nil
+	}
+	if strings.TrimSpace(a.spillBaseDir) == "" {
+		a.currentRunSpillDir = ""
+		return nil
+	}
+	if err := a.fileSystem.RemoveAll(a.spillBaseDir); err != nil {
+		return fmt.Errorf("remove spill base directory %q: %w", a.spillBaseDir, err)
+	}
+	a.currentRunSpillDir = ""
+	return nil
 }
 
 func (a *Agent) stepSpillFile(stepIndex int, fileName, mimeType, description string) (string, toolscore.FileReference, error) {
