@@ -13,7 +13,7 @@ import (
 const (
 	apiKeyEnv    = "OPENAI_API_KEY"
 	defaultModel = "gpt-4o-mini"
-	demoPrompt   = "Run `echo hello from the sandbox` using the shell. After the command succeeds, finish with the exact plain string `done`."
+	demoPrompt   = "Your first response must be a run_shell tool call with the command `echo hello from the sandbox`. Do not answer directly before the tool call. After the command succeeds, finish with the exact plain string `done`."
 )
 
 func main() {
@@ -48,7 +48,7 @@ func run() error {
 		Driver:   driver,
 		MaxSteps: 4,
 		SystemPrompt: agent.ComposeSystemPrompt(
-			`This is a minimal embedding demo. Use exactly one run_shell step to execute the requested shell command. After the command succeeds, finish with the exact plain string "done".`,
+			`This is a minimal embedding demo. A run_shell tool call on the first turn is mandatory. Do not answer directly before calling run_shell. After the command succeeds, finish with the exact plain string "done".`,
 			false,
 		),
 	})
