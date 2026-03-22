@@ -500,12 +500,13 @@ func TestRunnerForgetsCompletedTempFIFOPaths(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
-	file := parse(t, nil, `p=<(echo bar); echo $(<"$p"); echo $(<"$p")`)
+	file := parse(t, nil, `p=<(echo bar); echo $(<"$p"); sleep 0.01; echo $(<"$p")`)
 	var cb concBuffer
 	r, err := interp.New(
 		interp.FileSystem(mockFileFS{}),
 		interp.Env(expand.ListEnviron("TMPDIR="+tmpDir)),
 		interp.StdIO(nil, &cb, &cb),
+		interp.ExecHandlers(testExecHandler),
 	)
 	if err != nil {
 		t.Fatal(err)
