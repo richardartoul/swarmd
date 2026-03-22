@@ -421,25 +421,47 @@ func executeGetFileContents(ctx context.Context, client *githubcommon.Client, re
 		}, nil, nil, nil), nil
 	}
 	var response struct {
-		Path     string `json:"path"`
-		Sha      string `json:"sha"`
-		Size     int    `json:"size"`
-		Encoding string `json:"encoding"`
-		Content  string `json:"content"`
+		Type            string  `json:"type"`
+		Path            string  `json:"path"`
+		Sha             string  `json:"sha"`
+		Size            int     `json:"size"`
+		Encoding        string  `json:"encoding"`
+		Content         *string `json:"content"`
+		DownloadURL     string  `json:"download_url"`
+		Target          string  `json:"target"`
+		SubmoduleGitURL string  `json:"submodule_git_url"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return githubcommon.ToolResponse{}, fmt.Errorf("decode file contents response: %w", err)
 	}
+	entryType := strings.TrimSpace(response.Type)
 	data := map[string]any{
 		"path":       toolscommon.FirstNonEmptyString(strings.TrimSpace(response.Path), req.Path),
 		"ref":        req.Ref,
 		"sha":        strings.TrimSpace(response.Sha),
 		"size_bytes": response.Size,
 	}
+	if entryType != "" {
+		data["type"] = entryType
+	}
+	if downloadURL := strings.TrimSpace(response.DownloadURL); downloadURL != "" {
+		data["download_url"] = downloadURL
+	}
+	if target := strings.TrimSpace(response.Target); target != "" {
+		data["target"] = target
+	}
+	if submoduleGitURL := strings.TrimSpace(response.SubmoduleGitURL); submoduleGitURL != "" {
+		data["submodule_git_url"] = submoduleGitURL
+	}
 	var warnings []string
-	content := strings.TrimSpace(response.Content)
-	if strings.EqualFold(strings.TrimSpace(response.Encoding), "base64") && content != "" {
-		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(content, "\n", ""))
+	encoding := strings.TrimSpace(response.Encoding)
+	content := ""
+	if response.Content != nil {
+		content = *response.Content
+	}
+	trimmedContent := strings.TrimSpace(content)
+	if strings.EqualFold(encoding, "base64") && trimmedContent != "" {
+		decoded, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(trimmedContent, "\n", ""))
 		if err != nil {
 			return githubcommon.ToolResponse{}, fmt.Errorf("decode file content: %w", err)
 		}
@@ -448,13 +470,29 @@ func executeGetFileContents(ctx context.Context, client *githubcommon.Client, re
 			data["content_inline"] = string(decoded)
 		} else {
 			data["encoding"] = "base64"
-			data["content_base64"] = strings.ReplaceAll(content, "\n", "")
+			data["content_base64"] = strings.ReplaceAll(trimmedContent, "\n", "")
 			warnings = append(warnings, "File contents are not valid UTF-8; returning base64 content instead of content_inline")
 		}
-	} else {
-		data["encoding"] = strings.TrimSpace(response.Encoding)
+	} else if trimmedContent != "" {
+		if encoding != "" {
+			data["encoding"] = encoding
+		}
 		if content != "" {
 			data["content_inline"] = content
+		}
+	} else {
+		if encoding != "" {
+			data["encoding"] = encoding
+		}
+		switch entryType {
+		case "symlink":
+			warnings = append(warnings, "GitHub returned a symlink entry without inline file content")
+		case "submodule":
+			warnings = append(warnings, "GitHub returned a submodule entry without inline file content")
+		default:
+			if response.Size > 0 || strings.TrimSpace(response.DownloadURL) != "" {
+				warnings = append(warnings, "GitHub did not include inline file content for this path")
+			}
 		}
 	}
 	return githubcommon.SuccessResponse(ToolName, req.Action, data, warnings, nil, nil), nil

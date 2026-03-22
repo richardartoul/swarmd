@@ -36,3 +36,18 @@ func TestPageInfoFromLinkHeaderTracksNextLinkWithoutPageNumber(t *testing.T) {
 		t.Fatalf("pageInfo.NextPage = %#v, want nil when next page number is unavailable", pageInfo.NextPage)
 	}
 }
+
+func TestPageInfoFromLinkHeaderAcceptsUnquotedNextRel(t *testing.T) {
+	t.Parallel()
+
+	pageInfo := PageInfoFromLinkHeader(Pagination{Page: 1, PerPage: 20}, `<https://api.github.com/repos/acme/monorepo/rulesets?page=2&per_page=20>; rel=next`)
+	if pageInfo == nil {
+		t.Fatal("PageInfoFromLinkHeader() = nil, want page info")
+	}
+	if !pageInfo.HasNextPage {
+		t.Fatal("pageInfo.HasNextPage = false, want true")
+	}
+	if pageInfo.NextPage == nil || *pageInfo.NextPage != 2 {
+		t.Fatalf("pageInfo.NextPage = %#v, want page 2", pageInfo.NextPage)
+	}
+}

@@ -202,7 +202,7 @@ func ParseNextLink(linkHeader string) (*int, bool) {
 	}
 	for _, part := range strings.Split(linkHeader, ",") {
 		part = strings.TrimSpace(part)
-		if part == "" || !strings.Contains(part, `rel="next"`) {
+		if part == "" || (!strings.Contains(part, `rel="next"`) && !strings.Contains(part, "rel=next")) {
 			continue
 		}
 		start := strings.Index(part, "<")

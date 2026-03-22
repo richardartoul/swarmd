@@ -165,6 +165,83 @@ func TestRepoToolGetFileContentsNormalizesLeadingSlash(t *testing.T) {
 	}
 }
 
+func TestRepoToolGetFileContentsWarnsWhenInlineContentIsUnavailable(t *testing.T) {
+	t.Parallel()
+	registerTestTool(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/monorepo/contents/large.bin" {
+			t.Fatalf("request path = %q, want contents path", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":         "file",
+			"path":         "large.bin",
+			"sha":          "abc123",
+			"size":         2048,
+			"encoding":     "none",
+			"content":      nil,
+			"download_url": "https://raw.githubusercontent.com/acme/monorepo/main/large.bin",
+		})
+	}))
+	defer server.Close()
+
+	step := runRepoToolStep(t, map[string]any{
+		"action": "get_file_contents",
+		"owner":  "acme",
+		"repo":   "monorepo",
+		"path":   "large.bin",
+	}, map[string]string{
+		githubcommon.GitHubTokenEnvVar:      "github-token",
+		githubcommon.GitHubAPIBaseURLEnvVar: server.URL,
+	})
+	if step.Status != agent.StepStatusOK {
+		t.Fatalf("step.Status = %q, want %q (error=%q)", step.Status, agent.StepStatusOK, step.Error)
+	}
+	if !strings.Contains(step.ActionOutput, `"download_url":"https://raw.githubusercontent.com/acme/monorepo/main/large.bin"`) {
+		t.Fatalf("step.ActionOutput = %q, want download_url", step.ActionOutput)
+	}
+	if !strings.Contains(step.ActionOutput, `GitHub did not include inline file content`) {
+		t.Fatalf("step.ActionOutput = %q, want inline content warning", step.ActionOutput)
+	}
+}
+
+func TestRepoToolGetFileContentsHandlesSubmoduleMetadata(t *testing.T) {
+	t.Parallel()
+	registerTestTool(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/acme/monorepo/contents/vendor/lib" {
+			t.Fatalf("request path = %q, want contents path", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":              "submodule",
+			"path":              "vendor/lib",
+			"sha":               "abc123",
+			"submodule_git_url": "https://github.com/acme/lib.git",
+		})
+	}))
+	defer server.Close()
+
+	step := runRepoToolStep(t, map[string]any{
+		"action": "get_file_contents",
+		"owner":  "acme",
+		"repo":   "monorepo",
+		"path":   "vendor/lib",
+	}, map[string]string{
+		githubcommon.GitHubTokenEnvVar:      "github-token",
+		githubcommon.GitHubAPIBaseURLEnvVar: server.URL,
+	})
+	if step.Status != agent.StepStatusOK {
+		t.Fatalf("step.Status = %q, want %q (error=%q)", step.Status, agent.StepStatusOK, step.Error)
+	}
+	if !strings.Contains(step.ActionOutput, `"type":"submodule"`) || !strings.Contains(step.ActionOutput, `"submodule_git_url":"https://github.com/acme/lib.git"`) {
+		t.Fatalf("step.ActionOutput = %q, want submodule metadata", step.ActionOutput)
+	}
+	if !strings.Contains(step.ActionOutput, `submodule entry without inline file content`) {
+		t.Fatalf("step.ActionOutput = %q, want submodule warning", step.ActionOutput)
+	}
+}
+
 func TestRepoToolListTreeIncludesZeroSizeBlob(t *testing.T) {
 	t.Parallel()
 	registerTestTool(t)

@@ -311,7 +311,7 @@ GitHub CI tool example:
 ```
 
 ```json
-{"tool":"github_read_ci","action":"download_artifact","ok":true,"data":{"artifact_id":701,"name":"junit-results","redirected":true,"archive_format":"zip","extract":true},"warnings":[],"page_info":null,"files":[{"path":"github/actions/artifacts/701.zip","mime_type":"application/zip","description":"Raw artifact archive"},{"path":"github/actions/artifacts/701/junit.xml","mime_type":"application/xml","description":"Extracted JUnit report"}]}
+{"tool":"github_read_ci","action":"download_artifact","ok":true,"data":{"artifact_id":701,"name":"junit-results","redirected":true,"archive_format":"zip","extract":true},"warnings":[],"page_info":null,"files":[{"path":"github/actions/artifacts/701.zip","mime_type":"application/zip","description":"Raw artifact archive"},{"path":"github/actions/artifacts/701/junit.xml","mime_type":"application/xml","description":"Extracted artifact file"}]}
 ```
 
 Planned GitHub follow-on tools:
