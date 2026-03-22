@@ -42,11 +42,11 @@ func runTUICommand(ctx context.Context, opts runtimeOptions) error {
 		runtimeErrCh <- err
 	}()
 
+	// Keep terminal-native drag selection/copy working by not enabling mouse capture.
 	program := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
 		tea.WithContext(runCtx),
-		tea.WithMouseCellMotion(),
 	)
 	_, programErr := program.Run()
 	cancel()
