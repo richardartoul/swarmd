@@ -116,6 +116,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 					*bg.exit = r2.exit
 					close(bg.done)
 				}()
+				defer r.forgetTempFIFO(path)
 				switch ps.Op {
 				case syntax.CmdIn:
 					f, err := r.fileSystem.OpenFile(path, os.O_WRONLY, 0)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
+	"github.com/richardartoul/swarmd/pkg/server"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
@@ -92,11 +94,12 @@ func TestRuntimeOptionsAgentConfigEnablesFullCapabilities(t *testing.T) {
 	t.Parallel()
 
 	opts := runtimeOptions{
-		rootDir:         t.TempDir(),
-		networkDialer:   interp.OSNetworkDialer{},
-		maxSteps:        agent.DefaultMaxSteps,
-		maxOutputBytes:  agent.DefaultMaxOutputBytes,
-		preserveState:   true,
+		rootDir:        t.TempDir(),
+		networkDialer:  interp.OSNetworkDialer{},
+		lookupEnv:      func(string) string { return "" },
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
 	}
 
 	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
@@ -116,15 +119,144 @@ func TestRuntimeOptionsAgentConfigEnablesFullCapabilities(t *testing.T) {
 	}
 }
 
+func TestRuntimeOptionsAgentConfigAutoEnablesCredentialBackedCustomTools(t *testing.T) {
+	t.Parallel()
+
+	opts := runtimeOptions{
+		rootDir:       t.TempDir(),
+		networkDialer: interp.OSNetworkDialer{},
+		lookupEnv: func(name string) string {
+			switch name {
+			case "GITHUB_TOKEN":
+				return "gh-token"
+			default:
+				return ""
+			}
+		},
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+	}
+
+	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+		return agent.Decision{Finish: &agent.FinishAction{Value: "done"}}, nil
+	}), nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("agentConfig() error = %v", err)
+	}
+
+	got := configuredToolIDs(cfg.ConfiguredTools)
+	want := []string{"github_read_ci", "github_read_repo", "github_read_reviews"}
+	if !sameStrings(got, want) {
+		t.Fatalf("cfg.ConfiguredTools = %#v, want IDs %v", cfg.ConfiguredTools, want)
+	}
+
+	runtime, ok := cfg.ToolRuntimeData.(server.ToolRuntime)
+	if !ok {
+		t.Fatalf("cfg.ToolRuntimeData type = %T, want server.ToolRuntime", cfg.ToolRuntimeData)
+	}
+	if got := runtime.LookupEnv("GITHUB_TOKEN"); got != "gh-token" {
+		t.Fatalf("runtime.LookupEnv(%q) = %q, want %q", "GITHUB_TOKEN", got, "gh-token")
+	}
+}
+
+func TestRuntimeOptionsAgentConfigSkipsCustomToolsWithoutEnv(t *testing.T) {
+	t.Parallel()
+
+	opts := runtimeOptions{
+		rootDir:        t.TempDir(),
+		networkDialer:  interp.OSNetworkDialer{},
+		lookupEnv:      func(string) string { return "" },
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+	}
+
+	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+		return agent.Decision{Finish: &agent.FinishAction{Value: "done"}}, nil
+	}), nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("agentConfig() error = %v", err)
+	}
+	if len(cfg.ConfiguredTools) != 0 {
+		t.Fatalf("cfg.ConfiguredTools = %#v, want no auto-enabled custom tools", cfg.ConfiguredTools)
+	}
+}
+
+func TestRuntimeOptionsAgentConfigSkipsNetworkedCustomToolsWhenNetworkDisabled(t *testing.T) {
+	t.Parallel()
+
+	opts := runtimeOptions{
+		rootDir: t.TempDir(),
+		lookupEnv: func(name string) string {
+			switch name {
+			case "GITHUB_TOKEN", "SLACK_USER_TOKEN", "DD_API_KEY", "DD_APP_KEY":
+				return "present"
+			default:
+				return ""
+			}
+		},
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+	}
+
+	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+		return agent.Decision{Finish: &agent.FinishAction{Value: "done"}}, nil
+	}), nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("agentConfig() error = %v", err)
+	}
+	if len(cfg.ConfiguredTools) != 0 {
+		t.Fatalf("cfg.ConfiguredTools = %#v, want networked custom tools omitted", cfg.ConfiguredTools)
+	}
+}
+
+func TestRuntimeOptionsAgentConfigKeepsBuiltInsAvailableAlongsideAutoEnabledCustomTools(t *testing.T) {
+	t.Parallel()
+
+	opts := runtimeOptions{
+		rootDir:       t.TempDir(),
+		networkDialer: interp.OSNetworkDialer{},
+		lookupEnv: func(name string) string {
+			if name == "GITHUB_TOKEN" {
+				return "gh-token"
+			}
+			return ""
+		},
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+	}
+
+	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+		return agent.Decision{Finish: &agent.FinishAction{Value: "done"}}, nil
+	}), nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("agentConfig() error = %v", err)
+	}
+
+	definitions, err := agent.ResolveToolDefinitions(cfg.ConfiguredTools, cfg.GlobalReachableHosts)
+	if err != nil {
+		t.Fatalf("ResolveToolDefinitions() error = %v", err)
+	}
+	if !hasToolDefinition(definitions, agent.ToolNameReadFile) {
+		t.Fatalf("tool definitions = %#v, want built-in %q", definitions, agent.ToolNameReadFile)
+	}
+	if !hasToolDefinition(definitions, "github_read_repo") {
+		t.Fatalf("tool definitions = %#v, want auto-enabled custom tool %q", definitions, "github_read_repo")
+	}
+}
+
 func TestRuntimeOptionsAgentConfigAppendsSystemPromptFileInstructions(t *testing.T) {
 	t.Parallel()
 
 	opts := runtimeOptions{
-		rootDir:         t.TempDir(),
-		systemPrompt:    "Prioritize deep debugging over speed.",
-		maxSteps:        agent.DefaultMaxSteps,
-		maxOutputBytes:  agent.DefaultMaxOutputBytes,
-		preserveState:   true,
+		rootDir:        t.TempDir(),
+		systemPrompt:   "Prioritize deep debugging over speed.",
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
 	}
 
 	cfg, err := opts.agentConfig(nil, agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
@@ -643,4 +775,37 @@ func flattenTranscriptEntries(entries []transcriptEntry) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func configuredToolIDs(tools []agent.ConfiguredTool) []string {
+	ids := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		ids = append(ids, tool.ID)
+	}
+	return ids
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	left = append([]string(nil), left...)
+	right = append([]string(nil), right...)
+	slices.Sort(left)
+	slices.Sort(right)
+	for idx := range left {
+		if left[idx] != right[idx] {
+			return false
+		}
+	}
+	return true
+}
+
+func hasToolDefinition(definitions []agent.ToolDefinition, name string) bool {
+	for _, definition := range definitions {
+		if definition.Name == name {
+			return true
+		}
+	}
+	return false
 }

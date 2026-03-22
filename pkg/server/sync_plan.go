@@ -609,7 +609,7 @@ func diffAgentState(existing cpstore.RunnableAgent, desired desiredAgentState) [
 	appendChange("model_provider", existing.ModelProvider, desired.ModelProvider)
 	appendChange("model_name", existing.ModelName, desired.ModelName)
 	appendChange("model_base_url", existing.ModelBaseURL, desired.ModelBaseURL)
-	appendChange("network_enabled", fmt.Sprintf("%t", existing.AllowNetwork), fmt.Sprintf("%t", desired.AllowNetwork))
+	appendChange("global_network_enabled", fmt.Sprintf("%t", existing.AllowNetwork), fmt.Sprintf("%t", desired.AllowNetwork))
 	appendChange("preserve_state", fmt.Sprintf("%t", existing.PreserveState), fmt.Sprintf("%t", desired.PreserveState))
 	appendChange("max_steps", fmt.Sprintf("%d", existing.MaxSteps), fmt.Sprintf("%d", desired.MaxSteps))
 	appendChange("step_timeout", existing.StepTimeout.String(), desired.StepTimeout.String())

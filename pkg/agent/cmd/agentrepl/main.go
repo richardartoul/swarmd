@@ -15,9 +15,12 @@ import (
 
 	"github.com/richardartoul/swarmd/pkg/agent"
 	agentopenai "github.com/richardartoul/swarmd/pkg/agent/openai"
+	"github.com/richardartoul/swarmd/pkg/server"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 	"github.com/richardartoul/swarmd/pkg/sh/memfs"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
+	_ "github.com/richardartoul/swarmd/pkg/tools/customtools"
+	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
 )
 
 var (
@@ -61,6 +64,7 @@ type runtimeOptions struct {
 	rootDir        string
 	useMemFS       bool
 	networkDialer  interp.NetworkDialer
+	lookupEnv      func(string) string
 	systemPrompt   string
 	baseDriver     agent.Driver
 	modelName      string
@@ -134,6 +138,7 @@ func buildRuntimeOptions() (runtimeOptions, error) {
 		rootDir:        *rootDir,
 		useMemFS:       *useMemFS,
 		networkDialer:  networkDialer,
+		lookupEnv:      os.Getenv,
 		systemPrompt:   systemPrompt,
 		baseDriver:     openaiDriver,
 		modelName:      *model,
@@ -174,10 +179,13 @@ func (opts runtimeOptions) agentConfig(
 	if opts.networkDialer != nil {
 		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
 	}
+	configuredTools := opts.autoConfiguredTools()
 	cfg := agent.Config{
 		FileSystem:                   fsys,
 		NetworkDialer:                opts.networkDialer,
 		GlobalReachableHosts:         globalReachableHosts,
+		ConfiguredTools:              configuredTools,
+		ToolRuntimeData:              newREPLToolRuntime(opts.toolEnvLookup()),
 		Queue:                        queue,
 		Driver:                       driver,
 		OnStep:                       onStep,
@@ -191,6 +199,76 @@ func (opts runtimeOptions) agentConfig(
 		Stderr:                       stderr,
 	}
 	return cfg, nil
+}
+
+func (opts runtimeOptions) autoConfiguredTools() []agent.ConfiguredTool {
+	lookupEnv := opts.toolEnvLookup()
+	networkEnabled := opts.networkDialer != nil
+	configured := make([]agent.ConfiguredTool, 0)
+	for _, tool := range toolregistry.RegisteredCustomTools() {
+		if !shouldAutoEnableREPLTool(tool, lookupEnv, networkEnabled) {
+			continue
+		}
+		configured = append(configured, agent.ConfiguredTool{ID: tool.Definition.Name})
+	}
+	if len(configured) == 0 {
+		return nil
+	}
+	return configured
+}
+
+func shouldAutoEnableREPLTool(tool toolregistry.CustomToolCatalogEntry, lookupEnv func(string) string, networkEnabled bool) bool {
+	// v1 only auto-enables credential-backed custom tools.
+	if len(tool.RequiredEnv) == 0 {
+		return false
+	}
+	if tool.Definition.NetworkScope.Normalized() != agent.ToolNetworkScopeNone && !networkEnabled {
+		return false
+	}
+	for _, name := range tool.RequiredEnv {
+		if strings.TrimSpace(lookupEnv(name)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func (opts runtimeOptions) toolEnvLookup() func(string) string {
+	if opts.lookupEnv == nil {
+		return func(name string) string {
+			return strings.TrimSpace(os.Getenv(strings.TrimSpace(name)))
+		}
+	}
+	return func(name string) string {
+		return strings.TrimSpace(opts.lookupEnv(strings.TrimSpace(name)))
+	}
+}
+
+type replToolRuntime struct {
+	lookupEnv func(string) string
+}
+
+func newREPLToolRuntime(lookupEnv func(string) string) server.ToolRuntime {
+	return replToolRuntime{lookupEnv: lookupEnv}
+}
+
+func (r replToolRuntime) NamespaceID() string {
+	return "agentrepl"
+}
+
+func (r replToolRuntime) AgentID() string {
+	return "agentrepl"
+}
+
+func (r replToolRuntime) LookupEnv(name string) string {
+	if r.lookupEnv == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.lookupEnv(strings.TrimSpace(name)))
+}
+
+func (r replToolRuntime) Logger() server.ToolLogger {
+	return nil
 }
 
 type replQueue struct {

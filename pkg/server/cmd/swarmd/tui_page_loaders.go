@@ -101,7 +101,7 @@ func loadAgentItems(ctx context.Context, store *cpstore.Store, query tuiPageQuer
 	items := make([]list.Item, 0, len(agents))
 	for _, agent := range agents {
 		desc := fmt.Sprintf(
-			"state=%s model=%s net=%t root=%s",
+			"state=%s model=%s global_net=%t root=%s",
 			agent.DesiredState,
 			joinModel(agent.ModelProvider, agent.ModelName),
 			agent.AllowNetwork,

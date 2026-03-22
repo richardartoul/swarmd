@@ -286,6 +286,12 @@ func (s *runnerTempFIFOSet) Has(path string) bool {
 	return ok
 }
 
+func (s *runnerTempFIFOSet) Remove(path string) {
+	s.mu.Lock()
+	delete(s.paths, path)
+	s.mu.Unlock()
+}
+
 func (r *Runner) rememberTempFIFO(path string) {
 	if r.tempFIFOPaths != nil {
 		r.tempFIFOPaths.Add(path)
@@ -294,6 +300,12 @@ func (r *Runner) rememberTempFIFO(path string) {
 
 func (r *Runner) isTempFIFOPath(path string) bool {
 	return r.tempFIFOPaths != nil && r.tempFIFOPaths.Has(path)
+}
+
+func (r *Runner) forgetTempFIFO(path string) {
+	if r.tempFIFOPaths != nil {
+		r.tempFIFOPaths.Remove(path)
+	}
 }
 
 // New creates a new Runner, applying a number of options. If applying any of

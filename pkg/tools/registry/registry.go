@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"sort"
 	"strings"
 	"sync"
 
@@ -14,8 +15,8 @@ import (
 
 // RegistrationOptions describes how a tool participates in the shared registry.
 type RegistrationOptions struct {
-	BuiltIn      bool
-	RequiredEnv  []string
+	BuiltIn       bool
+	RequiredEnv   []string
 	RequiredHosts []interp.HostMatcher
 }
 
@@ -30,6 +31,13 @@ type toolRegistration struct {
 type ResolvedToolBinding struct {
 	Definition toolscore.ToolDefinition
 	Handler    toolscore.ToolHandler
+}
+
+// CustomToolCatalogEntry describes one registered non-built-in tool.
+type CustomToolCatalogEntry struct {
+	Definition    toolscore.ToolDefinition
+	RequiredEnv   []string
+	RequiredHosts []interp.HostMatcher
 }
 
 var (
@@ -99,6 +107,32 @@ func BuiltInToolNames() []string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	return slices.Clone(builtInToolOrder)
+}
+
+// RegisteredCustomTools returns registered non-built-in tools in stable order.
+func RegisteredCustomTools() []CustomToolCatalogEntry {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	names := make([]string, 0, len(toolRegistry))
+	for name, registration := range toolRegistry {
+		if registration.builtIn {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	tools := make([]CustomToolCatalogEntry, 0, len(names))
+	for _, name := range names {
+		registration := toolRegistry[name]
+		tools = append(tools, CustomToolCatalogEntry{
+			Definition:    registration.plugin.Definition(),
+			RequiredEnv:   slices.Clone(registration.requiredEnv),
+			RequiredHosts: slices.Clone(registration.requiredHosts),
+		})
+	}
+	return tools
 }
 
 // RequiredEnvForTool returns the environment variables required by one tool.

@@ -131,7 +131,7 @@ func renderAgentList(w io.Writer, agents []cpstore.RunnableAgent) {
 		return
 	}
 	tw := newTableWriter(w)
-	fmt.Fprintln(tw, "NAMESPACE\tAGENT\tSTATE\tMODEL\tNET\tROOT")
+	fmt.Fprintln(tw, "NAMESPACE\tAGENT\tSTATE\tMODEL\tGLOBAL_NET\tROOT")
 	for _, agent := range agents {
 		fmt.Fprintf(
 			tw,
@@ -158,7 +158,7 @@ func renderAgentShow(w io.Writer, data agentShowData) {
 	writeKeyValue(w, "model", joinModel(agent.ModelProvider, agent.ModelName))
 	writeKeyValue(w, "model_base_url", displayEmpty(agent.ModelBaseURL))
 	writeKeyValue(w, "root", displayAgentRoot(agent))
-	writeKeyValue(w, "network_enabled", fmt.Sprintf("%t", agent.AllowNetwork))
+	writeKeyValue(w, "global_network_enabled", fmt.Sprintf("%t", agent.AllowNetwork))
 	writeKeyValue(w, "preserve_state", fmt.Sprintf("%t", agent.PreserveState))
 	writeKeyValue(w, "max_steps", fmt.Sprintf("%d", agent.MaxSteps))
 	writeKeyValue(w, "step_timeout", agent.StepTimeout.String())

@@ -161,6 +161,80 @@ func TestRuntimeManagerIncludesManagedCustomTools(t *testing.T) {
 	}
 }
 
+func TestRuntimeManagerKeepsGlobalNetworkToolsHiddenForScopedToolOnlyAgents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-scoped-tool-only")
+	root := filepath.Join(t.TempDir(), "worker")
+	createServerWorkerWithConfig(t, ctx, s, namespace.ID, "worker", root, nil, managedAgentRuntimeConfig{
+		Tools: []agent.ConfiguredTool{{
+			ID: "github_read_repo",
+		}},
+	})
+
+	var (
+		toolsMu sync.Mutex
+		tools   []agent.ToolDefinition
+	)
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			return agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
+				toolsMu.Lock()
+				tools = append([]agent.ToolDefinition(nil), req.Tools...)
+				toolsMu.Unlock()
+				return agent.Decision{Finish: &agent.FinishAction{Value: "ok"}}, nil
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		ThreadID:         "thread-scoped-tool-only",
+		RecipientAgentID: "worker",
+		Payload:          "start",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		toolsMu.Lock()
+		defer toolsMu.Unlock()
+		return len(tools) > 0, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+
+	toolsMu.Lock()
+	captured := append([]agent.ToolDefinition(nil), tools...)
+	toolsMu.Unlock()
+	if !hasToolNamed(captured, "github_read_repo") {
+		t.Fatalf("req.Tools = %#v, want scoped tool %q", captured, "github_read_repo")
+	}
+	if hasToolNamed(captured, agent.ToolNameHTTPRequest) {
+		t.Fatalf("req.Tools = %#v, did not want global tool %q", captured, agent.ToolNameHTTPRequest)
+	}
+	if hasToolNamed(captured, agent.ToolNameReadWebPage) {
+		t.Fatalf("req.Tools = %#v, did not want global tool %q", captured, agent.ToolNameReadWebPage)
+	}
+	if hasToolNamed(captured, agent.ToolNameWebSearch) {
+		t.Fatalf("req.Tools = %#v, did not want global tool %q", captured, agent.ToolNameWebSearch)
+	}
+}
+
 func TestRuntimeManagerPersistsToolStepActionDetails(t *testing.T) {
 	t.Parallel()
 
