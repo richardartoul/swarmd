@@ -320,6 +320,40 @@ func createTestAgent(t *testing.T, ctx context.Context, s *Store, namespaceID, a
 	return record
 }
 
+func TestCreateAgentDefaultsStepTimeoutToFiveMinutes(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	namespace := createTestNamespace(t, ctx, s, "namespace-step-timeout")
+	root := filepath.Join(t.TempDir(), "worker")
+
+	record, err := s.CreateAgent(ctx, CreateAgentParams{
+		NamespaceID:  namespace.ID,
+		AgentID:      "worker",
+		Name:         "worker",
+		Role:         AgentRoleWorker,
+		DesiredState: AgentDesiredStateRunning,
+		RootPath:     root,
+		ModelName:    "test-model",
+		SystemPrompt: "You are a test worker.",
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+	if record.StepTimeout != DefaultAgentStepTimeout {
+		t.Fatalf("record.StepTimeout = %v, want %v", record.StepTimeout, DefaultAgentStepTimeout)
+	}
+
+	loaded, err := s.GetAgent(ctx, namespace.ID, "worker")
+	if err != nil {
+		t.Fatalf("GetAgent() error = %v", err)
+	}
+	if loaded.StepTimeout != DefaultAgentStepTimeout {
+		t.Fatalf("loaded.StepTimeout = %v, want %v", loaded.StepTimeout, DefaultAgentStepTimeout)
+	}
+}
+
 func TestStorePersistsAgentConfigTools(t *testing.T) {
 	t.Parallel()
 

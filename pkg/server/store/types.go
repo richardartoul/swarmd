@@ -38,6 +38,8 @@ const (
 	RunStatusRunning RunStatus = "running"
 )
 
+const DefaultAgentStepTimeout = 5 * time.Minute
+
 type JSONEnvelope struct {
 	Version int             `json:"version"`
 	Type    string          `json:"type,omitempty"`

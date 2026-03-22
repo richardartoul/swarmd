@@ -250,7 +250,7 @@ func New(cfg Config) (*Driver, error) {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Minute}
+		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	return &Driver{
 		apiKey:         cfg.APIKey,
@@ -757,12 +757,12 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 func (d *Driver) completeOnce(ctx context.Context, payload messagesRequest) (messagesResponse, error) {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return messagesResponse{}, err
+		return messagesResponse{}, fmt.Errorf("encode anthropic request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/messages", &body)
 	if err != nil {
-		return messagesResponse{}, err
+		return messagesResponse{}, fmt.Errorf("build anthropic request: %w", err)
 	}
 	req.Header.Set("x-api-key", d.apiKey)
 	req.Header.Set("anthropic-version", anthropicVersion)
@@ -771,13 +771,13 @@ func (d *Driver) completeOnce(ctx context.Context, payload messagesRequest) (mes
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return messagesResponse{}, err
+		return messagesResponse{}, fmt.Errorf("send anthropic request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return messagesResponse{}, err
+		return messagesResponse{}, fmt.Errorf("read anthropic response: %w", err)
 	}
 	agent.MaybeWriteDebugResponse(respBody)
 	if resp.StatusCode/100 != 2 {
@@ -790,7 +790,7 @@ func (d *Driver) completeOnce(ctx context.Context, payload messagesRequest) (mes
 
 	var response messagesResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return messagesResponse{}, err
+		return messagesResponse{}, fmt.Errorf("decode anthropic response: %w", err)
 	}
 	return response, nil
 }

@@ -202,7 +202,7 @@ func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (Runn
 	maxSteps := defaultInt(params.MaxSteps, 32)
 	maxOutputBytes := defaultInt(params.MaxOutputBytes, 64<<10)
 	maxAttempts := defaultInt(params.MaxAttempts, 5)
-	stepTimeout := defaultDuration(params.StepTimeout, 30*time.Second)
+	stepTimeout := defaultDuration(params.StepTimeout, DefaultAgentStepTimeout)
 	leaseDuration := defaultDuration(params.LeaseDuration, 5*time.Minute)
 	retryDelay := defaultDuration(params.RetryDelay, 30*time.Second)
 	actionSchemaJSON, err := MarshalOptionalEnvelope("agent_action_schema", params.ActionSchema)

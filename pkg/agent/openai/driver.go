@@ -271,7 +271,7 @@ func New(cfg Config) (*Driver, error) {
 	}
 	client := cfg.HTTPClient
 	if client == nil {
-		client = &http.Client{Timeout: 2 * time.Minute}
+		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 
 	return &Driver{
@@ -327,12 +327,12 @@ func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapa
 func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	var body bytes.Buffer
 	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return agent.Decision{}, err
+		return agent.Decision{}, fmt.Errorf("encode openai request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/responses", &body)
 	if err != nil {
-		return agent.Decision{}, err
+		return agent.Decision{}, fmt.Errorf("build openai request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+d.apiKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -340,13 +340,13 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return agent.Decision{}, err
+		return agent.Decision{}, fmt.Errorf("send openai request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return agent.Decision{}, err
+		return agent.Decision{}, fmt.Errorf("read openai response: %w", err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var apiErr apiErrorResponse
@@ -358,7 +358,7 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 
 	var response responsesResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return agent.Decision{}, err
+		return agent.Decision{}, fmt.Errorf("decode openai response: %w", err)
 	}
 	decision, err := parseResponsesDecision(response, allowedTools, caps)
 	if err != nil {

@@ -38,11 +38,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 		}
 	}()
 
-	runCtx := ctx
-	cancel := func() {}
-	if a.stepTimeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, a.stepTimeout)
-	}
+	runCtx, cancel := a.stepContext(ctx)
 	defer cancel()
 	runCtx = contextWithTrigger(runCtx, trigger)
 

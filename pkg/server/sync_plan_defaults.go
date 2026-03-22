@@ -46,7 +46,7 @@ func normalizedMaxSteps(params cpstore.CreateAgentParams) int {
 
 func normalizedStepTimeout(params cpstore.CreateAgentParams) time.Duration {
 	if params.StepTimeout == 0 {
-		return 30 * time.Second
+		return cpstore.DefaultAgentStepTimeout
 	}
 	return params.StepTimeout
 }

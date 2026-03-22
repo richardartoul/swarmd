@@ -119,7 +119,7 @@ func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgen
 		existing.ModelBaseURL != strings.TrimSpace(normalized.ModelBaseURL) ||
 		existing.PreserveState != normalized.PreserveState ||
 		existing.MaxSteps != defaultInt(normalized.MaxSteps, 32) ||
-		existing.StepTimeout != defaultDuration(normalized.StepTimeout, 30*time.Second) ||
+		existing.StepTimeout != defaultDuration(normalized.StepTimeout, DefaultAgentStepTimeout) ||
 		existing.MaxOutputBytes != defaultInt(normalized.MaxOutputBytes, 64<<10) ||
 		existing.LeaseDuration != defaultDuration(normalized.LeaseDuration, 5*time.Minute) ||
 		existing.RetryDelay != defaultDuration(normalized.RetryDelay, 30*time.Second) ||
@@ -145,7 +145,7 @@ func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgen
 			"",
 			boolInt(normalized.PreserveState),
 			defaultInt(normalized.MaxSteps, 32),
-			toDurationMillis(defaultDuration(normalized.StepTimeout, 30*time.Second)),
+			toDurationMillis(defaultDuration(normalized.StepTimeout, DefaultAgentStepTimeout)),
 			defaultInt(normalized.MaxOutputBytes, 64<<10),
 			toDurationMillis(defaultDuration(normalized.LeaseDuration, 5*time.Minute)),
 			toDurationMillis(defaultDuration(normalized.RetryDelay, 30*time.Second)),

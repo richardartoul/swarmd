@@ -130,7 +130,8 @@ type Config struct {
 	// If zero, [DefaultMaxSteps] is used.
 	MaxSteps int
 
-	// StepTimeout bounds one action step. Zero means no timeout.
+	// StepTimeout bounds one driver attempt or action step. Retries receive a
+	// fresh timeout budget. Zero means no timeout.
 	StepTimeout time.Duration
 
 	// MaxOutputBytes bounds the captured bytes per stream per step.

@@ -1387,6 +1387,126 @@ func TestHandleTriggerEnforcesStepTimeout(t *testing.T) {
 	}
 }
 
+func TestHandleTriggerRetriesTimeoutLikeDriverErrors(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attempts int
+		stderr   bytes.Buffer
+	)
+	a := newAgent(t, agent.Config{
+		Root:   t.TempDir(),
+		Stderr: &stderr,
+		Driver: agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+			attempts++
+			if attempts <= 2 {
+				return agent.Decision{}, retryableTimeoutError{message: "temporary timeout"}
+			}
+			return finish("done"), nil
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "driver-retry-success"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if result.Status != agent.ResultStatusFinished {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusFinished)
+	}
+	if got := result.Value; got != "done" {
+		t.Fatalf("result.Value = %#v, want %q", got, "done")
+	}
+	if attempts != 3 {
+		t.Fatalf("driver attempts = %d, want %d", attempts, 3)
+	}
+	if got := stderr.String(); !strings.Contains(got, "driver step 1 error (retry 1/3): temporary timeout") {
+		t.Fatalf("stderr = %q, want retry log for first failure", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "driver step 1 error (retry 2/3): temporary timeout") {
+		t.Fatalf("stderr = %q, want retry log for second failure", got)
+	}
+}
+
+func TestHandleTriggerStopsAfterDriverRetryLimit(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attempts int
+		stderr   bytes.Buffer
+	)
+	a := newAgent(t, agent.Config{
+		Root:   t.TempDir(),
+		Stderr: &stderr,
+		Driver: agent.DriverFunc(func(context.Context, agent.Request) (agent.Decision, error) {
+			attempts++
+			return agent.Decision{}, retryableTimeoutError{message: "temporary timeout"}
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "driver-retry-failure"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v, want nil after driver retry exhaustion", err)
+	}
+	if result.Status != agent.ResultStatusDriverError {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusDriverError)
+	}
+	if attempts != 4 {
+		t.Fatalf("driver attempts = %d, want %d", attempts, 4)
+	}
+	if !strings.Contains(result.Error, "temporary timeout") {
+		t.Fatalf("result.Error = %q, want timeout failure", result.Error)
+	}
+	if got := strings.Count(stderr.String(), "driver step 1 error (retry "); got != 3 {
+		t.Fatalf("retry log count = %d, want %d", got, 3)
+	}
+}
+
+func TestHandleTriggerAppliesFreshStepTimeoutPerDriverRetry(t *testing.T) {
+	t.Parallel()
+
+	var (
+		attempts  int
+		remaining []time.Duration
+	)
+	stepTimeout := 20 * time.Millisecond
+	a := newAgent(t, agent.Config{
+		Root:        t.TempDir(),
+		StepTimeout: stepTimeout,
+		Driver: agent.DriverFunc(func(ctx context.Context, req agent.Request) (agent.Decision, error) {
+			attempts++
+			deadline, ok := ctx.Deadline()
+			if !ok {
+				t.Fatalf("request %d context did not include a deadline", req.Step)
+			}
+			remaining = append(remaining, time.Until(deadline))
+			<-ctx.Done()
+			return agent.Decision{}, ctx.Err()
+		}),
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "driver-step-timeout"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v, want nil for driver retry exhaustion", err)
+	}
+	if result.Status != agent.ResultStatusDriverError {
+		t.Fatalf("result.Status = %q, want %q", result.Status, agent.ResultStatusDriverError)
+	}
+	if attempts != 4 {
+		t.Fatalf("driver attempts = %d, want %d", attempts, 4)
+	}
+	if len(remaining) != 4 {
+		t.Fatalf("len(remaining) = %d, want %d", len(remaining), 4)
+	}
+	for idx, duration := range remaining {
+		if duration <= 0 || duration > 2*stepTimeout {
+			t.Fatalf("attempt %d initial timeout window = %v, want within (0,%v]", idx+1, duration, 2*stepTimeout)
+		}
+	}
+	if !strings.Contains(result.Error, context.DeadlineExceeded.Error()) {
+		t.Fatalf("result.Error = %q, want timeout", result.Error)
+	}
+}
+
 func TestServeProcessesQueuedTriggersSequentially(t *testing.T) {
 	t.Parallel()
 
@@ -1482,6 +1602,18 @@ func (d *recordingDriver) Next(_ context.Context, req agent.Request) (agent.Deci
 	decision := d.decisions[d.index]
 	d.index++
 	return decision, nil
+}
+
+type retryableTimeoutError struct {
+	message string
+}
+
+func (e retryableTimeoutError) Error() string {
+	return e.message
+}
+
+func (retryableTimeoutError) Timeout() bool {
+	return true
 }
 
 type channelQueue struct {

@@ -23,6 +23,8 @@ import (
 // ErrQueueRequired is returned when [Agent.Serve] is called without a queue.
 var ErrQueueRequired = errors.New("agent queue is required for Serve")
 
+const maxDriverRetries = 3
+
 // Agent runs a queue-driven agent loop on top of a sandboxed shell.
 type Agent struct {
 	queue                    Queue
@@ -279,8 +281,14 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			return a.finishResult(result, requestContext), nil
 		}
 
-		decision, err := a.driver.Next(ctx, request)
+		decision, err := a.nextDecision(ctx, request)
 		if err != nil {
+			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+				result.Status = ResultStatusCanceled
+				result.Error = ctx.Err().Error()
+				result.Steps = turnSteps
+				return a.finishResult(result, requestContext), ctx.Err()
+			}
 			result.Status = ResultStatusDriverError
 			result.Error = err.Error()
 			result.Steps = turnSteps
@@ -337,6 +345,52 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 	result.Error = fmt.Sprintf("agent reached max steps (%d)", a.maxSteps)
 	result.Steps = turnSteps
 	return a.finishResult(result, requestContext), nil
+}
+
+func (a *Agent) stepContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if a.stepTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, a.stepTimeout)
+}
+
+func shouldRetryDriverError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err)
+}
+
+func (a *Agent) nextDecision(ctx context.Context, request Request) (Decision, error) {
+	for retry := 0; ; retry++ {
+		attemptCtx, cancel := a.stepContext(ctx)
+		decision, err := a.driver.Next(attemptCtx, request)
+		cancel()
+		if err == nil {
+			return decision, nil
+		}
+		if ctx.Err() != nil {
+			return Decision{}, err
+		}
+		if retry >= maxDriverRetries || !shouldRetryDriverError(err) {
+			return Decision{}, err
+		}
+		a.logDriverRetry(request.Step, retry+1, err)
+	}
+}
+
+func (a *Agent) logDriverRetry(step, retry int, err error) {
+	if a.liveStderr == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(
+		a.liveStderr,
+		"driver step %d error (retry %d/%d): %v\n",
+		step,
+		retry,
+		maxDriverRetries,
+		err,
+	)
 }
 
 func (a *Agent) handleResult(ctx context.Context, result Result) error {

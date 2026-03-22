@@ -422,7 +422,7 @@ All duration fields use Go duration syntax such as `45s`, `1m`, or `2m30s`.
 | `runtime.desired_state` | string | `running` | Supported values are `running`, `paused`, and `stopped`. |
 | `runtime.preserve_state` | bool | `false` | Keeps shell state warm between triggers when `true`. |
 | `runtime.max_steps` | int | `32` | Maximum driver decisions per trigger. |
-| `runtime.step_timeout` | duration string | `30s` | Timeout for a single shell step. |
+| `runtime.step_timeout` | duration string | `5m` | Timeout for a single driver attempt or tool step. |
 | `runtime.max_output_bytes` | int | `65536` | Maximum captured bytes per stream per step. |
 | `runtime.lease_duration` | duration string | `5m` | Mailbox lease length while an agent is working on a trigger. |
 | `runtime.retry_delay` | duration string | `30s` | Delay before retrying after a failed run. |

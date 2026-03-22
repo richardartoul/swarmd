@@ -3,9 +3,11 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -63,6 +65,52 @@ func TestNewRejectsAgentOwnedPromptSettings(t *testing.T) {
 		SystemPrompt: "test prompt",
 	}); err == nil {
 		t.Fatal("New() error = nil, want system prompt rejection")
+	}
+}
+
+func TestNewDefaultsHTTPTimeoutToFiveMinutes(t *testing.T) {
+	t.Parallel()
+
+	driver, err := New(Config{
+		APIKey: "test-key",
+		Model:  "gpt-5.4",
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if driver.client.Timeout != 5*time.Minute {
+		t.Fatalf("driver.client.Timeout = %v, want %v", driver.client.Timeout, 5*time.Minute)
+	}
+}
+
+func TestDriverNextPreservesWrappedTimeoutErrors(t *testing.T) {
+	t.Parallel()
+
+	driver, err := New(Config{
+		APIKey:  "test-key",
+		BaseURL: "https://example.test",
+		Model:   "gpt-5.4",
+		HTTPClient: &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, &url.Error{Op: req.Method, URL: req.URL.String(), Err: context.DeadlineExceeded}
+		})},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = driver.Next(context.Background(), agent.Request{
+		Messages: []agent.Message{
+			{Role: agent.MessageRoleUser, Content: "say hello"},
+		},
+	})
+	if err == nil {
+		t.Fatal("driver.Next() error = nil, want timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("driver.Next() error = %v, want wrapped deadline exceeded", err)
+	}
+	if !strings.Contains(err.Error(), "send openai request") {
+		t.Fatalf("driver.Next() error = %q, want wrapped send context", err.Error())
 	}
 }
 
@@ -1057,6 +1105,12 @@ type responsesTestServerResponse struct {
 	Output       []responsesOutputItem
 	OutputText   string
 	CachedTokens int
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (l *responsesRequestLog) append(req responsesRequest) {
