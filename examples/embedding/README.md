@@ -24,7 +24,7 @@ The smallest possible scripted `pkg/agent` program. It creates an agent with a t
 
 ### `minimal-agent-openai`
 
-The smallest OpenAI-backed `pkg/agent` program. It requires `OPENAI_API_KEY` and uses `gpt-4o-mini` by default.
+The smallest OpenAI-backed `pkg/agent` program. It requires `OPENAI_API_KEY` and uses `gpt-5.4` by default.
 
 ### `minimal-agent-anthropic`
 

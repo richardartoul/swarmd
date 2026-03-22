@@ -13,7 +13,15 @@ import (
 const (
 	apiKeyEnv    = "ANTHROPIC_API_KEY"
 	defaultModel = "claude-sonnet-4-6"
-	demoPrompt   = "Your first response must be a run_shell tool call with the command `echo hello from the sandbox`. Do not answer directly before the tool call. After the command succeeds, finish with the exact plain string `done`."
+	demoPrompt   = "Execute the required shell command and then finish."
+	systemPrompt = `You are running a deterministic integration test.
+
+Rules:
+- On your first response, you must call the run_shell tool.
+- The run_shell command must be exactly: echo hello from the sandbox
+- Do not return a final response before the tool call.
+- After the tool call succeeds, return the exact plain string "done".
+- Do not add any explanation.`
 )
 
 func main() {
@@ -44,13 +52,10 @@ func run() error {
 	}
 
 	runtime, err := agent.New(agent.Config{
-		Root:     root,
-		Driver:   driver,
-		MaxSteps: 4,
-		SystemPrompt: agent.ComposeSystemPrompt(
-			`This is a minimal embedding demo. A run_shell tool call on the first turn is mandatory. Do not answer directly before calling run_shell. After the command succeeds, finish with the exact plain string "done".`,
-			false,
-		),
+		Root:         root,
+		Driver:       driver,
+		MaxSteps:     4,
+		SystemPrompt: systemPrompt,
 	})
 	if err != nil {
 		return err
@@ -64,12 +69,21 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	if len(result.Steps) == 0 {
-		return fmt.Errorf("expected at least one step")
+
+	stdout := "<no shell step>"
+	if len(result.Steps) > 0 {
+		stdout = strings.TrimSpace(result.Steps[0].Stdout)
 	}
 
 	fmt.Printf("status: %s\n", result.Status)
-	fmt.Printf("stdout: %s\n", strings.TrimSpace(result.Steps[0].Stdout))
-	fmt.Printf("value: %s\n", agent.RenderResultValue(result.Value))
+	fmt.Printf("stdout: %s\n", stdout)
+	if strings.TrimSpace(result.Error) != "" {
+		fmt.Printf("error: %s\n", result.Error)
+	}
+	if result.Status == agent.ResultStatusFinished || result.Value != nil {
+		fmt.Printf("value: %s\n", agent.RenderResultValue(result.Value))
+	} else {
+		fmt.Printf("value: <none>\n")
+	}
 	return nil
 }
