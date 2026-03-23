@@ -2,6 +2,7 @@ package datadogread
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -250,10 +251,26 @@ func (c *DatadogClient) getDashboard(ctx context.Context, req DatadogReadRequest
 	if err != nil {
 		return DatadogReadResult{}, fmt.Errorf("get dashboard %q: %w", req.DashboardID, err)
 	}
+	item, err := rawJSONValue(response)
+	if err != nil {
+		return DatadogReadResult{}, fmt.Errorf("encode dashboard %q: %w", req.DashboardID, err)
+	}
 	return DatadogReadResult{
 		Action: req.Action,
-		Item:   normalizeDatadogDashboard(response),
+		Item:   item,
 	}, nil
+}
+
+func rawJSONValue(value any) (any, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return nil, err
+	}
+	return decoded, nil
 }
 
 func (c *DatadogClient) queryMetrics(ctx context.Context, req DatadogReadRequest) (DatadogReadResult, error) {
@@ -523,35 +540,6 @@ func normalizeDatadogDashboardSummary(dashboard datadogV1.DashboardSummaryDefini
 	}
 	if dashboard.LayoutType != nil {
 		result.LayoutType = string(*dashboard.LayoutType)
-	}
-	if description := dashboard.Description.Get(); description != nil {
-		result.Description = strings.TrimSpace(*description)
-	}
-	if dashboard.AuthorHandle != nil {
-		result.AuthorHandle = strings.TrimSpace(*dashboard.AuthorHandle)
-	}
-	if dashboard.Url != nil {
-		result.URL = strings.TrimSpace(*dashboard.Url)
-	}
-	if dashboard.CreatedAt != nil {
-		result.CreatedAt = formatRFC3339(*dashboard.CreatedAt)
-	}
-	if dashboard.ModifiedAt != nil {
-		result.ModifiedAt = formatRFC3339(*dashboard.ModifiedAt)
-	}
-	if dashboard.IsReadOnly != nil {
-		value := *dashboard.IsReadOnly
-		result.IsReadOnly = &value
-	}
-	return result
-}
-
-func normalizeDatadogDashboard(dashboard datadogV1.Dashboard) DatadogDashboard {
-	result := DatadogDashboard{
-		ID:          strings.TrimSpace(dashboard.GetId()),
-		Title:       strings.TrimSpace(dashboard.Title),
-		LayoutType:  string(dashboard.LayoutType),
-		WidgetCount: len(dashboard.Widgets),
 	}
 	if description := dashboard.Description.Get(); description != nil {
 		result.Description = strings.TrimSpace(*description)

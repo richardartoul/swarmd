@@ -268,6 +268,87 @@ func TestDatadogReadToolUsesRuntimeHTTPClient(t *testing.T) {
 	}
 }
 
+func TestDatadogReadToolGetDashboardReturnsFullJSON(t *testing.T) {
+	t.Parallel()
+	registerTestTool(t)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/dashboard/dash-123" {
+			t.Fatalf("request path = %q, want %q", r.URL.Path, "/api/v1/dashboard/dash-123")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":          "dash-123",
+			"title":       "API overview",
+			"layout_type": "ordered",
+			"widgets": []map[string]any{{
+				"id": 101,
+				"definition": map[string]any{
+					"type":  "timeseries",
+					"title": "Request rate",
+					"requests": []map[string]any{{
+						"q": "avg:trace.http.request.hits{service:api}.as_count()",
+					}},
+				},
+				"layout": map[string]any{
+					"x":      0,
+					"y":      0,
+					"width":  47,
+					"height": 15,
+				},
+			}},
+			"template_variables": []map[string]any{{
+				"name":    "env",
+				"prefix":  "env",
+				"default": "prod",
+			}},
+		})
+	}))
+	defer server.Close()
+
+	step := runDatadogToolStep(t, map[string]any{
+		"action":       "get_dashboard",
+		"dashboard_id": "dash-123",
+	}, true, map[string]string{
+		DatadogAPIKeyEnvVar:  "api-key",
+		DatadogAppKeyEnvVar:  "app-key",
+		datadogBaseURLEnvVar: server.URL,
+	}, nil)
+	if step.Status != agent.StepStatusOK {
+		t.Fatalf("step.Status = %q, want %q (error=%q)", step.Status, agent.StepStatusOK, step.Error)
+	}
+
+	var output map[string]any
+	if err := json.Unmarshal([]byte(step.ActionOutput), &output); err != nil {
+		t.Fatalf("json.Unmarshal(step.ActionOutput) error = %v", err)
+	}
+	item, ok := output["item"].(map[string]any)
+	if !ok {
+		t.Fatalf("output.item = %#v, want dashboard object", output["item"])
+	}
+	if got := item["title"]; got != "API overview" {
+		t.Fatalf("item.title = %#v, want %q", got, "API overview")
+	}
+	widgets, ok := item["widgets"].([]any)
+	if !ok || len(widgets) != 1 {
+		t.Fatalf("item.widgets = %#v, want one widget", item["widgets"])
+	}
+	widget, ok := widgets[0].(map[string]any)
+	if !ok {
+		t.Fatalf("item.widgets[0] = %#v, want object", widgets[0])
+	}
+	definition, ok := widget["definition"].(map[string]any)
+	if !ok {
+		t.Fatalf("item.widgets[0].definition = %#v, want object", widget["definition"])
+	}
+	if got := definition["title"]; got != "Request rate" {
+		t.Fatalf("item.widgets[0].definition.title = %#v, want %q", got, "Request rate")
+	}
+	templateVariables, ok := item["template_variables"].([]any)
+	if !ok || len(templateVariables) != 1 {
+		t.Fatalf("item.template_variables = %#v, want one template variable", item["template_variables"])
+	}
+}
+
 func runDatadogToolStep(t *testing.T, input any, networkEnabled bool, env map[string]string, headers []interp.HTTPHeaderRule) agent.Step {
 	t.Helper()
 

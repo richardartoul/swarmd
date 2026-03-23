@@ -248,6 +248,7 @@ Tool notes:
 - `slack_dm` caches successful normalized `email` -> `user_id` lookups in memory without eviction; cached mappings remain until the server process restarts
 - `slack_post`, `slack_dm`, `slack_replies`, `slack_channel_history`, and `datadog_read` each auto-allow the tool-owned hosts they need when the tool is enabled; no extra `network.reachable_hosts` entry is required unless you also want shell or global-tool network access
 - `datadog_read` is a curated read-only tool, not a generic Datadog API proxy
+- `datadog_read.get_dashboard` returns the full Datadog dashboard JSON object; the other actions still return normalized or bounded fields
 - `query_metrics`, `search_logs`, and `aggregate_logs` require a `query` argument
 - `search_logs` and `aggregate_logs` both accept optional `storage_tier: indexes | online-archives | flex` when you need to target a specific Datadog log tier
 - `aggregate_logs` also accepts optional `indexes`, `compute`, `group_by`, and `page_cursor` inputs for Datadog log analytics queries

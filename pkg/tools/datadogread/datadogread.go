@@ -245,7 +245,7 @@ func (plugin) Definition() toolscore.ToolDefinition {
 			`{"action":"aggregate_logs","query":"service:api","compute":[{"aggregation":"count"}],"group_by":[{"facet":"status","limit":5,"sort":{"aggregation":"count","order":"desc"}}],"from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z"}`,
 			`{"action":"aggregate_logs","query":"service:web","compute":[{"aggregation":"avg","metric":"@duration","type":"timeseries","interval":"5m"}],"group_by":[{"facet":"service","limit":3,"sort":{"aggregation":"avg","metric":"@duration","order":"desc"}}],"from":"2026-03-15T00:00:00Z","to":"2026-03-15T01:00:00Z"}`,
 		},
-		OutputNotes:  "Returns bounded, normalized JSON for the requested Datadog resource type.",
+		OutputNotes:  "Returns normalized Datadog JSON for most actions; get_dashboard returns the full dashboard object.",
 		SafetyTags:   []string{"network", "read_only"},
 		NetworkScope: toolscore.ToolNetworkScopeScoped,
 		ReadOnly:     true,
