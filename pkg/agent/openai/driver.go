@@ -6,6 +6,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -60,6 +61,23 @@ type responsesRequest struct {
 	ParallelToolCalls    *bool                `json:"parallel_tool_calls,omitempty"`
 	PromptCacheKey       string               `json:"prompt_cache_key,omitempty"`
 	PromptCacheRetention string               `json:"prompt_cache_retention,omitempty"`
+}
+
+type responsesImageRequest struct {
+	Model string                    `json:"model"`
+	Input []responsesImageInputItem `json:"input"`
+}
+
+type responsesImageInputItem struct {
+	Role    string                    `json:"role"`
+	Content []responsesImageInputPart `json:"content"`
+}
+
+type responsesImageInputPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+	Detail   string `json:"detail,omitempty"`
 }
 
 type responsesReasoning struct {
@@ -294,9 +312,78 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 	return d.nextResponses(ctx, req, d.adapterCapabilities())
 }
 
+// DescribeImage implements [agent.ImageDescriptionBackend].
+func (d *Driver) DescribeImage(ctx context.Context, req agent.ImageDescriptionRequest) (agent.ImageDescriptionResponse, error) {
+	payload, err := d.buildDescribeImageRequest(req)
+	if err != nil {
+		return agent.ImageDescriptionResponse{}, err
+	}
+	response, err := d.doResponsesRequest(ctx, payload)
+	if err != nil {
+		return agent.ImageDescriptionResponse{}, err
+	}
+	if refusal := extractResponsesRefusal(response.Output); refusal != "" {
+		return agent.ImageDescriptionResponse{}, fmt.Errorf("openai image description refused request: %s", refusal)
+	}
+	description := strings.TrimSpace(response.OutputText)
+	if description == "" {
+		description = strings.TrimSpace(extractResponsesOutputText(response.Output))
+	}
+	if description == "" {
+		return agent.ImageDescriptionResponse{}, fmt.Errorf("openai image description response was empty")
+	}
+	return agent.ImageDescriptionResponse{
+		Provider:    "openai",
+		Model:       d.model,
+		Description: description,
+	}, nil
+}
+
 func (d *Driver) nextResponses(ctx context.Context, req agent.Request, caps openAIAdapterCapabilities) (agent.Decision, error) {
 	requestBody := d.buildResponsesRequest(req, caps)
 	return d.completeResponses(ctx, requestBody, req.Tools, caps)
+}
+
+func (d *Driver) buildDescribeImageRequest(req agent.ImageDescriptionRequest) (responsesImageRequest, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		prompt = "Describe this image."
+	}
+	imageURL := strings.TrimSpace(req.ImageURL)
+	switch {
+	case imageURL != "":
+		if len(req.Data) != 0 {
+			return responsesImageRequest{}, fmt.Errorf("image request must not include both image_url and data")
+		}
+		if strings.TrimSpace(req.MediaType) != "" {
+			return responsesImageRequest{}, fmt.Errorf("image media type is not used for URL-backed image requests")
+		}
+	case len(req.Data) == 0:
+		return responsesImageRequest{}, fmt.Errorf("image request must include either image_url or data")
+	default:
+		mediaType := strings.TrimSpace(req.MediaType)
+		if mediaType == "" {
+			return responsesImageRequest{}, fmt.Errorf("image media type must not be empty")
+		}
+		imageURL = "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(req.Data)
+	}
+	return responsesImageRequest{
+		Model: d.model,
+		Input: []responsesImageInputItem{{
+			Role: agent.MessageRoleUser,
+			Content: []responsesImageInputPart{
+				{
+					Type: "input_text",
+					Text: prompt,
+				},
+				{
+					Type:     "input_image",
+					ImageURL: imageURL,
+					Detail:   "auto",
+				},
+			},
+		}},
+	}, nil
 }
 
 func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapabilities) responsesRequest {
@@ -325,40 +412,9 @@ func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapa
 }
 
 func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
-	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(payload); err != nil {
-		return agent.Decision{}, fmt.Errorf("encode openai request: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/responses", &body)
+	response, err := d.doResponsesRequest(ctx, payload)
 	if err != nil {
-		return agent.Decision{}, fmt.Errorf("build openai request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+d.apiKey)
-	req.Header.Set("Content-Type", "application/json")
-	agent.MaybeWriteDebugPrompt(body.Bytes())
-
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return agent.Decision{}, fmt.Errorf("send openai request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return agent.Decision{}, fmt.Errorf("read openai response: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		var apiErr apiErrorResponse
-		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Error.Message != "" {
-			return agent.Decision{}, fmt.Errorf("openai api error (%s): %s", resp.Status, apiErr.Error.Message)
-		}
-		return agent.Decision{}, fmt.Errorf("openai api error (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
-	}
-
-	var response responsesResponse
-	if err := json.Unmarshal(respBody, &response); err != nil {
-		return agent.Decision{}, fmt.Errorf("decode openai response: %w", err)
+		return agent.Decision{}, err
 	}
 	decision, err := parseResponsesDecision(response, allowedTools, caps)
 	if err != nil {
@@ -368,6 +424,46 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 		CachedTokens: response.Usage.InputTokensDetails.CachedTokens,
 	}
 	return decision, nil
+}
+
+func (d *Driver) doResponsesRequest(ctx context.Context, payload any) (responsesResponse, error) {
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return responsesResponse{}, fmt.Errorf("encode openai request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.baseURL+"/responses", &body)
+	if err != nil {
+		return responsesResponse{}, fmt.Errorf("build openai request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+d.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	agent.MaybeWriteDebugPrompt(body.Bytes())
+
+	resp, err := d.client.Do(req)
+	if err != nil {
+		return responsesResponse{}, fmt.Errorf("send openai request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return responsesResponse{}, fmt.Errorf("read openai response: %w", err)
+	}
+	agent.MaybeWriteDebugResponse(respBody)
+	if resp.StatusCode/100 != 2 {
+		var apiErr apiErrorResponse
+		if err := json.Unmarshal(respBody, &apiErr); err == nil && apiErr.Error.Message != "" {
+			return responsesResponse{}, fmt.Errorf("openai api error (%s): %s", resp.Status, apiErr.Error.Message)
+		}
+		return responsesResponse{}, fmt.Errorf("openai api error (%s): %s", resp.Status, strings.TrimSpace(string(respBody)))
+	}
+
+	var response responsesResponse
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return responsesResponse{}, fmt.Errorf("decode openai response: %w", err)
+	}
+	return response, nil
 }
 
 func parseResponsesDecision(response responsesResponse, allowedTools []agent.ToolDefinition, caps openAIAdapterCapabilities) (agent.Decision, error) {
@@ -548,7 +644,7 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 		default:
 			responseTool.Type = string(agent.ToolBoundaryKindFunction)
 			responseTool.Strict = tool.Strict
-			responseTool.Parameters = tool.Parameters
+			responseTool.Parameters = openAICompatibleInputSchema(tool.Parameters)
 			if len(responseTool.Parameters) == 0 {
 				responseTool.Parameters = map[string]any{
 					"type":                 "object",
@@ -561,6 +657,50 @@ func buildResponsesTools(tools []agent.ToolDefinition, caps openAIAdapterCapabil
 		result = append(result, responseTool)
 	}
 	return result
+}
+
+func openAICompatibleInputSchema(schema map[string]any) map[string]any {
+	if len(schema) == 0 {
+		return schema
+	}
+	var notes []string
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf", "enum", "not"} {
+		value, ok := schema[keyword]
+		if !ok {
+			continue
+		}
+		notes = append(notes, openAITopLevelSchemaConstraintNote(keyword, value))
+	}
+	if len(notes) == 0 {
+		return schema
+	}
+	clone := make(map[string]any, len(schema))
+	for key, value := range schema {
+		clone[key] = value
+	}
+	delete(clone, "oneOf")
+	delete(clone, "anyOf")
+	delete(clone, "allOf")
+	delete(clone, "enum")
+	delete(clone, "not")
+	description, _ := clone["description"].(string)
+	description = strings.TrimSpace(description)
+	note := strings.Join(notes, " ")
+	switch {
+	case description == "":
+		clone["description"] = note
+	default:
+		clone["description"] = description + "\n\n" + note
+	}
+	return clone
+}
+
+func openAITopLevelSchemaConstraintNote(keyword string, value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("OpenAI compatibility note: obey the original top-level %s constraint when constructing tool input.", keyword)
+	}
+	return fmt.Sprintf("OpenAI compatibility note: obey the original top-level %s constraint when constructing tool input: %s", keyword, string(encoded))
 }
 
 func buildResponsesInstructions(messages []agent.Message, tools []agent.ToolDefinition, caps openAIAdapterCapabilities) string {

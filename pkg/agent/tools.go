@@ -8,14 +8,15 @@ import (
 )
 
 const (
-	ToolNameListDir     = "list_dir"
-	ToolNameReadFile    = "read_file"
-	ToolNameGrepFiles   = "grep_files"
-	ToolNameWebSearch   = "web_search"
-	ToolNameReadWebPage = "read_web_page"
-	ToolNameHTTPRequest = "http_request"
-	ToolNameApplyPatch  = "apply_patch"
-	ToolNameRunShell    = "run_shell"
+	ToolNameListDir       = "list_dir"
+	ToolNameReadFile      = "read_file"
+	ToolNameDescribeImage = "describe_image"
+	ToolNameGrepFiles     = "grep_files"
+	ToolNameWebSearch     = "web_search"
+	ToolNameReadWebPage   = "read_web_page"
+	ToolNameHTTPRequest   = "http_request"
+	ToolNameApplyPatch    = "apply_patch"
+	ToolNameRunShell      = "run_shell"
 )
 
 var builtInToolDefinitions = loadBuiltInToolDefinitions()

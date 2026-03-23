@@ -349,6 +349,10 @@ func (opts runtimeOptions) agentConfig(
 		globalReachableHosts = []interp.HostMatcher{{Glob: "*"}}
 	}
 	configuredTools := opts.autoConfiguredTools()
+	var imageDescriptionBackend agent.ImageDescriptionBackend
+	if backend, ok := opts.baseDriver.(agent.ImageDescriptionBackend); ok {
+		imageDescriptionBackend = backend
+	}
 	cfg := agent.Config{
 		FileSystem:                   fsys,
 		NetworkDialer:                opts.networkDialer,
@@ -363,6 +367,7 @@ func (opts runtimeOptions) agentConfig(
 		StepTimeout:                  opts.stepTimeout,
 		MaxOutputBytes:               opts.maxOutputBytes,
 		PreserveStateBetweenTriggers: opts.preserveState,
+		ImageDescriptionBackend:      imageDescriptionBackend,
 		SystemPrompt:                 agent.ComposeSystemPrompt(opts.systemPrompt),
 		Stdout:                       stdout,
 		Stderr:                       stderr,

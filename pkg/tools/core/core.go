@@ -71,6 +71,33 @@ type WebSearchBackend interface {
 	Search(ctx context.Context, clientFactory interp.HTTPClientFactory, query string, limit int) (WebSearchResponse, error)
 }
 
+// ImageDescriptionRequest is one normalized image-description request sent to a
+// runtime-owned backend.
+type ImageDescriptionRequest struct {
+	Prompt string
+	// ImageURL carries a publicly reachable image URL. When set, MediaType and
+	// Data must be empty.
+	ImageURL string
+	// MediaType and Data carry inline image bytes. When Data is set, ImageURL
+	// must be empty and MediaType must describe the bytes.
+	MediaType string
+	Data      []byte
+}
+
+// ImageDescriptionResponse is one normalized image-description result returned
+// by a runtime-owned backend.
+type ImageDescriptionResponse struct {
+	Provider    string
+	Model       string
+	Description string
+}
+
+// ImageDescriptionBackend is one runtime-owned provider used by the
+// describe_image tool.
+type ImageDescriptionBackend interface {
+	DescribeImage(ctx context.Context, req ImageDescriptionRequest) (ImageDescriptionResponse, error)
+}
+
 // ShellExecution describes one host-owned shell execution requested by a tool.
 type ShellExecution struct {
 	Command   string
@@ -142,21 +169,21 @@ type ToolInterop struct {
 
 // ToolDefinition is one model-facing tool exposed for the current turn.
 type ToolDefinition struct {
-	Name              string         `json:"name"`
-	Description       string         `json:"description"`
-	Kind              ToolKind       `json:"kind"`
-	Strict            bool           `json:"strict,omitempty"`
-	Parameters        map[string]any `json:"parameters,omitempty"`
-	CustomFormat      *ToolFormat    `json:"custom_format,omitempty"`
-	RequiredArguments []string       `json:"required_arguments,omitempty"`
-	Examples          []string       `json:"examples,omitempty"`
-	OutputNotes       string         `json:"output_notes,omitempty"`
-	Interop           ToolInterop    `json:"interop,omitempty"`
-	SafetyTags        []string       `json:"safety_tags,omitempty"`
+	Name              string           `json:"name"`
+	Description       string           `json:"description"`
+	Kind              ToolKind         `json:"kind"`
+	Strict            bool             `json:"strict,omitempty"`
+	Parameters        map[string]any   `json:"parameters,omitempty"`
+	CustomFormat      *ToolFormat      `json:"custom_format,omitempty"`
+	RequiredArguments []string         `json:"required_arguments,omitempty"`
+	Examples          []string         `json:"examples,omitempty"`
+	OutputNotes       string           `json:"output_notes,omitempty"`
+	Interop           ToolInterop      `json:"interop,omitempty"`
+	SafetyTags        []string         `json:"safety_tags,omitempty"`
 	NetworkScope      ToolNetworkScope `json:"network_scope,omitempty"`
-	ReadOnly          bool           `json:"read_only,omitempty"`
-	Mutating          bool           `json:"mutating,omitempty"`
-	Fallback          bool           `json:"fallback,omitempty"`
+	ReadOnly          bool             `json:"read_only,omitempty"`
+	Mutating          bool             `json:"mutating,omitempty"`
+	Fallback          bool             `json:"fallback,omitempty"`
 }
 
 // ToolAction asks the runtime to invoke one structured tool.
@@ -227,6 +254,7 @@ type ToolContext interface {
 	RuntimeData() any
 	StepTimeout() time.Duration
 	SearchWeb(ctx context.Context, query string, limit int) (WebSearchResponse, error)
+	DescribeImage(ctx context.Context, req ImageDescriptionRequest) (ImageDescriptionResponse, error)
 	RunShell(ctx context.Context, step *Step, exec ShellExecution) error
 	SetOutput(step *Step, output string)
 	SetPolicyError(step *Step, err error)

@@ -6,6 +6,7 @@ package anthropic
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,8 +30,10 @@ const (
 	anthropicMaxContinuations           = 3
 	anthropicDiagnosticContentLimit     = 512
 
-	anthropicEmptyEndTurnContinuationPrompt = "Please continue and respond with either exactly one tool call or the strict final JSON response."
-	anthropicTruncationContinuationPrompt   = "Please continue from where you left off. Do not repeat prior content. Respond with either exactly one tool call or the strict final JSON response."
+	anthropicEmptyEndTurnContinuationPrompt       = "Please continue and respond with either exactly one tool call or the strict final JSON response."
+	anthropicTruncationContinuationPrompt         = "Please continue from where you left off. Do not repeat prior content. Respond with either exactly one tool call or the strict final JSON response."
+	anthropicDescribeImageEmptyContinuationPrompt = "Please continue describing the image in plain text."
+	anthropicDescribeImageTruncationPrompt        = "Please continue describing the image in plain text from where you left off. Do not repeat prior content."
 )
 
 // DefaultSystemPrompt is kept for backward compatibility.
@@ -99,6 +102,18 @@ type anthropicRequestTextBlock struct {
 	Type         string                 `json:"type"`
 	Text         string                 `json:"text"`
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+type anthropicRequestImageBlock struct {
+	Type   string                      `json:"type"`
+	Source anthropicRequestImageSource `json:"source"`
+}
+
+type anthropicRequestImageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type,omitempty"`
+	Data      string `json:"data,omitempty"`
+	URL       string `json:"url,omitempty"`
 }
 
 type anthropicRequestToolUseBlock struct {
@@ -275,6 +290,27 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 	return d.complete(ctx, payload, req.Tools)
 }
 
+// DescribeImage implements [agent.ImageDescriptionBackend].
+func (d *Driver) DescribeImage(ctx context.Context, req agent.ImageDescriptionRequest) (agent.ImageDescriptionResponse, error) {
+	payload, err := d.buildDescribeImageRequest(req)
+	if err != nil {
+		return agent.ImageDescriptionResponse{}, err
+	}
+	response, err := d.completeDescribeImage(ctx, payload)
+	if err != nil {
+		return agent.ImageDescriptionResponse{}, err
+	}
+	description := strings.TrimSpace(extractAnthropicText(response.Content))
+	if description == "" {
+		return agent.ImageDescriptionResponse{}, fmt.Errorf("anthropic image description response was empty")
+	}
+	return agent.ImageDescriptionResponse{
+		Provider:    "anthropic",
+		Model:       d.model,
+		Description: description,
+	}, nil
+}
+
 func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error) {
 	payload := messagesRequest{
 		Model:     d.model,
@@ -310,6 +346,57 @@ func (d *Driver) buildMessagesRequest(req agent.Request) (messagesRequest, error
 		}
 	}
 	return payload, nil
+}
+
+func (d *Driver) buildDescribeImageRequest(req agent.ImageDescriptionRequest) (messagesRequest, error) {
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		prompt = "Describe this image."
+	}
+	source := anthropicRequestImageSource{}
+	imageURL := strings.TrimSpace(req.ImageURL)
+	switch {
+	case imageURL != "":
+		if len(req.Data) != 0 {
+			return messagesRequest{}, fmt.Errorf("image request must not include both image_url and data")
+		}
+		if strings.TrimSpace(req.MediaType) != "" {
+			return messagesRequest{}, fmt.Errorf("image media type is not used for URL-backed image requests")
+		}
+		source = anthropicRequestImageSource{
+			Type: "url",
+			URL:  imageURL,
+		}
+	case len(req.Data) == 0:
+		return messagesRequest{}, fmt.Errorf("image request must include either image_url or data")
+	default:
+		mediaType := strings.TrimSpace(req.MediaType)
+		if mediaType == "" {
+			return messagesRequest{}, fmt.Errorf("image media type must not be empty")
+		}
+		source = anthropicRequestImageSource{
+			Type:      "base64",
+			MediaType: mediaType,
+			Data:      base64.StdEncoding.EncodeToString(req.Data),
+		}
+	}
+	return messagesRequest{
+		Model:     d.model,
+		MaxTokens: d.maxTokens,
+		Messages: []anthropicMessage{{
+			Role: agent.MessageRoleUser,
+			Content: []any{
+				anthropicRequestTextBlock{
+					Type: "text",
+					Text: prompt,
+				},
+				anthropicRequestImageBlock{
+					Type:   "image",
+					Source: source,
+				},
+			},
+		}},
+	}, nil
 }
 
 func buildAnthropicMessages(req agent.Request, promptCacheTTL, model string) ([]anthropicRequestTextBlock, []anthropicMessage, error) {
@@ -643,6 +730,7 @@ func anthropicKnownReadOnlyReplayTool(name string) bool {
 	switch name {
 	case agent.ToolNameListDir,
 		agent.ToolNameReadFile,
+		agent.ToolNameDescribeImage,
 		agent.ToolNameGrepFiles,
 		agent.ToolNameWebSearch,
 		agent.ToolNameReadWebPage,
@@ -698,6 +786,48 @@ func anthropicReplayToolInput(replay agent.StepReplay, def agent.ToolDefinition)
 		return nil, fmt.Errorf("replay input for tool %q must decode to an object", replay.ToolName)
 	}
 	return object, nil
+}
+
+func (d *Driver) completeDescribeImage(ctx context.Context, payload messagesRequest) (messagesResponse, error) {
+	var combined messagesResponse
+	for attempt := 0; ; attempt++ {
+		response, err := d.completeOnce(ctx, payload)
+		if err != nil {
+			return messagesResponse{}, err
+		}
+		stopReason := strings.TrimSpace(response.StopReason)
+		if stopReason == "refusal" {
+			return messagesResponse{}, fmt.Errorf("anthropic image description refused request (%s)", anthropicResponseSummary(stopReason, response.Content))
+		}
+		combined.Content = append(combined.Content, response.Content...)
+		combined.StopReason = response.StopReason
+		combined.Usage.CacheReadInputTokens += response.Usage.CacheReadInputTokens
+		switch {
+		case stopReason == "pause_turn":
+			if len(response.Content) == 0 {
+				return messagesResponse{}, fmt.Errorf("anthropic image description response with stop_reason %q was empty (%s)", stopReason, anthropicResponseSummary(stopReason, response.Content))
+			}
+			if attempt >= anthropicMaxContinuations {
+				return messagesResponse{}, fmt.Errorf("anthropic image description exceeded pause_turn continuation limit (%s)", anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, anthropicDescribeImageTruncationPrompt)
+			continue
+		case stopReason == "end_turn" && strings.TrimSpace(extractAnthropicText(response.Content)) == "":
+			if attempt >= anthropicMaxContinuations {
+				return messagesResponse{}, fmt.Errorf("anthropic image description exceeded empty end_turn continuation limit (%s)", anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, anthropicDescribeImageEmptyContinuationPrompt)
+			continue
+		case anthropicStopReasonNeedsContinuation(stopReason):
+			if attempt >= anthropicMaxContinuations {
+				return messagesResponse{}, fmt.Errorf("anthropic image description exceeded %q continuation limit (%s)", stopReason, anthropicResponseSummary(stopReason, response.Content))
+			}
+			payload = anthropicContinuationPayload(payload, response, anthropicDescribeImageTruncationPrompt)
+			continue
+		default:
+			return combined, nil
+		}
+	}
 }
 
 func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedTools []agent.ToolDefinition) (agent.Decision, error) {

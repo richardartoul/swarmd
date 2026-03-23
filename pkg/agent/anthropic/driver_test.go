@@ -1720,6 +1720,176 @@ func TestRequestMarshalingIncludesDisableParallelToolUse(t *testing.T) {
 	}
 }
 
+func TestDriverDescribeImageUsesAnthropicImageBlocks(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{{
+		Content: []anthropicContentBlock{{
+			Type: "text",
+			Text: "A tiny placeholder image.",
+		}},
+		StopReason: "end_turn",
+	}})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	response, err := driver.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		Prompt:    "Describe the image.",
+		MediaType: "image/png",
+		Data:      []byte("image-bytes"),
+	})
+	if err != nil {
+		t.Fatalf("DescribeImage() error = %v", err)
+	}
+	if response.Provider != "anthropic" {
+		t.Fatalf("response.Provider = %q, want %q", response.Provider, "anthropic")
+	}
+	if response.Description != "A tiny placeholder image." {
+		t.Fatalf("response.Description = %q, want response text", response.Description)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
+	}
+	payload := snapshot[0].Request
+	if payload.Model != "claude-sonnet-4-6" {
+		t.Fatalf("request model = %q, want %q", payload.Model, "claude-sonnet-4-6")
+	}
+	if len(payload.Messages) != 1 {
+		t.Fatalf("len(request messages) = %d, want 1", len(payload.Messages))
+	}
+	if payload.Messages[0].Role != agent.MessageRoleUser {
+		t.Fatalf("request role = %q, want %q", payload.Messages[0].Role, agent.MessageRoleUser)
+	}
+	blocks := mustAnthropicBlocks(t, payload.Messages[0].Content)
+	if len(blocks) != 2 {
+		t.Fatalf("len(blocks) = %d, want 2", len(blocks))
+	}
+	if blocks[0]["type"] != "text" || blocks[0]["text"] != "Describe the image." {
+		t.Fatalf("first block = %#v, want prompt text block", blocks[0])
+	}
+	if blocks[1]["type"] != "image" {
+		t.Fatalf("second block type = %#v, want image", blocks[1]["type"])
+	}
+	source, ok := blocks[1]["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("second block source = %#v, want object", blocks[1]["source"])
+	}
+	if source["type"] != "base64" {
+		t.Fatalf("image source type = %#v, want base64", source["type"])
+	}
+	if source["media_type"] != "image/png" {
+		t.Fatalf("image source media_type = %#v, want image/png", source["media_type"])
+	}
+	if source["data"] != "aW1hZ2UtYnl0ZXM=" {
+		t.Fatalf("image source data = %#v, want base64-encoded bytes", source["data"])
+	}
+}
+
+func TestDriverDescribeImageUsesAnthropicImageURLBlocks(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{{
+		Content: []anthropicContentBlock{{
+			Type: "text",
+			Text: "A remote placeholder image.",
+		}},
+		StopReason: "end_turn",
+	}})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	response, err := driver.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		Prompt:   "Describe the remote image.",
+		ImageURL: "https://example.com/images/pixel.png",
+	})
+	if err != nil {
+		t.Fatalf("DescribeImage() error = %v", err)
+	}
+	if response.Provider != "anthropic" {
+		t.Fatalf("response.Provider = %q, want %q", response.Provider, "anthropic")
+	}
+	if response.Description != "A remote placeholder image." {
+		t.Fatalf("response.Description = %q, want response text", response.Description)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 1 {
+		t.Fatalf("len(requests) = %d, want 1", len(snapshot))
+	}
+	payload := snapshot[0].Request
+	if len(payload.Messages) != 1 {
+		t.Fatalf("len(request messages) = %d, want 1", len(payload.Messages))
+	}
+	blocks := mustAnthropicBlocks(t, payload.Messages[0].Content)
+	if len(blocks) != 2 {
+		t.Fatalf("len(blocks) = %d, want 2", len(blocks))
+	}
+	source, ok := blocks[1]["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("second block source = %#v, want object", blocks[1]["source"])
+	}
+	if source["type"] != "url" {
+		t.Fatalf("image source type = %#v, want url", source["type"])
+	}
+	if source["url"] != "https://example.com/images/pixel.png" {
+		t.Fatalf("image source url = %#v, want public URL", source["url"])
+	}
+	if _, ok := source["media_type"]; ok {
+		t.Fatalf("image source media_type = %#v, want omitted for URL-backed request", source["media_type"])
+	}
+	if _, ok := source["data"]; ok {
+		t.Fatalf("image source data = %#v, want omitted for URL-backed request", source["data"])
+	}
+}
+
+func TestDriverDescribeImageUsesImageSpecificContinuationPrompts(t *testing.T) {
+	t.Parallel()
+
+	server, requests := newTestServer(t, []testServerResponse{
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "First part of the description.",
+			}},
+			StopReason: "pause_turn",
+		},
+		{
+			Content: []anthropicContentBlock{{
+				Type: "text",
+				Text: "Second part of the description.",
+			}},
+			StopReason: "end_turn",
+		},
+	})
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	response, err := driver.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		ImageURL: "https://example.com/images/pixel.png",
+	})
+	if err != nil {
+		t.Fatalf("DescribeImage() error = %v", err)
+	}
+	if response.Description != "First part of the description.\nSecond part of the description." {
+		t.Fatalf("response.Description = %q, want combined continuation text", response.Description)
+	}
+
+	snapshot := requests.snapshot()
+	if len(snapshot) != 2 {
+		t.Fatalf("len(requests) = %d, want 2", len(snapshot))
+	}
+	secondPayload := snapshot[1].Request
+	lastMessage := secondPayload.Messages[len(secondPayload.Messages)-1]
+	if lastMessage.Role != agent.MessageRoleUser {
+		t.Fatalf("continuation role = %q, want %q", lastMessage.Role, agent.MessageRoleUser)
+	}
+	if prompt := mustAnthropicTextContent(t, lastMessage.Content); prompt != anthropicDescribeImageTruncationPrompt {
+		t.Fatalf("continuation prompt = %q, want %q", prompt, anthropicDescribeImageTruncationPrompt)
+	}
+}
+
 type requestRecord struct {
 	Request messagesRequest
 	Headers http.Header

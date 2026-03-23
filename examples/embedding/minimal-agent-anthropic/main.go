@@ -60,6 +60,9 @@ func run() (runErr error) {
 	if err != nil {
 		return err
 	}
+	// Built-in tools are available automatically. With the stock Anthropic
+	// driver, describe_image is ready to use without extra ConfiguredTools
+	// entries.
 	defer func() {
 		if closeErr := runtime.Close(); runErr == nil {
 			runErr = closeErr

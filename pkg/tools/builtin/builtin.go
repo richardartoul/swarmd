@@ -2,6 +2,7 @@ package builtin
 
 import (
 	_ "github.com/richardartoul/swarmd/pkg/tools/applypatch"
+	_ "github.com/richardartoul/swarmd/pkg/tools/describeimage"
 	_ "github.com/richardartoul/swarmd/pkg/tools/grepfiles"
 	_ "github.com/richardartoul/swarmd/pkg/tools/httprequest"
 	_ "github.com/richardartoul/swarmd/pkg/tools/listdir"

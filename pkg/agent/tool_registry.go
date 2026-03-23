@@ -98,6 +98,13 @@ func (c runtimeToolContext) SearchWeb(ctx context.Context, query string, limit i
 	}, nil
 }
 
+func (c runtimeToolContext) DescribeImage(ctx context.Context, req toolscore.ImageDescriptionRequest) (toolscore.ImageDescriptionResponse, error) {
+	if c.agent == nil || c.agent.imageDescriptionBackend == nil {
+		return toolscore.ImageDescriptionResponse{}, fmt.Errorf("describe_image backend is not configured")
+	}
+	return c.agent.imageDescriptionBackend.DescribeImage(ctx, req)
+}
+
 func (c runtimeToolContext) RunShell(ctx context.Context, step *Step, exec toolscore.ShellExecution) error {
 	if c.agent == nil {
 		return fmt.Errorf("tool context is unavailable")

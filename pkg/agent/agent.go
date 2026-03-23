@@ -57,6 +57,7 @@ type Agent struct {
 	toolHTTPClientFactories  map[string]interp.HTTPClientFactory
 	toolRuntimeData          any
 	webSearchBackend         WebSearchBackend
+	imageDescriptionBackend  ImageDescriptionBackend
 	customCommands           []sandbox.CommandInfo
 }
 
@@ -128,6 +129,12 @@ func New(cfg Config) (*Agent, error) {
 	if webSearchBackend == nil {
 		webSearchBackend = NewDuckDuckGoWebSearchBackend()
 	}
+	imageDescriptionBackend := cfg.ImageDescriptionBackend
+	if imageDescriptionBackend == nil {
+		if backend, ok := cfg.Driver.(ImageDescriptionBackend); ok {
+			imageDescriptionBackend = backend
+		}
+	}
 	globalNetworkDialer, err := newAgentScopedNetworkDialer(cfg.NetworkDialer, globalReachableHosts)
 	if err != nil {
 		return nil, fmt.Errorf("create agent shell network dialer: %w", err)
@@ -197,6 +204,7 @@ func New(cfg Config) (*Agent, error) {
 		toolHTTPClientFactories:  toolHTTPClientFactories,
 		toolRuntimeData:          cfg.ToolRuntimeData,
 		webSearchBackend:         webSearchBackend,
+		imageDescriptionBackend:  imageDescriptionBackend,
 		customCommands:           commandInfosFromCustomCommands(cfg.CustomCommands),
 	}, nil
 }

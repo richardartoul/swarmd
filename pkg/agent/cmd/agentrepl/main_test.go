@@ -121,6 +121,40 @@ func TestRuntimeOptionsAgentConfigEnablesFullCapabilities(t *testing.T) {
 	}
 }
 
+func TestRuntimeOptionsAgentConfigPreservesImageDescriptionBackendFromBaseDriver(t *testing.T) {
+	t.Parallel()
+
+	baseDriver := replImageBackendDriver{}
+	opts := runtimeOptions{
+		rootDir:        t.TempDir(),
+		baseDriver:     baseDriver,
+		lookupEnv:      func(string) string { return "" },
+		maxSteps:       agent.DefaultMaxSteps,
+		maxOutputBytes: agent.DefaultMaxOutputBytes,
+		preserveState:  true,
+	}
+
+	cfg, err := opts.agentConfig(nil, verboseDriver{
+		next:   baseDriver,
+		stdout: io.Discard,
+	}, nil, nil, io.Discard, io.Discard)
+	if err != nil {
+		t.Fatalf("agentConfig() error = %v", err)
+	}
+	if cfg.ImageDescriptionBackend == nil {
+		t.Fatal("cfg.ImageDescriptionBackend = nil, want backend inherited from base driver")
+	}
+	response, err := cfg.ImageDescriptionBackend.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		ImageURL: "https://example.com/pixel.png",
+	})
+	if err != nil {
+		t.Fatalf("cfg.ImageDescriptionBackend.DescribeImage() error = %v", err)
+	}
+	if response.Provider != "test-provider" {
+		t.Fatalf("response.Provider = %q, want %q", response.Provider, "test-provider")
+	}
+}
+
 func TestRuntimeOptionsAgentConfigAutoEnablesCredentialBackedCustomTools(t *testing.T) {
 	t.Parallel()
 
@@ -1080,6 +1114,20 @@ func hasToolDefinition(definitions []agent.ToolDefinition, name string) bool {
 		}
 	}
 	return false
+}
+
+type replImageBackendDriver struct{}
+
+func (replImageBackendDriver) Next(context.Context, agent.Request) (agent.Decision, error) {
+	return agent.Decision{Finish: &agent.FinishAction{Value: "done"}}, nil
+}
+
+func (replImageBackendDriver) DescribeImage(_ context.Context, req agent.ImageDescriptionRequest) (agent.ImageDescriptionResponse, error) {
+	return agent.ImageDescriptionResponse{
+		Provider:    "test-provider",
+		Model:       "test-model",
+		Description: strings.TrimSpace(req.ImageURL),
+	}, nil
 }
 
 func testRuntimeFlagValues(rootDir string) runtimeFlagValues {

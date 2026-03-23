@@ -1095,6 +1095,138 @@ func TestDriverNextForwardsResponsesPromptCacheSettings(t *testing.T) {
 	}
 }
 
+func TestDriverDescribeImageUsesResponsesImageInput(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(responsesResponse{
+			OutputText: "A tiny placeholder image.",
+		})
+	}))
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	response, err := driver.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		Prompt:    "Describe the image.",
+		MediaType: "image/png",
+		Data:      []byte("image-bytes"),
+	})
+	if err != nil {
+		t.Fatalf("DescribeImage() error = %v", err)
+	}
+	if response.Provider != "openai" {
+		t.Fatalf("response.Provider = %q, want %q", response.Provider, "openai")
+	}
+	if response.Description != "A tiny placeholder image." {
+		t.Fatalf("response.Description = %q, want response text", response.Description)
+	}
+	if captured["model"] != "gpt-5.4" {
+		t.Fatalf("request model = %#v, want %q", captured["model"], "gpt-5.4")
+	}
+	input, ok := captured["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("request input = %#v, want single message", captured["input"])
+	}
+	message, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("request input[0] = %#v, want object", input[0])
+	}
+	if message["role"] != agent.MessageRoleUser {
+		t.Fatalf("request role = %#v, want %q", message["role"], agent.MessageRoleUser)
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("request content = %#v, want text and image parts", message["content"])
+	}
+	textPart, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("text part = %#v, want object", content[0])
+	}
+	if textPart["type"] != "input_text" || textPart["text"] != "Describe the image." {
+		t.Fatalf("text part = %#v, want input_text prompt", textPart)
+	}
+	imagePart, ok := content[1].(map[string]any)
+	if !ok {
+		t.Fatalf("image part = %#v, want object", content[1])
+	}
+	if imagePart["type"] != "input_image" {
+		t.Fatalf("image part type = %#v, want input_image", imagePart["type"])
+	}
+	if imagePart["detail"] != "auto" {
+		t.Fatalf("image part detail = %#v, want auto", imagePart["detail"])
+	}
+	if imagePart["image_url"] != "data:image/png;base64,aW1hZ2UtYnl0ZXM=" {
+		t.Fatalf("image part image_url = %#v, want data URL", imagePart["image_url"])
+	}
+}
+
+func TestDriverDescribeImageUsesResponsesImageURLInput(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "unexpected path", http.StatusNotFound)
+			return
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(responsesResponse{
+			OutputText: "A remote placeholder image.",
+		})
+	}))
+	defer server.Close()
+
+	driver := newTestDriver(t, server.URL)
+	response, err := driver.DescribeImage(context.Background(), agent.ImageDescriptionRequest{
+		Prompt:   "Describe the remote image.",
+		ImageURL: "https://example.com/images/pixel.png",
+	})
+	if err != nil {
+		t.Fatalf("DescribeImage() error = %v", err)
+	}
+	if response.Provider != "openai" {
+		t.Fatalf("response.Provider = %q, want %q", response.Provider, "openai")
+	}
+	if response.Description != "A remote placeholder image." {
+		t.Fatalf("response.Description = %q, want response text", response.Description)
+	}
+	input, ok := captured["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("request input = %#v, want single message", captured["input"])
+	}
+	message, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("request input[0] = %#v, want object", input[0])
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("request content = %#v, want text and image parts", message["content"])
+	}
+	imagePart, ok := content[1].(map[string]any)
+	if !ok {
+		t.Fatalf("image part = %#v, want object", content[1])
+	}
+	if imagePart["type"] != "input_image" {
+		t.Fatalf("image part type = %#v, want input_image", imagePart["type"])
+	}
+	if imagePart["image_url"] != "https://example.com/images/pixel.png" {
+		t.Fatalf("image part image_url = %#v, want public URL", imagePart["image_url"])
+	}
+	if imagePart["detail"] != "auto" {
+		t.Fatalf("image part detail = %#v, want auto", imagePart["detail"])
+	}
+}
+
 type responsesRequestLog struct {
 	mu       sync.Mutex
 	requests []responsesRequest

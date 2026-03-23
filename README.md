@@ -23,6 +23,7 @@
 `swarmd` ships with a variety of built-in tools, and new tools can be added and exposed to Agents simply by writing Go functions. It sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents". The currently supported tools are:
 
 - `apply_patch`: apply a structured patch to local files (built-in)
+- `describe_image`: describe an image through the active provider's native vision API using a sandbox file path, inline base64, or a public image URL (built-in)
 - `grep_files`: search local files with a regular expression and return matching paths (built-in)
 - `http_request`: make direct HTTP requests for API-style interactions (built-in)
 - `list_dir`: list entries in a local directory with bounded output (built-in)
@@ -39,6 +40,16 @@
 - `slack_channel_history`: list Slack channel timeline messages newer than a timestamp (optional)
 - `slack_post`: post a Slack message or thread reply (optional)
 - `slack_replies`: list replies for a Slack thread (optional)
+
+The built-in `describe_image` tool is backed by a runtime-owned image-description backend. The stock OpenAI and Anthropic drivers wire this up automatically, so agents can call `describe_image` without any extra tool configuration when those drivers are in use.
+
+`describe_image` accepts exactly one of:
+
+- `file_path`: read an image from the sandbox filesystem
+- `image_base64`: send an inline base64 payload directly
+- `image_url`: pass a public image URL directly to the active model provider
+
+When `image_base64` is plain base64 instead of a data URL, `media_type` is required. `media_type` is rejected for `image_url` because the provider fetches the asset directly. The current implementation supports `image/png`, `image/jpeg`, `image/gif`, and `image/webp`. Public URLs must be reachable by the configured model provider, not just from within the sandbox.
 
 Contribution of new generic custom tools is highly welcome. Instructions on how to deploy `swarmd` with custom tools that are specific to your environment can be found here.
 

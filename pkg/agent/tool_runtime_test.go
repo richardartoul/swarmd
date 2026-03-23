@@ -14,6 +14,8 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
 
+const testTinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Zk1sAAAAASUVORK5CYII="
+
 func TestHandleTriggerExecutesInjectedWebSearchTool(t *testing.T) {
 	t.Parallel()
 
@@ -216,6 +218,74 @@ func TestHandleTriggerWebSearchToolRejectsDisallowedHost(t *testing.T) {
 	}
 	if !strings.Contains(step.Error, "network host not allowed") {
 		t.Fatalf("step.Error = %q, want allowlist failure", step.Error)
+	}
+}
+
+func TestHandleTriggerAutoWiresDriverImageDescriptionBackend(t *testing.T) {
+	t.Parallel()
+
+	driver := &scriptedImageDescriptionDriver{
+		scriptedDriver: scriptedDriver{
+			decisions: []agent.Decision{
+				tool(agent.ToolNameDescribeImage, agent.ToolKindFunction, `{"image_base64":"`+testTinyPNGBase64+`","media_type":"image/png","prompt":"Read the visible text."}`),
+				finish("done"),
+			},
+		},
+		response: agent.ImageDescriptionResponse{
+			Provider:    "openai",
+			Model:       "gpt-5.4",
+			Description: "A tiny blank PNG image.",
+		},
+	}
+	a := newAgent(t, agent.Config{
+		Root:   t.TempDir(),
+		Driver: driver,
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "describe-image"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	if got := result.Steps[0].Status; got != agent.StepStatusOK {
+		t.Fatalf("step status = %q, want %q", got, agent.StepStatusOK)
+	}
+	if driver.request.Prompt != "Read the visible text." {
+		t.Fatalf("backend prompt = %q, want custom prompt", driver.request.Prompt)
+	}
+	if driver.request.MediaType != "image/png" {
+		t.Fatalf("backend media type = %q, want image/png", driver.request.MediaType)
+	}
+	if len(driver.request.Data) == 0 {
+		t.Fatal("backend image data is empty, want decoded bytes")
+	}
+	if !strings.Contains(result.Steps[0].ActionOutput, "Description:\nA tiny blank PNG image.") {
+		t.Fatalf("step output = %q, want normalized description", result.Steps[0].ActionOutput)
+	}
+}
+
+func TestHandleTriggerDescribeImageWithoutBackendFailsPolicy(t *testing.T) {
+	t.Parallel()
+
+	a := newAgent(t, agent.Config{
+		Root: t.TempDir(),
+		Driver: &scriptedDriver{
+			decisions: []agent.Decision{
+				tool(agent.ToolNameDescribeImage, agent.ToolKindFunction, `{"image_base64":"`+testTinyPNGBase64+`","media_type":"image/png"}`),
+				finish("done"),
+			},
+		},
+	})
+
+	result, err := a.HandleTrigger(context.Background(), agent.Trigger{ID: "describe-image-missing-backend"})
+	if err != nil {
+		t.Fatalf("HandleTrigger() error = %v", err)
+	}
+	step := result.Steps[0]
+	if step.Status != agent.StepStatusPolicyError {
+		t.Fatalf("step.Status = %q, want %q", step.Status, agent.StepStatusPolicyError)
+	}
+	if !strings.Contains(step.Error, "describe_image backend is not configured") {
+		t.Fatalf("step.Error = %q, want missing backend error", step.Error)
 	}
 }
 
@@ -724,6 +794,21 @@ func (b *fetchingWebSearchBackend) Search(ctx context.Context, factory interp.HT
 	}
 	defer resp.Body.Close()
 	return agent.WebSearchResponse{Provider: "fetch"}, nil
+}
+
+type scriptedImageDescriptionDriver struct {
+	scriptedDriver
+	request  agent.ImageDescriptionRequest
+	response agent.ImageDescriptionResponse
+	err      error
+}
+
+func (d *scriptedImageDescriptionDriver) DescribeImage(_ context.Context, req agent.ImageDescriptionRequest) (agent.ImageDescriptionResponse, error) {
+	d.request = req
+	if d.err != nil {
+		return agent.ImageDescriptionResponse{}, d.err
+	}
+	return d.response, nil
 }
 
 func tool(name string, kind agent.ToolKind, input string) agent.Decision {

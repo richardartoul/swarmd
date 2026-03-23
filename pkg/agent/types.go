@@ -15,6 +15,9 @@ import (
 type WebSearchBackend = toolscore.WebSearchBackend
 type WebSearchResponse = toolscore.WebSearchResponse
 type WebSearchResult = toolscore.WebSearchResult
+type ImageDescriptionBackend = toolscore.ImageDescriptionBackend
+type ImageDescriptionRequest = toolscore.ImageDescriptionRequest
+type ImageDescriptionResponse = toolscore.ImageDescriptionResponse
 
 // Queue supplies triggers to a long-running agent.
 type Queue interface {
@@ -109,6 +112,11 @@ type Config struct {
 	// WebSearchBackend overrides the runtime-owned backend used by the
 	// web_search tool. If nil, the default DuckDuckGo HTML backend is used.
 	WebSearchBackend WebSearchBackend
+
+	// ImageDescriptionBackend overrides the runtime-owned backend used by the
+	// describe_image tool. If nil and the configured driver also implements
+	// [ImageDescriptionBackend], the driver is reused automatically.
+	ImageDescriptionBackend ImageDescriptionBackend
 
 	// Queue is optional unless [Agent.Serve] is used.
 	Queue Queue

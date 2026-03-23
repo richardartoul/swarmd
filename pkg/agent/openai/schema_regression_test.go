@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/richardartoul/swarmd/pkg/agent"
@@ -58,5 +59,48 @@ func TestBuildResponsesToolsUsesEmptyArrayForNestedRequired(t *testing.T) {
 	}
 	if len(required) != 0 {
 		t.Fatalf("len(indentation.required) = %d, want 0", len(required))
+	}
+}
+
+func TestBuildResponsesToolsStripsTopLevelSchemaCombinators(t *testing.T) {
+	t.Parallel()
+
+	parameters := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"file_path":    map[string]any{"type": "string"},
+			"image_base64": map[string]any{"type": "string"},
+			"image_url":    map[string]any{"type": "string"},
+			"media_type":   map[string]any{"type": "string"},
+		},
+		"required":             []string{},
+		"additionalProperties": false,
+		"oneOf": []map[string]any{
+			{"required": []string{"file_path"}},
+			{"required": []string{"image_base64"}},
+			{"required": []string{"image_url"}},
+		},
+	}
+
+	tools := buildResponsesTools([]agent.ToolDefinition{{
+		Name:       agent.ToolNameDescribeImage,
+		Kind:       agent.ToolKindFunction,
+		Parameters: parameters,
+	}}, openAIAdapterCapabilities{})
+	if len(tools) != 1 {
+		t.Fatalf("len(tools) = %d, want 1", len(tools))
+	}
+	if _, ok := tools[0].Parameters["oneOf"]; ok {
+		t.Fatalf("parameters = %#v, want top-level oneOf removed for OpenAI compatibility", tools[0].Parameters)
+	}
+	description, ok := tools[0].Parameters["description"].(string)
+	if !ok {
+		t.Fatalf("parameters description = %#v, want compatibility note string", tools[0].Parameters["description"])
+	}
+	if !strings.Contains(description, "top-level oneOf constraint") {
+		t.Fatalf("parameters description = %q, want original top-level oneOf note", description)
+	}
+	if _, ok := parameters["oneOf"]; !ok {
+		t.Fatalf("original parameters = %#v, want source schema left untouched", parameters)
 	}
 }
