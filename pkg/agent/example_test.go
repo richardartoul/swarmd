@@ -39,6 +39,11 @@ func ExampleAgent_HandleTrigger() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		if err := a.Close(); err != nil {
+			panic(err)
+		}
+	}()
 
 	result, err := a.HandleTrigger(context.Background(), agent.Trigger{Kind: "message"})
 	if err != nil {

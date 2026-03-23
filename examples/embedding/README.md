@@ -3,6 +3,8 @@
 These examples use `pkg/agent` directly instead of running the `swarmd` binary.
 The scripted examples run without provider credentials. The provider-backed examples call remote model APIs and require the matching API key.
 
+When you embed `pkg/agent` directly, call `Close()` on the agent when you are done with it so the runtime can release any retained spill files.
+
 Run them from the repository root:
 
 ```sh

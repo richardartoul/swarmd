@@ -89,7 +89,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 			try := 0
 			for {
 				path = filepath.Join(r.tempDir, fifoNamePrefix+strconv.FormatUint(mathrand.Uint64(), 16))
-				err := fsMkfifo(r.fileSystem, path, 0o666)
+				err := r.mkfifoTempFIFO(path, 0o666)
 				if err == nil {
 					r.rememberTempFIFO(path)
 					break
@@ -119,7 +119,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 				defer r.forgetTempFIFO(path)
 				switch ps.Op {
 				case syntax.CmdIn:
-					f, err := r.fileSystem.OpenFile(path, os.O_WRONLY, 0)
+					f, err := r.openTempFIFO(path, os.O_WRONLY, 0)
 					if err != nil {
 						r.errf("cannot open fifo for stdout: %v\n", err)
 						return
@@ -129,10 +129,10 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 						if err := f.Close(); err != nil {
 							r.errf("closing stdout fifo: %v\n", err)
 						}
-						_ = r.fileSystem.Remove(path)
+						_ = r.removeTempFIFO(path)
 					}()
 				case syntax.CmdOut:
-					f, err := r.fileSystem.OpenFile(path, os.O_RDONLY, 0)
+					f, err := r.openTempFIFO(path, os.O_RDONLY, 0)
 					if err != nil {
 						r.errf("cannot open fifo for stdin: %v\n", err)
 						return
@@ -148,7 +148,7 @@ func (r *Runner) fillExpandConfig(ctx context.Context) {
 
 					defer func() {
 						f.Close()
-						_ = r.fileSystem.Remove(path)
+						_ = r.removeTempFIFO(path)
 					}()
 				default:
 					panic(fmt.Sprintf("unsupported process substitution operator: %q", ps.Op))
@@ -1131,10 +1131,10 @@ func (r *Runner) open(ctx context.Context, path string, flags int, mode os.FileM
 		return nil, err
 	}
 	path = resolvedPath
-	// Interpreter-created FIFOs for process substitution need a host-backed open,
-	// but only for the exact paths created by this runner tree.
+	// Interpreter-created FIFOs for process substitution prefer a host-backed
+	// open when the configured filesystem can map the path to the host.
 	if r.isTempFIFOPath(path) {
-		return OSFileSystem{}.OpenFile(path, flags, mode)
+		return r.openTempFIFO(path, flags, mode)
 	}
 
 	f, err := r.fileSystem.OpenFile(path, flags, mode)

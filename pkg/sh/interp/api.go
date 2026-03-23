@@ -298,8 +298,38 @@ func (r *Runner) rememberTempFIFO(path string) {
 	}
 }
 
+func (r *Runner) tempFIFOHostPath(path string) (string, bool) {
+	hostPath, err := fsHostPath(r.fileSystem, path)
+	return hostPath, err == nil
+}
+
 func (r *Runner) isTempFIFOPath(path string) bool {
 	return r.tempFIFOPaths != nil && r.tempFIFOPaths.Has(path)
+}
+
+func (r *Runner) openTempFIFO(path string, flag int, perm os.FileMode) (io.ReadWriteCloser, error) {
+	if r.isTempFIFOPath(path) {
+		if hostPath, ok := r.tempFIFOHostPath(path); ok {
+			return OSFileSystem{}.OpenFile(hostPath, flag, perm)
+		}
+	}
+	return r.fileSystem.OpenFile(path, flag, perm)
+}
+
+func (r *Runner) removeTempFIFO(path string) error {
+	if r.isTempFIFOPath(path) {
+		if hostPath, ok := r.tempFIFOHostPath(path); ok {
+			return OSFileSystem{}.Remove(hostPath)
+		}
+	}
+	return r.fileSystem.Remove(path)
+}
+
+func (r *Runner) mkfifoTempFIFO(path string, mode uint32) error {
+	if hostPath, ok := r.tempFIFOHostPath(path); ok {
+		return mkfifo(hostPath, mode)
+	}
+	return fsMkfifo(r.fileSystem, path, mode)
 }
 
 func (r *Runner) forgetTempFIFO(path string) {
