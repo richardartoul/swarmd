@@ -145,7 +145,7 @@ func runAllowlistedDemo() (agent.Result, error) {
 	})
 }
 
-func runScriptedAgent(cfg agent.Config) (agent.Result, error) {
+func runScriptedAgent(cfg agent.Config) (result agent.Result, runErr error) {
 	root, err := os.MkdirTemp("", "swarmd-network-policy")
 	if err != nil {
 		return agent.Result{}, err
@@ -157,5 +157,11 @@ func runScriptedAgent(cfg agent.Config) (agent.Result, error) {
 	if err != nil {
 		return agent.Result{}, err
 	}
-	return runtime.HandleTrigger(context.Background(), agent.Trigger{Kind: "example"})
+	defer func() {
+		if closeErr := runtime.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
+	result, runErr = runtime.HandleTrigger(context.Background(), agent.Trigger{Kind: "example"})
+	return result, runErr
 }

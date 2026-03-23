@@ -31,7 +31,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	apiKey := strings.TrimSpace(os.Getenv(apiKeyEnv))
 	if apiKey == "" {
 		return fmt.Errorf("%s is required; export %s and rerun this example", apiKeyEnv, apiKeyEnv)
@@ -60,6 +60,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if closeErr := runtime.Close(); runErr == nil {
+			runErr = closeErr
+		}
+	}()
 
 	result, err := runtime.HandleTrigger(context.Background(), agent.Trigger{
 		ID:      "prompt-1",

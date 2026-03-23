@@ -38,6 +38,11 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	defer func() {
+		if err := runtime.Close(); err != nil {
+			panic(err)
+		}
+	}()
 
 	result, err := runtime.HandleTrigger(context.Background(), agent.Trigger{Kind: "example"})
 	if err != nil {
