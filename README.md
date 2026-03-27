@@ -2,12 +2,11 @@
 
 `swarmd` sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents".
 
-**WARNING**: `swarmd`is Alpha software. It has not yet been extensively tested at scale and hardened in production environments.
+**WARNING**: `swarmd` is alpha software. It has not yet been extensively tested at scale or hardened for production environments.
 
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Deployment](#deployment)
-- [Agents as a Library](#agents-as-a-library)
 - [Examples](#examples)
 - [Agent YAML](#agent-yaml)
 - [Custom Tool Catalog](#custom-tool-catalog)
@@ -17,7 +16,7 @@
 
 ## Overview
 
-`swarmd` is a multi-tenant runtime for running background Agents in a safe and secure manner. Agents are defined in YAML and run as goroutines in a multi-tenant server with a virtual shell and custom tools. `swarmd` is not a generic sandbox for running existing Agent harnesses in, its a stand-alone Agent harnesses that was designed from the ground up with sandboxing in mind.
+`swarmd` is a multi-tenant runtime for running background Agents in a safe and secure manner. Agents are defined in YAML and run as goroutines in a multi-tenant server with a virtual shell and custom tools. `swarmd` is not a generic sandbox for running existing agent harnesses. It is a stand-alone agent harness designed from the ground up with sandboxing in mind.
 
 ```yaml
 version: 1
@@ -35,11 +34,14 @@ schedules:
     timezone: UTC
 ```
 
+
+`pkg/agent` can also be used directly from Go applications to embed sandboxed agents inside your own application without the full `swarmd` server. See [examples/embedding](examples/embedding/README.md) for small end-to-end embedding examples.
+
 `swarmd` does not rely on any operating system sandboxing primitives. It will run anywhere you can run a Go application, and it works exactly the same in all environments.
 
 `swarmd` Agents have zero direct access to the host operating system: filesystem operations go through a filesystem interface that limits access to a specific subdirectory (or fake in-memory filesystem), and network access goes through a network interface with a custom dialer plus a managed HTTP layer for host-owned header injection.
 
-All Agents have access to a set of "built-in" tools:
+All Agents have access to the same built-in tools:
 
 - `apply_patch`: apply a structured patch to local files
 - `describe_image`: describe an image through the active provider's native vision API using a sandbox file path, inline base64, or a public image URL
@@ -51,7 +53,7 @@ All Agents have access to a set of "built-in" tools:
 - `run_shell`: run one sandboxed shell command when no structured tool fits
 - `web_search`: search the public web through the runtime-owned search backend
 
-Additionally, "custom" tools are available, but Agents only receive access based on an allow-list: they must be present in the server binary and explicitly listed under an Agent's `tools:` field. See [Custom Tool Catalog](#custom-tool-catalog) for the full list of currently available custom tools, or [Adding Custom Tools](#adding-custom-tools) to write your own.
+Additional custom tools can also be compiled into the server, but Agents only receive them on an allow-list basis: the tool must be present in the server binary and explicitly listed under the Agent's `tools:` field. See [Custom Tool Catalog](#custom-tool-catalog) for the currently available custom tools, or [Adding Custom Tools](#adding-custom-tools) to write your own.
 
 Agent activity and state is tracked in a local SQLite database that can be investigated with a local TUI.
 
@@ -119,11 +121,7 @@ For the full runnable walkthrough, start with [examples/agents/hello-heartbeat](
 
 The primary database is SQLite, so backups are usually just backups of that database file. In general, agent YAMLs should live in version control, while SQLite is mostly tracking execution history and runtime state. A persistent disk is only required if you want to preserve an agent's filesystem contents or other sandbox state between runs.
 
-Instructions on how to deploy `swarmd` with custom tools that are specific to your environment can be found [here](#adding-custom-tools).
-
-## Agents as a Library
-
-`pkg/agent` can also be used directly from Go to run sandboxed agents inside your own application without the full `swarmd` server. See [examples/embedding](examples/embedding/README.md) for small end-to-end embedding examples.
+See [Adding Custom Tools](#adding-custom-tools) for instructions on deploying tools that are specific to your environment.
 
 ## Examples
 
@@ -170,6 +168,8 @@ The full guide covers:
 
 ## Custom Tool Catalog
 
+The stock tool surface has two parts: built-in tools that every Agent gets automatically, and additional custom tools that Agents only receive when allow-listed under `tools:`.
+
 All Agents always get these built-in tools, and they should not be listed under `tools:`:
 
 - `apply_patch`: apply a structured patch to local files
@@ -182,7 +182,7 @@ All Agents always get these built-in tools, and they should not be listed under 
 - `run_shell`: run one sandboxed shell command when no structured tool fits
 - `web_search`: search the public web through the runtime-owned search backend
 
-The stock `swarmd` server binary in this repo currently also includes these allow-list tools. Agents only get them when they are explicitly listed under `tools:`:
+The stock `swarmd` server binary in this repo also includes these additional allow-list tools. Agents only get them when they are explicitly listed under `tools:`:
 
 - `datadog_read`: read incidents, monitors, dashboards, metrics, logs, and events from Datadog
 - `github_read_ci`: read GitHub statuses, checks, workflows, jobs, logs, and artifacts
@@ -300,7 +300,16 @@ tools:
   - id: hello_tool
 ```
 
-If the tool needs per-agent configuration, pass it under `tools[].config`; that map is provided to `NewHandler(cfg toolscore.ConfiguredTool)`. If it needs outbound HTTP, pick the right `NetworkScope` in `Definition()`: use `toolscore.ToolNetworkScopeGlobal` when it should share the agent's `network.reachable_hosts` policy, or use `toolscore.ToolNetworkScopeScoped` plus `server.ToolRegistrationOptions{RequiredHosts: ...}` when it should auto-allow a fixed host set only for that tool. Scoped tool hosts do not get added to shell access or other tools. If it needs host environment variables such as API keys, declare them in `server.ToolRegistrationOptions{RequiredEnv: ...}` so validation fails early when the binary is misconfigured.
+If the tool needs per-agent configuration, pass it under `tools[].config`; that map is provided to `NewHandler(cfg toolscore.ConfiguredTool)`.
+
+If the tool needs outbound HTTP, pick the right `NetworkScope` in `Definition()`:
+
+- use `toolscore.ToolNetworkScopeGlobal` when it should share the agent's `network.reachable_hosts` policy
+- use `toolscore.ToolNetworkScopeScoped` plus `server.ToolRegistrationOptions{RequiredHosts: ...}` when it should auto-allow a fixed host set only for that tool
+
+Scoped tool hosts do not get added to shell access or other tools.
+
+If the tool needs host environment variables such as API keys, declare them in `server.ToolRegistrationOptions{RequiredEnv: ...}` so validation fails early when the binary is misconfigured.
 
 Two rules are easy to miss:
 
