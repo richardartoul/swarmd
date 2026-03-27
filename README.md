@@ -34,7 +34,6 @@ schedules:
     timezone: UTC
 ```
 
-
 `pkg/agent` can also be used directly from Go applications to embed sandboxed agents inside your own application without the full `swarmd` server. See [examples/embedding](examples/embedding/README.md) for small end-to-end embedding examples.
 
 `swarmd` does not rely on any operating system sandboxing primitives. It will run anywhere you can run a Go application, and it works exactly the same in all environments.
@@ -156,6 +155,30 @@ prompt: |
   List the files in the current workspace and summarize what you find.
 root_path: .
 ```
+
+A slightly fuller spec can allow-list a custom tool, open outbound access to a specific host, and inject a server-owned HTTP credential from an environment variable:
+
+```yaml
+version: 1
+model:
+  name: gpt-5
+prompt: |
+  Inspect the repository and query the internal status API.
+root_path: .
+tools:
+  - github_read_repo
+network:
+  reachable_hosts:
+    - glob: api.internal.example.com
+http:
+  headers:
+    - name: Authorization
+      env_var: INTERNAL_STATUS_API_TOKEN
+      domains:
+        - glob: api.internal.example.com
+```
+
+In this example, `github_read_repo` is a custom tool explicitly allow-listed under `tools:`. `network.reachable_hosts` allows shell and global network tools to reach `api.internal.example.com`, and `http.headers[].env_var` injects a server-owned credential for that host without storing the secret in the prompt or workspace. Built-in tools should not be listed under `tools:`. See [Custom Tool Catalog](#custom-tool-catalog) for the stock custom tools and [docs/agent-yaml-guide.md](docs/agent-yaml-guide.md) for the full YAML reference.
 
 The full guide covers:
 
