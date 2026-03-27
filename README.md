@@ -1,5 +1,7 @@
 # swarmd
 
+`swarmd` sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents".
+
 **WARNING**: `swarmd`is Alpha software. It has not yet been extensively tested at scale and hardened in production environments.
 
 - [Overview](#overview)
@@ -8,62 +10,14 @@
 - [Agents as a Library](#agents-as-a-library)
 - [Examples](#examples)
 - [Agent YAML](#agent-yaml)
+- [Custom Tool Catalog](#custom-tool-catalog)
 - [Adding Custom Tools](#adding-custom-tools)
 - [Acknowledgements](#acknowledgements)
 - [Motivation](#motivation)
 
 ## Overview
 
-`swarmd` is a multi-tenant runtime for running background Agents in a safe and secure manner. Agents are defined in YAML and run as goroutines in a multi-tenant server with a virtual shell and custom tools. `swarmd` is not a generic sandbox for running existing Agent harnesses in, its a stand-alone Agent harnesses was designed from the ground up with sandboxing in mind.
-
-`swarmd` does not rely on any operating system sandboxing primitives. It will run anywhere you can run a Go application, and it works exactly the same in all environments.
-
-`swarmd` Agents have zero direct access to the host operating system: filesystem operations go through a filesystem interface that limits access to a specific subdirectory (or fake in-memory filesystem), and network access goes through a network interface with a custom dialer plus a managed HTTP layer for host-owned header injection.
-
-`swarmd` ships with a variety of built-in tools, and new tools can be added and exposed to Agents simply by writing Go functions. It sits somewhere in the awkward intersection between "OpenClaw for Enterprise" and "Kubernetes for Agents". The currently supported tools are:
-
-- `apply_patch`: apply a structured patch to local files (built-in)
-- `describe_image`: describe an image through the active provider's native vision API using a sandbox file path, inline base64, or a public image URL (built-in)
-- `grep_files`: search local files with a regular expression and return matching paths (built-in)
-- `http_request`: make direct HTTP requests for API-style interactions (built-in)
-- `list_dir`: list entries in a local directory with bounded output (built-in)
-- `read_file`: read a local file with numbered, bounded output (built-in)
-- `read_web_page`: fetch a web page and convert it to markdown or text (built-in)
-- `run_shell`: run one sandboxed shell command when no structured tool fits (built-in)
-- `web_search`: search the public web through the runtime-owned search backend (built-in)
-- `datadog_read`: read incidents, monitors, dashboards, metrics, logs, and events from Datadog (optional)
-- `github_read_ci`: read GitHub statuses, checks, workflows, jobs, logs, and artifacts (optional)
-- `github_read_repo`: read GitHub repository metadata, trees, files, branches, and rulesets (optional)
-- `github_read_reviews`: read GitHub issues, pull requests, reviews, comments, commits, and timelines (optional)
-- `server_log`: write a message to the server logs with namespace and agent context (optional)
-- `slack_dm`: send a Slack direct message to one user (optional)
-- `slack_channel_history`: list Slack channel timeline messages newer than a timestamp (optional)
-- `slack_post`: post a Slack message or thread reply (optional)
-- `slack_replies`: list replies for a Slack thread (optional)
-
-The built-in `describe_image` tool is backed by a runtime-owned image-description backend. The stock OpenAI and Anthropic drivers wire this up automatically, so agents can call `describe_image` without any extra tool configuration when those drivers are in use.
-
-`describe_image` accepts exactly one of:
-
-- `file_path`: read an image from the sandbox filesystem
-- `image_base64`: send an inline base64 payload directly
-- `image_url`: pass a public image URL directly to the active model provider
-
-When `image_base64` is plain base64 instead of a data URL, `media_type` is required. `media_type` is rejected for `image_url` because the provider fetches the asset directly. The current implementation supports `image/png`, `image/jpeg`, `image/gif`, and `image/webp`. Public URLs must be reachable by the configured model provider, not just from within the sandbox.
-
-Contribution of new generic custom tools is highly welcome. Instructions on how to deploy `swarmd` with custom tools that are specific to your environment can be found here.
-
-Agent activity and state is tracked in a local SQLite database that can be investigated with a local TUI.
-
-![TUI screenshot 1](docs/tui_screenshot_1.png)
-
-![TUI screenshot 2](docs/tui_screenshot_2.png)
-
-![TUI screenshot 3](docs/tui_screenshot_3.png)
-
-The runtime also includes a persistent memory system inside the sandboxed filesystem. Agents can keep durable notes under `.memory/`, use `.memory/ROOT.md` as a small index, and load deeper topic files only when they are relevant to the current task.
-
-Agents are written declaratively using YAML:
+`swarmd` is a multi-tenant runtime for running background Agents in a safe and secure manner. Agents are defined in YAML and run as goroutines in a multi-tenant server with a virtual shell and custom tools. `swarmd` is not a generic sandbox for running existing Agent harnesses in, its a stand-alone Agent harnesses that was designed from the ground up with sandboxing in mind.
 
 ```yaml
 version: 1
@@ -80,6 +34,34 @@ schedules:
     cron: "* * * * *"
     timezone: UTC
 ```
+
+`swarmd` does not rely on any operating system sandboxing primitives. It will run anywhere you can run a Go application, and it works exactly the same in all environments.
+
+`swarmd` Agents have zero direct access to the host operating system: filesystem operations go through a filesystem interface that limits access to a specific subdirectory (or fake in-memory filesystem), and network access goes through a network interface with a custom dialer plus a managed HTTP layer for host-owned header injection.
+
+All Agents have access to a set of "built-in" tools:
+
+- `apply_patch`: apply a structured patch to local files
+- `describe_image`: describe an image through the active provider's native vision API using a sandbox file path, inline base64, or a public image URL
+- `grep_files`: search local files with a regular expression and return matching paths
+- `http_request`: make direct HTTP requests for API-style interactions
+- `list_dir`: list entries in a local directory with bounded output
+- `read_file`: read a local file with numbered, bounded output
+- `read_web_page`: fetch a web page and convert it to markdown or text
+- `run_shell`: run one sandboxed shell command when no structured tool fits
+- `web_search`: search the public web through the runtime-owned search backend
+
+Additionally, "custom" tools are available, but Agents only receive access based on an allow-list: they must be present in the server binary and explicitly listed under an Agent's `tools:` field. See [Custom Tool Catalog](#custom-tool-catalog) for the full list of currently available custom tools, or [Adding Custom Tools](#adding-custom-tools) to write your own.
+
+Agent activity and state is tracked in a local SQLite database that can be investigated with a local TUI.
+
+![TUI screenshot 1](docs/tui_screenshot_1.png)
+
+![TUI screenshot 2](docs/tui_screenshot_2.png)
+
+![TUI screenshot 3](docs/tui_screenshot_3.png)
+
+The runtime also includes a persistent memory system inside the sandboxed filesystem. Agents can keep durable notes under `.memory/`, use `.memory/ROOT.md` as a small index, and load deeper topic files only when they are relevant to the current task.
 
 See [Agent YAML](#agent-yaml) for the short version and [docs/agent-yaml-guide.md](docs/agent-yaml-guide.md) for the full reference.
 
@@ -185,6 +167,34 @@ The full guide covers:
 - network policy and managed HTTP headers
 - built-in vs custom structured tools
 - runtime tuning, schedules, validation rules, and environment variables
+
+## Custom Tool Catalog
+
+All Agents always get these built-in tools, and they should not be listed under `tools:`:
+
+- `apply_patch`: apply a structured patch to local files
+- `describe_image`: describe an image through the active provider's native vision API using a sandbox file path, inline base64, or a public image URL
+- `grep_files`: search local files with a regular expression and return matching paths
+- `http_request`: make direct HTTP requests for API-style interactions
+- `list_dir`: list entries in a local directory with bounded output
+- `read_file`: read a local file with numbered, bounded output
+- `read_web_page`: fetch a web page and convert it to markdown or text
+- `run_shell`: run one sandboxed shell command when no structured tool fits
+- `web_search`: search the public web through the runtime-owned search backend
+
+The stock `swarmd` server binary in this repo currently also includes these allow-list tools. Agents only get them when they are explicitly listed under `tools:`:
+
+- `datadog_read`: read incidents, monitors, dashboards, metrics, logs, and events from Datadog
+- `github_read_ci`: read GitHub statuses, checks, workflows, jobs, logs, and artifacts
+- `github_read_repo`: read GitHub repository metadata, trees, files, branches, and rulesets
+- `github_read_reviews`: read GitHub issues, pull requests, reviews, comments, commits, and timelines
+- `server_log`: write a message to the server logs with namespace and agent context
+- `slack_dm`: send a Slack direct message to one user
+- `slack_channel_history`: list Slack channel timeline messages newer than a timestamp
+- `slack_post`: post a Slack message or thread reply
+- `slack_replies`: list replies for a Slack thread
+
+If you want to add another tool to your own deployment, see [Adding Custom Tools](#adding-custom-tools).
 
 ## Adding Custom Tools
 
