@@ -26,9 +26,10 @@ const grammar = `start: begin_patch hunk end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
 
-hunk: add_hunk | update_hunk
+hunk: add_hunk | update_hunk | delete_hunk
 add_hunk: "*** Add File: " filename LF add_line+
 update_hunk: "*** Update File: " filename LF change?
+delete_hunk: "*** Delete File: " filename LF
 
 filename: /(.+)/
 add_line: "+" /(.*)/ LF -> line
@@ -47,8 +48,16 @@ type parsedPatch struct {
 	Ops []patchFileOp
 }
 
+type patchAction string
+
+const (
+	patchActionAdd    patchAction = "add"
+	patchActionUpdate patchAction = "update"
+	patchActionDelete patchAction = "delete"
+)
+
 type patchFileOp struct {
-	Action   string
+	Action   patchAction
 	Path     string
 	AddLines []string
 	Hunks    []patchHunk
@@ -79,7 +88,7 @@ func Register() {
 func (plugin) Definition() toolscore.ToolDefinition {
 	return toolscore.ToolDefinition{
 		Name:        toolName,
-		Description: "Apply a structured patch to local files.",
+		Description: "Apply a structured patch that adds, updates, or deletes local files.",
 		Kind:        toolscore.ToolKindCustom,
 		Strict:      true,
 		CustomFormat: &toolscore.ToolFormat{
@@ -89,8 +98,9 @@ func (plugin) Definition() toolscore.ToolDefinition {
 		},
 		Examples: []string{
 			"*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch",
+			"*** Begin Patch\n*** Delete File: /workspace/obsolete.txt\n*** End Patch",
 		},
-		OutputNotes: "Returns a short per-file summary of applied add and update operations.",
+		OutputNotes: "Returns a short per-file summary of applied add, update, and delete operations.",
 		Interop: toolscommon.ToolInterop(
 			toolName,
 			toolscore.ToolBoundaryKindCustom,
@@ -135,7 +145,7 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 }
 
 func parseApplyPatch(input string) (parsedPatch, error) {
-	lines := toolscommon.ScannerLines(strings.TrimSpace(input))
+	lines := patchLines(input)
 	if len(lines) == 0 {
 		return parsedPatch{}, fmt.Errorf("patch must not be empty")
 	}
@@ -167,6 +177,13 @@ func parseApplyPatch(input string) (parsedPatch, error) {
 			}
 			ops = append(ops, op)
 			idx = next
+		case strings.HasPrefix(line, "*** Delete File: "):
+			op, err := parseDeleteFileOp(line)
+			if err != nil {
+				return parsedPatch{}, err
+			}
+			ops = append(ops, op)
+			idx++
 		default:
 			return parsedPatch{}, fmt.Errorf("unexpected patch line %q", line)
 		}
@@ -174,12 +191,35 @@ func parseApplyPatch(input string) (parsedPatch, error) {
 	return parsedPatch{}, fmt.Errorf("patch is missing \"*** End Patch\"")
 }
 
+// patchLines splits the raw patch into lines, trimming only the outer
+// envelope: interior lines keep their exact content because leading and
+// trailing whitespace inside change lines is significant.
+func patchLines(input string) []string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return nil
+	}
+	lines := strings.Split(input, "\n")
+	for idx, line := range lines {
+		lines[idx] = strings.TrimSuffix(line, "\r")
+	}
+	return lines
+}
+
+func parseDeleteFileOp(line string) (patchFileOp, error) {
+	path := strings.TrimSpace(strings.TrimPrefix(line, "*** Delete File: "))
+	if path == "" {
+		return patchFileOp{}, fmt.Errorf("delete file operation must include a path")
+	}
+	return patchFileOp{Action: patchActionDelete, Path: path}, nil
+}
+
 func parseAddFileOp(lines []string, start int) (patchFileOp, int, error) {
 	path := strings.TrimSpace(strings.TrimPrefix(lines[start], "*** Add File: "))
 	if path == "" {
 		return patchFileOp{}, start, fmt.Errorf("add file operation must include a path")
 	}
-	op := patchFileOp{Action: "add", Path: path}
+	op := patchFileOp{Action: patchActionAdd, Path: path}
 	idx := start + 1
 	for idx < len(lines) {
 		line := lines[idx]
@@ -203,7 +243,7 @@ func parseUpdateFileOp(lines []string, start int) (patchFileOp, int, error) {
 	if path == "" {
 		return patchFileOp{}, start, fmt.Errorf("update file operation must include a path")
 	}
-	op := patchFileOp{Action: "update", Path: path}
+	op := patchFileOp{Action: patchActionUpdate, Path: path}
 	idx := start + 1
 	for idx < len(lines) {
 		line := lines[idx]
@@ -251,13 +291,29 @@ func applyPatchFileOp(toolCtx toolscore.ToolContext, op patchFileOp) (string, er
 		return "", err
 	}
 	switch op.Action {
-	case "add":
+	case patchActionAdd:
 		return applyAddFileOp(toolCtx, resolved, op)
-	case "update":
+	case patchActionUpdate:
 		return applyUpdateFileOp(toolCtx, resolved, op)
+	case patchActionDelete:
+		return applyDeleteFileOp(toolCtx, resolved)
 	default:
 		return "", fmt.Errorf("unsupported patch operation %q", op.Action)
 	}
+}
+
+func applyDeleteFileOp(toolCtx toolscore.ToolContext, resolved string) (string, error) {
+	info, err := toolCtx.FileSystem().Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("%q is a directory; apply_patch only deletes files", resolved)
+	}
+	if err := toolCtx.FileSystem().RemoveAll(resolved); err != nil {
+		return "", err
+	}
+	return "delete|" + filepath.ToSlash(resolved), nil
 }
 
 func applyAddFileOp(toolCtx toolscore.ToolContext, resolved string, op patchFileOp) (string, error) {
@@ -269,10 +325,7 @@ func applyAddFileOp(toolCtx toolscore.ToolContext, resolved string, op patchFile
 	if err := toolCtx.FileSystem().MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 		return "", err
 	}
-	content := strings.Join(op.AddLines, "\n")
-	if len(op.AddLines) > 0 {
-		content += "\n"
-	}
+	content := strings.Join(op.AddLines, "\n") + "\n"
 	if err := toolCtx.FileSystem().WriteFile(resolved, []byte(content), defaultApplyPatchPerm); err != nil {
 		return "", err
 	}
