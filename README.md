@@ -348,7 +348,7 @@ If you are embedding `pkg/agent` instead of forking the `swarmd` binary, see `ex
 
 ## Acknowledgements
 
-The virtual shell in this repository is a heavily forked and modified version of [`mvdan/sh`](https://github.com/mvdan/sh).
+The virtual shell in this repository is a heavily forked and modified version of [`mvdan/sh`](https://github.com/mvdan/sh). See [pkg/sh/README.md](pkg/sh/README.md) for the fork boundary — which parts track upstream and which are swarmd-specific — and for the upstream changelog.
 
 ## Motivation
 
