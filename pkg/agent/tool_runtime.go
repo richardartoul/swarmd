@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
@@ -269,11 +270,50 @@ func fallbackStructuredOutputPreview(file toolscore.FileReference, originalBytes
 	return preview
 }
 
+// truncateText bounds text to at most limit bytes without splitting a UTF-8
+// rune: previews are echoed back into model prompts and persisted, so they
+// must never carry a mangled trailing byte sequence.
 func truncateText(text string, limit int) (string, bool) {
 	if limit <= 0 || len(text) <= limit {
 		return text, false
 	}
-	return text[:limit], true
+	cut := text[:limit]
+	return cut[:len(cut)-partialRuneSuffixLen(cut)], true
+}
+
+// partialRuneSuffixLen returns the byte length of an incomplete UTF-8
+// sequence at the end of s (a multi-byte rune cut short by a byte-bounded
+// copy), or 0 when s ends with a complete rune. Already-invalid byte
+// sequences are reported as complete so binary data is never reshaped.
+func partialRuneSuffixLen(s string) int {
+	for back := 1; back <= utf8.UTFMax && back <= len(s); back++ {
+		c := s[len(s)-back]
+		if !utf8.RuneStart(c) {
+			continue
+		}
+		if expectedRuneLen(c) > back {
+			return back
+		}
+		break
+	}
+	return 0
+}
+
+// expectedRuneLen returns the encoded length implied by a UTF-8 leading
+// byte, or 1 for bytes that cannot start a multi-byte sequence.
+func expectedRuneLen(b byte) int {
+	switch {
+	case b&0x80 == 0x00:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 1
+	}
 }
 
 func setToolPolicyError(step *Step, err error) {

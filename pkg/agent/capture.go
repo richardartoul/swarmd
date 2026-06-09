@@ -108,8 +108,15 @@ func (w *captureWriter) Write(p []byte) (int, error) {
 func (w *captureWriter) Snapshot() (captureSnapshot, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	preview := string(w.buf)
+	if w.truncated {
+		// The preview is cut at a byte budget, which can split a multi-byte
+		// rune; drop any incomplete trailing sequence so the preview stays
+		// valid UTF-8 for prompts and persistence.
+		preview = preview[:len(preview)-partialRuneSuffixLen(preview)]
+	}
 	snapshot := captureSnapshot{
-		Preview:    string(w.buf),
+		Preview:    preview,
 		Truncated:  w.truncated,
 		TotalBytes: w.totalBytes,
 	}
