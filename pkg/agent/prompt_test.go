@@ -75,59 +75,56 @@ func TestComposeSystemPromptIncludesCommandShapeGuidance(t *testing.T) {
 	}
 }
 
-func TestFormatCurrentStateIncludesSingleToolCallReminder(t *testing.T) {
+func TestCurrentTurnProtocolPromptIncludesSingleToolCallReminder(t *testing.T) {
 	t.Parallel()
 
-	got := formatCurrentState(Request{
-		CWD:  "/workspace",
-		Step: 1,
-	})
+	got := currentTurnProtocolPrompt()
 	if !strings.Contains(got, `Use exactly one tool call when more work is needed, or no tool call when you are ready to finish.`) {
-		t.Fatalf("formatCurrentState() = %q, want explicit single-tool-call reminder", got)
+		t.Fatalf("currentTurnProtocolPrompt() = %q, want explicit single-tool-call reminder", got)
 	}
 	if !strings.Contains(got, StrictFinalResponseShape()) {
-		t.Fatalf("formatCurrentState() = %q, want structured finish reminder", got)
+		t.Fatalf("currentTurnProtocolPrompt() = %q, want structured finish reminder", got)
 	}
 	if !strings.Contains(got, `For normal answers, put the user-facing reply in result_json as a JSON string`) {
-		t.Fatalf("formatCurrentState() = %q, want string-first finish reminder", got)
+		t.Fatalf("currentTurnProtocolPrompt() = %q, want string-first finish reminder", got)
 	}
 	if !strings.Contains(got, `Never emit multiple tool calls in a single response.`) {
-		t.Fatalf("formatCurrentState() = %q, want no-multiple-tool-calls reminder", got)
+		t.Fatalf("currentTurnProtocolPrompt() = %q, want no-multiple-tool-calls reminder", got)
 	}
 }
 
-func TestFormatCurrentStateIncludesSandboxRootGuidance(t *testing.T) {
+func TestFormatCurrentExecutionStateIncludesSandboxRootGuidance(t *testing.T) {
 	t.Parallel()
 
-	got := formatCurrentState(Request{
+	got := formatCurrentExecutionState(Request{
 		SandboxRoot: "/workspace",
 		CWD:         "/workspace/demo",
 		Step:        2,
-	})
+	}, newTriggerDriverRequestContext())
 	if !strings.Contains(got, "Sandbox root: /workspace") {
-		t.Fatalf("formatCurrentState() = %q, want sandbox root line", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want sandbox root line", got)
 	}
 	if !strings.Contains(got, "Paths outside the sandbox root are inaccessible.") {
-		t.Fatalf("formatCurrentState() = %q, want sandbox boundary guidance", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want sandbox boundary guidance", got)
 	}
 	if !strings.Contains(got, "Current working directory: /workspace/demo") {
-		t.Fatalf("formatCurrentState() = %q, want cwd line", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want cwd line", got)
 	}
 }
 
-func TestFormatCurrentStateIncludesRunStartTimes(t *testing.T) {
+func TestFormatCurrentExecutionStateIncludesRunStartTimes(t *testing.T) {
 	t.Parallel()
 
 	startedAt := time.Date(2026, time.March, 18, 8, 4, 5, 0, time.FixedZone("PDT", -7*60*60))
-	got := formatCurrentStateForPromptWithContext("", Request{
+	got := formatCurrentExecutionState(Request{
 		CWD:  "/workspace",
 		Step: 1,
 	}, newTriggerDriverRequestContext().withRunStartedAt(startedAt))
 	if !strings.Contains(got, "Current time at start of this run: "+startedAt.UTC().Format(time.RFC3339)) {
-		t.Fatalf("formatCurrentStateForPromptWithContext() = %q, want RFC3339 run-start line", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want RFC3339 run-start line", got)
 	}
 	if !strings.Contains(got, fmt.Sprintf("Current Unix time at start of this run: %d", startedAt.UTC().Unix())) {
-		t.Fatalf("formatCurrentStateForPromptWithContext() = %q, want Unix-seconds run-start line", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want Unix-seconds run-start line", got)
 	}
 }
 
@@ -221,7 +218,7 @@ func TestToolExpandedGuidancePromptSkipsRoutineTurns(t *testing.T) {
 			builtInToolDefinitions[ToolNameReadFile],
 		},
 	}
-	got := toolExpandedGuidancePrompt("patch the file carefully", req)
+	got := toolExpandedGuidancePrompt(req)
 	if got != "" {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want routine turns to rely on native tool metadata", got)
 	}
@@ -241,7 +238,7 @@ func TestToolExpandedGuidancePromptKeepsFullApplyPatchGuidanceOnRetry(t *testing
 			Error:      "patch did not match grammar",
 		}},
 	}
-	got := toolExpandedGuidancePrompt("try again", req)
+	got := toolExpandedGuidancePrompt(req)
 	if !strings.Contains(got, "- apply_patch") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want apply_patch details", got)
 	}
@@ -267,7 +264,7 @@ func TestToolExpandedGuidancePromptExpandsLastFailedTool(t *testing.T) {
 			Error:      "url must not be empty",
 		}},
 	}
-	got := toolExpandedGuidancePrompt("try again", req)
+	got := toolExpandedGuidancePrompt(req)
 	if !strings.Contains(got, "- http_request") {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want failed tool details", got)
 	}
@@ -289,7 +286,7 @@ func TestToolExpandedGuidancePromptOmitsUnknownFailedTool(t *testing.T) {
 			Status:     StepStatusPolicyError,
 		}},
 	}
-	got := toolExpandedGuidancePrompt("try again", req)
+	got := toolExpandedGuidancePrompt(req)
 	if got != "" {
 		t.Fatalf("toolExpandedGuidancePrompt() = %q, want missing tool to suppress retry guidance", got)
 	}
@@ -317,10 +314,10 @@ func TestFormatExpandedToolGuidanceIncludesAllRetryExamples(t *testing.T) {
 	}
 }
 
-func TestFormatCurrentStateForPromptIncludesRetryGuidance(t *testing.T) {
+func TestFormatCurrentExecutionStateIncludesRetryGuidance(t *testing.T) {
 	t.Parallel()
 
-	got := formatCurrentStateForPrompt("patch the file carefully", Request{
+	got := formatCurrentExecutionState(Request{
 		CWD:  "/workspace",
 		Step: 2,
 		Tools: []ToolDefinition{
@@ -332,12 +329,12 @@ func TestFormatCurrentStateForPromptIncludesRetryGuidance(t *testing.T) {
 			ActionName: ToolNameApplyPatch,
 			Status:     StepStatusPolicyError,
 		}},
-	})
+	}, newTriggerDriverRequestContext())
 	if !strings.Contains(got, "Focused retry guidance for the last failed tool:") {
-		t.Fatalf("formatCurrentStateForPrompt() = %q, want retry tool detail heading", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want retry tool detail heading", got)
 	}
 	if !strings.Contains(got, "- apply_patch") {
-		t.Fatalf("formatCurrentStateForPrompt() = %q, want apply_patch details", got)
+		t.Fatalf("formatCurrentExecutionState() = %q, want apply_patch details", got)
 	}
 }
 

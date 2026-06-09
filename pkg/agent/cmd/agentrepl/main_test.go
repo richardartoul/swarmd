@@ -966,7 +966,7 @@ func TestAgentTUIModelDownKeyKeepsTranscriptFocusUntilBottom(t *testing.T) {
 		})
 	}
 	model.setFocus(agentTUIFocusTranscript)
-	model.transcript.LineUp(5)
+	model.transcript.ScrollUp(5)
 	before := model.transcript.YOffset
 	if before <= 1 {
 		t.Fatalf("transcript.YOffset = %d, want > 1 for intermediate scrolling", before)
@@ -1008,7 +1008,7 @@ func TestAgentTUIModelDownKeyReturnsToInputAtBottom(t *testing.T) {
 		})
 	}
 	model.setFocus(agentTUIFocusTranscript)
-	model.transcript.LineUp(1)
+	model.transcript.ScrollUp(1)
 	if model.transcript.AtBottom() {
 		t.Fatal("transcript.AtBottom() = true, want false before pressing down")
 	}
@@ -1049,7 +1049,7 @@ func TestAgentTUIModelPreservesScrollOffsetWhileReviewingHistory(t *testing.T) {
 		})
 	}
 	model.setFocus(agentTUIFocusTranscript)
-	model.transcript.LineUp(5)
+	model.transcript.ScrollUp(5)
 	before := model.transcript.YOffset
 	if before == 0 {
 		t.Fatalf("transcript.YOffset = 0, want to be scrolled away from the top")

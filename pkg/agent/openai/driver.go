@@ -1331,15 +1331,6 @@ func allowedOpenAIToolAdapter(allowedTools []agent.ToolDefinition, caps openAIAd
 	return openAIToolAdapter{}, false
 }
 
-func allowedToolDefinition(allowedTools []agent.ToolDefinition, name string) (agent.ToolDefinition, bool) {
-	for _, tool := range allowedTools {
-		if tool.Name == name {
-			return tool, true
-		}
-	}
-	return agent.ToolDefinition{}, false
-}
-
 func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
 	return openAIAdapterCapabilities{
 		SupportsCustomTools:     true,

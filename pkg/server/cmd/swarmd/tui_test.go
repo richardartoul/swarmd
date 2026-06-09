@@ -561,7 +561,7 @@ func TestTUISetDetailContentPreservesScrollOnRefresh(t *testing.T) {
 
 	initial := strings.TrimSpace(strings.Repeat("line\n", 40))
 	model.setDetailContent(initial, false)
-	model.detail.LineDown(4)
+	model.detail.ScrollDown(4)
 	wantOffset := model.detail.YOffset
 
 	updated := strings.TrimSpace(strings.Repeat("line\n", 45))

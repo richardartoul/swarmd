@@ -53,13 +53,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 		stepNum:  stepIndex,
 		toolName: decision.Tool.Name,
 	}
-	err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			step.Status = StepStatusFatalError
-			step.Error = err.Error()
-			return step, err
-		}
+	if err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool); err != nil {
 		step.Status = StepStatusFatalError
 		step.Error = err.Error()
 		return step, err
@@ -196,7 +190,7 @@ func (a *Agent) setToolOutput(step *Step, output string) {
 
 	applied, err := a.applyStructuredToolOutput(step, output)
 	if err != nil {
-		step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+		step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 		step.Status = StepStatusFatalError
 		step.Error = err.Error()
 		return
@@ -209,14 +203,14 @@ func (a *Agent) setToolOutput(step *Step, output string) {
 	if threshold > 0 && len(output) > threshold {
 		ref, err := a.writeStepSpillFile(step.Index, "action_output.txt", "text/plain", "Full tool output", []byte(output))
 		if err != nil {
-			step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+			step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 			step.Status = StepStatusFatalError
 			step.Error = err.Error()
 			return
 		}
 		step.ActionOutputFiles = []toolscore.FileReference{*ref}
 	}
-	step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+	step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 }
 
 func (a *Agent) applyStructuredToolOutput(step *Step, output string) (bool, error) {
@@ -227,7 +221,7 @@ func (a *Agent) applyStructuredToolOutput(step *Step, output string) (bool, erro
 	if len(output) <= limit {
 		return false, nil
 	}
-	budget := toolscommon.MaxInt(1, toolscommon.MinInt(limit, toolscommon.DefaultJSONStubBytes))
+	budget := max(1, min(limit, toolscommon.DefaultJSONStubBytes))
 	probe, ok, err := toolscommon.CompactStructuredJSONOutput(output, toolscommon.JSONCompactOptions{
 		Budget: budget,
 	})
@@ -271,7 +265,7 @@ func fallbackStructuredOutputPreview(file toolscore.FileReference, originalBytes
 		strings.TrimSpace(file.Path),
 		originalBytes,
 	)
-	preview, _ := truncateText(message, toolscommon.MaxInt(1, limit))
+	preview, _ := truncateText(message, max(1, limit))
 	return preview
 }
 

@@ -379,7 +379,7 @@ func patchLineSliceEqual(left, right []string) bool {
 }
 
 func spliceLines(lines []string, start, end int, replacement []string) []string {
-	result := make([]string, 0, len(lines)-toolscommon.MaxInt(0, end-start)+len(replacement))
+	result := make([]string, 0, len(lines)-max(0, end-start)+len(replacement))
 	result = append(result, lines[:start]...)
 	result = append(result, replacement...)
 	result = append(result, lines[end:]...)

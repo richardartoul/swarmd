@@ -37,7 +37,7 @@ func collectDocumentLinks(doc *html.Node, limit int) []string {
 	if doc == nil || limit <= 0 {
 		return nil
 	}
-	links := make([]string, 0, toolscommon.MinInt(limit, maxReadWebPageLinks))
+	links := make([]string, 0, min(limit, maxReadWebPageLinks))
 	seen := make(map[string]struct{}, limit)
 	var walk func(*html.Node)
 	walk = func(node *html.Node) {

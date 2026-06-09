@@ -233,15 +233,14 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 	return nil
 }
 
+// reapWorkers removes exited workers from the active set so the next sync
+// restarts them if they are still desired.
 func (m *RuntimeManager) reapWorkers() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for key, handle := range m.workers {
 		select {
-		case err, ok := <-handle.done:
-			if ok && err != nil {
-				// Leave the worker absent from the active set so the next sync restarts it.
-			}
+		case <-handle.done:
 			delete(m.workers, key)
 		default:
 		}

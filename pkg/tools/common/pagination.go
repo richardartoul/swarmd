@@ -19,6 +19,6 @@ func (w PaginationWindow) RangeForTotal(total int) (int, int, bool) {
 	if w.Start >= total {
 		return total, total, false
 	}
-	end := MinInt(total, w.Start+w.Limit)
+	end := min(total, w.Start+w.Limit)
 	return w.Start, end, true
 }

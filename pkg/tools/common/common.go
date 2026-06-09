@@ -134,20 +134,6 @@ func ClampInt(value, defaultValue, maxValue int) int {
 	}
 }
 
-func MinInt(left, right int) int {
-	if left < right {
-		return left
-	}
-	return right
-}
-
-func MaxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
-}
-
 func BoundedDurationMillis(value int, defaultValue, ceiling time.Duration) time.Duration {
 	var duration time.Duration
 	switch {

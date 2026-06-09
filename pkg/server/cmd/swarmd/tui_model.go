@@ -324,9 +324,9 @@ func (m *tuiModel) handleGlobalKey(msg tea.KeyMsg) (bool, tea.Cmd, error) {
 func (m *tuiModel) updateDetail(msg tea.KeyMsg) {
 	switch msg.String() {
 	case "up", "k":
-		m.detail.LineUp(1)
+		m.detail.ScrollUp(1)
 	case "down", "j":
-		m.detail.LineDown(1)
+		m.detail.ScrollDown(1)
 	case "pgup", "ctrl+u":
 		m.detail.HalfPageUp()
 	case "pgdown", "ctrl+d", " ":

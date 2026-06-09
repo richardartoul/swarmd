@@ -426,7 +426,7 @@ func compactLeafObject(object map[string]any, includePreviews bool) map[string]a
 }
 
 func previewArray(values []any, depth int, includePreviews bool) []any {
-	limit := MinInt(len(values), jsonStubPreviewItems)
+	limit := min(len(values), jsonStubPreviewItems)
 	preview := make([]any, 0, limit)
 	for idx := 0; idx < limit; idx++ {
 		preview = append(preview, previewValue(values[idx], depth+1, includePreviews))
