@@ -220,3 +220,29 @@ func timePtrToMillis(t *time.Time) any {
 	}
 	return toMillis(*t)
 }
+
+func (s *Store) ListSchedules(ctx context.Context, namespaceID string) ([]ScheduleRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT namespace_id, schedule_id, agent_id, cron_expr, timezone, payload_json, enabled, next_fire_at_ms, last_fire_at_ms, created_at_ms, updated_at_ms
+FROM schedules
+WHERE namespace_id = ?
+ORDER BY schedule_id
+`, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("query schedules for namespace %q: %w", namespaceID, err)
+	}
+	defer rows.Close()
+
+	var schedules []ScheduleRecord
+	for rows.Next() {
+		record, err := scanSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		schedules = append(schedules, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schedules for namespace %q: %w", namespaceID, err)
+	}
+	return schedules, nil
+}
