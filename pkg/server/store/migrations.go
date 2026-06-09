@@ -6,14 +6,17 @@ import (
 	"fmt"
 )
 
-type migration struct {
+// migrationStep is one schema migration. Either sql or apply must be set;
+// foreignKeysOff requests that the step run with foreign-key enforcement
+// disabled (used for table rebuilds), followed by a foreign_key_check.
+type migrationStep struct {
 	version        int
 	sql            string
 	apply          func(context.Context, *sql.Tx) error
 	foreignKeysOff bool
 }
 
-var migrations = []migration{
+var migrations = []migrationStep{
 	{
 		version: 1,
 		sql: `
