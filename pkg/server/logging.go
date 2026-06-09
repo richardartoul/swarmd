@@ -90,6 +90,30 @@ func (l *RuntimeLogger) LogAgentCommand(triggerCtx TriggerContext, level, messag
 	l.printf(writer, "%s\n", line)
 }
 
+// LogComponentError records a non-fatal error from a long-running server
+// component (runtime manager, scheduler) that will be retried.
+func (l *RuntimeLogger) LogComponentError(component string, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.printf(l.stderr, "%s> error=%q (will retry)\n", component, summarizeLogText(err.Error(), 400))
+}
+
+// LogWorkerStartError records a per-agent worker start failure that the
+// runtime manager will retry on its next sync.
+func (l *RuntimeLogger) LogWorkerStartError(namespaceID, agentID string, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.printf(
+		l.stderr,
+		"manager> %s/%s worker start failed error=%q (will retry)\n",
+		namespaceID,
+		agentID,
+		summarizeLogText(err.Error(), 400),
+	)
+}
+
 func (l *RuntimeLogger) printf(w io.Writer, format string, args ...any) {
 	if l == nil || w == nil {
 		return

@@ -34,12 +34,16 @@ type RuntimeManager struct {
 }
 
 type workerHandle struct {
-	key         string
 	fingerprint string
 	cancel      context.CancelFunc
 	done        chan error
 }
 
+// Run reconciles workers against the store until ctx is canceled.
+//
+// Reconciliation errors are logged and retried on the next tick rather than
+// returned: a transient store failure or one misconfigured agent must not
+// take down every other worker in the server.
 func (m *RuntimeManager) Run(ctx context.Context) error {
 	if m.Store == nil {
 		return fmt.Errorf("server runtime manager requires a store")
@@ -55,21 +59,26 @@ func (m *RuntimeManager) Run(ctx context.Context) error {
 	defer ticker.Stop()
 	defer m.stopAll()
 
-	if err := m.SyncOnce(ctx); err != nil {
-		return err
-	}
 	for {
+		if err := m.SyncOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			m.Logger.LogComponentError("manager", err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := m.SyncOnce(ctx); err != nil {
-				return err
-			}
 		}
 	}
 }
 
+// SyncOnce reconciles running workers against the desired set once.
+//
+// Per-agent start failures are isolated: they are logged and retried on the
+// next sync instead of failing the reconciliation, so one bad agent spec or
+// missing credential cannot block every other agent.
 func (m *RuntimeManager) SyncOnce(ctx context.Context) error {
 	m.reapWorkers()
 
@@ -83,28 +92,12 @@ func (m *RuntimeManager) SyncOnce(ctx context.Context) error {
 		desired[key] = record
 	}
 
-	m.mu.Lock()
-	currentWorkers := make(map[string]*workerHandle, len(m.workers))
-	for key, handle := range m.workers {
-		currentWorkers[key] = handle
-	}
-	m.mu.Unlock()
-
-	for key, handle := range currentWorkers {
+	for key, handle := range m.snapshotWorkers() {
 		record, ok := desired[key]
-		if !ok {
-			handle.cancel()
-			m.mu.Lock()
-			delete(m.workers, key)
-			m.mu.Unlock()
+		if ok && m.workerFingerprint(record) == handle.fingerprint {
 			continue
 		}
-		if fingerprint := m.workerFingerprint(record); fingerprint != handle.fingerprint {
-			handle.cancel()
-			m.mu.Lock()
-			delete(m.workers, key)
-			m.mu.Unlock()
-		}
+		m.stopWorker(key, handle)
 	}
 
 	for key, record := range desired {
@@ -112,10 +105,31 @@ func (m *RuntimeManager) SyncOnce(ctx context.Context) error {
 			continue
 		}
 		if err := m.startWorker(ctx, record); err != nil {
-			return err
+			m.Logger.LogWorkerStartError(record.NamespaceID, record.ID, err)
 		}
 	}
 	return nil
+}
+
+func (m *RuntimeManager) snapshotWorkers() map[string]*workerHandle {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	workers := make(map[string]*workerHandle, len(m.workers))
+	for key, handle := range m.workers {
+		workers[key] = handle
+	}
+	return workers
+}
+
+// stopWorker cancels a worker and waits for it to exit before removing it
+// from the active set. Waiting matters: the replacement worker shares the
+// old one's sandbox root and lease owner, so the two must never overlap.
+func (m *RuntimeManager) stopWorker(key string, handle *workerHandle) {
+	handle.cancel()
+	<-handle.done
+	m.mu.Lock()
+	delete(m.workers, key)
+	m.mu.Unlock()
 }
 
 func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.RunnableAgent) error {
@@ -206,7 +220,6 @@ func (m *RuntimeManager) startWorker(ctx context.Context, record cpstore.Runnabl
 	key := workerKey(record.NamespaceID, record.ID)
 	workerCtx, cancel := context.WithCancel(context.Background())
 	handle := &workerHandle{
-		key:         key,
 		fingerprint: m.workerFingerprint(record),
 		cancel:      cancel,
 		done:        make(chan error, 1),
