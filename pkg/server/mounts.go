@@ -40,9 +40,9 @@ type managedAgentMount struct {
 }
 
 type managedAgentMountSource struct {
-	Path         string  `json:"path,omitempty"`
-	ResolvedPath string  `json:"resolved_path,omitempty"`
-	EnvVar       string  `json:"env_var,omitempty"`
+	Path         string `json:"path,omitempty"`
+	ResolvedPath string `json:"resolved_path,omitempty"`
+	EnvVar       string `json:"env_var,omitempty"`
 }
 
 func validateAgentMounts(spec AgentSpec) error {

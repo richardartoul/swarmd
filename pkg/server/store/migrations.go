@@ -7,9 +7,9 @@ import (
 )
 
 type migration struct {
-	version int
-	sql     string
-	apply   func(context.Context, *sql.Tx) error
+	version        int
+	sql            string
+	apply          func(context.Context, *sql.Tx) error
 	foreignKeysOff bool
 }
 
@@ -186,8 +186,8 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 `,
 	},
 	{
-		version: 5,
-		apply:           applyLegacyNamespaceMigration,
+		version:        5,
+		apply:          applyLegacyNamespaceMigration,
 		foreignKeysOff: true,
 	},
 	{
