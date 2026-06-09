@@ -221,11 +221,29 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		Trigger:   input.Trigger,
 		StartedAt: time.Now(),
 	}
+	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
+	turnSteps := make([]Step, 0, a.maxSteps)
+
+	// endTurn finalizes the turn. failure is recorded on the result; retErr is
+	// what runTurn itself returns (nil for failures the driver loop absorbed,
+	// non-nil for ones the caller must see, e.g. cancellation).
+	endTurn := func(status ResultStatus, failure, retErr error) (Result, error) {
+		result.Status = status
+		if failure != nil {
+			result.Error = failure.Error()
+		}
+		result.Steps = turnSteps
+		return a.finishResult(result, requestContext), retErr
+	}
+	// canceledBy reports whether err is the cancellation of the run context,
+	// as opposed to a step-local timeout with the run context still live.
+	canceledBy := func(err error) bool {
+		return ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	}
+
 	cleanupSpill, err := a.beginRunSpillDir(input.Trigger)
 	if err != nil {
-		result.Status = ResultStatusFatalError
-		result.Error = err.Error()
-		return a.finishResult(result, input.RequestContext.withRunStartedAt(result.StartedAt)), err
+		return endTurn(ResultStatusFatalError, err, err)
 	}
 	defer cleanupSpill()
 
@@ -237,14 +255,9 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 	if nextStepIndex <= 0 {
 		nextStepIndex = 1
 	}
-	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
-	turnSteps := make([]Step, 0, a.maxSteps)
 	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
 		if err := ctx.Err(); err != nil {
-			result.Status = ResultStatusCanceled
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), err
+			return endTurn(ResultStatusCanceled, err, err)
 		}
 
 		request, _, err := a.buildDriverRequestWithContext(
@@ -255,39 +268,25 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			requestContext,
 		)
 		if err != nil {
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 
 		decision, err := a.nextDecision(ctx, request)
 		if err != nil {
-			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-				result.Status = ResultStatusCanceled
-				result.Error = ctx.Err().Error()
-				result.Steps = turnSteps
-				return a.finishResult(result, requestContext), ctx.Err()
+			if canceledBy(err) {
+				return endTurn(ResultStatusCanceled, ctx.Err(), ctx.Err())
 			}
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 		requestContext = requestContext.withProviderState(decision.ProviderState)
 		result.Usage = mergeUsage(result.Usage, decision.Usage)
 		if err := validateDecision(decision); err != nil {
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 		if decision.Finish != nil {
-			result.Status = ResultStatusFinished
 			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusFinished, nil, nil)
 		}
 
 		stepIndex := nextStepIndex + len(turnSteps)
@@ -296,35 +295,18 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		requestContext = requestContext.withStepReplayData(StepCallID(step), decision.ReplayData)
 		if a.onStep != nil {
 			if stepErr := a.onStep.HandleStep(ctx, input.Trigger, step); stepErr != nil {
-				return a.finishResult(Result{
-					Trigger:   input.Trigger,
-					StartedAt: result.StartedAt,
-					Status:    ResultStatusFatalError,
-					CWD:       a.runner.Dir,
-					Usage:     result.Usage,
-					Steps:     turnSteps,
-					Error:     stepErr.Error(),
-				}, requestContext), stepErr
+				return endTurn(ResultStatusFatalError, stepErr, stepErr)
 			}
 		}
 		if runErr != nil {
-			if ctx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
-				result.Status = ResultStatusCanceled
-				result.Error = ctx.Err().Error()
-				result.Steps = turnSteps
-				return a.finishResult(result, requestContext), ctx.Err()
+			if canceledBy(runErr) {
+				return endTurn(ResultStatusCanceled, ctx.Err(), ctx.Err())
 			}
-			result.Status = ResultStatusFatalError
-			result.Error = runErr.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusFatalError, runErr, nil)
 		}
 	}
 
-	result.Status = ResultStatusMaxSteps
-	result.Error = fmt.Sprintf("agent reached max steps (%d)", a.maxSteps)
-	result.Steps = turnSteps
-	return a.finishResult(result, requestContext), nil
+	return endTurn(ResultStatusMaxSteps, fmt.Errorf("agent reached max steps (%d)", a.maxSteps), nil)
 }
 
 func (a *Agent) stepContext(ctx context.Context) (context.Context, context.CancelFunc) {
