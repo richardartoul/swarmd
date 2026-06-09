@@ -86,15 +86,11 @@ type anthropicRequestToolResultBlock struct {
 }
 
 // buildAnthropicMessages renders the request conversation as Messages API
-// system blocks and messages. Runtime-built requests take the structured
-// path; the legacy builder reconstructs equivalent messages from the flat
-// Messages/Steps view for hand-built requests (see [agent.Request]).
+// system blocks and messages from the structured turn view (see
+// [agent.Request]).
 func buildAnthropicMessages(req agent.Request, promptCacheTTL, model string) ([]anthropicRequestTextBlock, []anthropicMessage, error) {
 	if len(req.Messages) == 0 {
 		return nil, nil, nil
-	}
-	if len(req.ConversationTurns) == 0 && len(req.CurrentTurnMessages) == 0 {
-		return buildAnthropicLegacyMessages(req, promptCacheTTL, model)
 	}
 
 	var systemBlocks []anthropicRequestTextBlock
@@ -153,11 +149,7 @@ func buildAnthropicMessages(req agent.Request, promptCacheTTL, model string) ([]
 		}
 	}
 
-	currentTurnMessages := append([]agent.Message(nil), req.CurrentTurnMessages...)
-	if len(currentTurnMessages) == 0 {
-		currentTurnMessages = fallbackAnthropicCurrentTurnMessages(req.Messages)
-	}
-	currentUser, protocol, footer := anthropicCurrentTurnMessages(currentTurnMessages)
+	currentUser, protocol, footer := anthropicCurrentTurnMessages(req.CurrentTurnMessages)
 	if err := appendAnthropicMessage(&messages, currentUser, historyCacheControlForCurrentUser(cacheControl, req.ConversationTurns, historyCacheAssigned)); err != nil {
 		return nil, nil, err
 	}
@@ -187,68 +179,6 @@ func buildAnthropicMessages(req agent.Request, promptCacheTTL, model string) ([]
 	return systemBlocks, messages, nil
 }
 
-func buildAnthropicLegacyMessages(req agent.Request, promptCacheTTL, model string) ([]anthropicRequestTextBlock, []anthropicMessage, error) {
-	var systemBlocks []anthropicRequestTextBlock
-	prefix, footer := splitAnthropicRequestMessages(req.Messages)
-	messages := make([]anthropicMessage, 0, len(req.Messages)+len(req.Steps)*2)
-	appendPrepared := func(message agent.Message) error {
-		switch message.Role {
-		case agent.MessageRoleSystem:
-			if strings.TrimSpace(message.Content) != "" {
-				systemBlocks = append(systemBlocks, anthropicRequestTextBlock{
-					Type: "text",
-					Text: message.Content,
-				})
-			}
-		case agent.MessageRoleUser, agent.MessageRoleAssistant:
-			messages = append(messages, anthropicMessage{
-				Role:    message.Role,
-				Content: message.Content,
-			})
-		default:
-			return fmt.Errorf("unsupported anthropic message role %q", message.Role)
-		}
-		return nil
-	}
-
-	for _, message := range prefix {
-		if err := appendPrepared(message); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	replays := agent.BuildStepReplays(anthropicRequestCurrentTurnSteps(req))
-	cacheableReplayIdx := lastAnthropicCacheableReplayIndex(replays, req.Tools, anthropicMinimumCacheableTokens(model))
-	for idx, replay := range replays {
-		replayOptions := anthropicReplayOptions{
-			AssistantPreamble: strings.TrimSpace(req.StepReplayData[replay.CallID]),
-		}
-		if idx == cacheableReplayIdx {
-			replayOptions.ResultCacheControl = anthropicPromptCacheControl(promptCacheTTL)
-		}
-		replayMessages, err := buildAnthropicReplayMessages(replay, req.Tools, replayOptions)
-		if err != nil {
-			return nil, nil, err
-		}
-		messages = append(messages, replayMessages...)
-	}
-
-	if err := appendPrepared(footer); err != nil {
-		return nil, nil, err
-	}
-	if len(systemBlocks) > 0 && promptCacheTTL != "" {
-		systemBlocks[len(systemBlocks)-1].CacheControl = anthropicPromptCacheControl(promptCacheTTL)
-	}
-	return systemBlocks, messages, nil
-}
-
-func splitAnthropicRequestMessages(messages []agent.Message) ([]agent.Message, agent.Message) {
-	if len(messages) == 0 {
-		return nil, agent.Message{}
-	}
-	return messages[:len(messages)-1], messages[len(messages)-1]
-}
-
 func anthropicCurrentTurnMessages(messages []agent.Message) (agent.Message, agent.Message, agent.Message) {
 	switch len(messages) {
 	case 0:
@@ -262,28 +192,8 @@ func anthropicCurrentTurnMessages(messages []agent.Message) (agent.Message, agen
 	}
 }
 
-func fallbackAnthropicCurrentTurnMessages(messages []agent.Message) []agent.Message {
-	if len(messages) == 0 {
-		return nil
-	}
-	nonSystem := make([]agent.Message, 0, len(messages))
-	for _, message := range messages {
-		if message.Role == agent.MessageRoleSystem {
-			continue
-		}
-		nonSystem = append(nonSystem, message)
-	}
-	if len(nonSystem) <= 3 {
-		return nonSystem
-	}
-	return append([]agent.Message(nil), nonSystem[len(nonSystem)-3:]...)
-}
-
 func anthropicRequestCurrentTurnSteps(req agent.Request) []agent.Step {
-	if len(req.CurrentTurnSteps) > 0 || len(req.ConversationTurns) > 0 {
-		return req.CurrentTurnSteps
-	}
-	return req.Steps
+	return req.CurrentTurnSteps
 }
 
 func historyCacheControlForCurrentUser(cacheControl *anthropicCacheControl, priorTurns []agent.ConversationTurn, historyCacheAssigned bool) *anthropicCacheControl {

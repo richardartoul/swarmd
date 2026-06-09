@@ -97,11 +97,11 @@ func TestDriverNextPreservesWrappedTimeoutErrors(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say hello"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("driver.Next() error = nil, want timeout")
 	}
@@ -151,14 +151,14 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleSystem, Content: "tool availability"},
 			{Role: agent.MessageRoleUser, Content: "say done"},
-			{Role: agent.MessageRoleAssistant, Content: "previous step"},
+			{Role: agent.MessageRoleUser, Content: "previous step"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -191,11 +191,13 @@ func TestDriverNextMovesSystemMessagesIntoTopLevelSystem(t *testing.T) {
 	if len(snapshot[0].Request.Messages) != 2 {
 		t.Fatalf("len(request messages) = %d, want 2", len(snapshot[0].Request.Messages))
 	}
-	if snapshot[0].Request.Messages[0].Role != agent.MessageRoleUser || mustAnthropicStringContent(t, snapshot[0].Request.Messages[0].Content) != "say done" {
+	// The current user turn carries the history cache breakpoint, so it is
+	// rendered as a text block rather than a plain string.
+	if snapshot[0].Request.Messages[0].Role != agent.MessageRoleUser || mustAnthropicTextContent(t, snapshot[0].Request.Messages[0].Content) != "say done" {
 		t.Fatalf("first request message = %#v, want user message", snapshot[0].Request.Messages[0])
 	}
-	if snapshot[0].Request.Messages[1].Role != agent.MessageRoleAssistant || mustAnthropicStringContent(t, snapshot[0].Request.Messages[1].Content) != "previous step" {
-		t.Fatalf("second request message = %#v, want assistant message", snapshot[0].Request.Messages[1])
+	if snapshot[0].Request.Messages[1].Role != agent.MessageRoleUser || mustAnthropicStringContent(t, snapshot[0].Request.Messages[1].Content) != "previous step" {
+		t.Fatalf("second request message = %#v, want protocol message", snapshot[0].Request.Messages[1])
 	}
 	if got := snapshot[0].Headers.Get("x-api-key"); got != "test-key" {
 		t.Fatalf("x-api-key header = %q, want %q", got, "test-key")
@@ -228,11 +230,11 @@ func TestDriverNextSendsAdaptiveThinkingFromModelSuffix(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -278,11 +280,11 @@ func TestDriverNextDefaultsPromptCacheTTLTo5m(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -326,11 +328,11 @@ func TestDriverNextForwardsPromptCacheTTL(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -367,7 +369,7 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "read the file"},
@@ -390,7 +392,7 @@ func TestDriverNextSendsToolsAndParsesToolUse(t *testing.T) {
 				Examples:     []string{"*** Begin Patch\n*** Update File: /workspace/app.txt\n@@\n-old line\n+new line\n*** End Patch"},
 			},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -583,7 +585,7 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -604,7 +606,7 @@ func TestBuildMessagesRequestReplaysFunctionToolUseAndResult(t *testing.T) {
 			Kind:       agent.ToolKindFunction,
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -665,7 +667,7 @@ func TestBuildMessagesRequestInterleavesPriorSessionTurnBeforeCurrentTurn(t *tes
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 		},
@@ -700,7 +702,7 @@ func TestBuildMessagesRequestInterleavesPriorSessionTurnBeforeCurrentTurn(t *tes
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
 			ReadOnly:   true,
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -740,7 +742,7 @@ func TestBuildMessagesRequestCachesPriorTurnBoundaryForSessionTurn(t *testing.T)
 		maxTokens:      DefaultMaxTokens,
 		promptCacheTTL: "5m",
 	}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 		},
@@ -759,7 +761,7 @@ func TestBuildMessagesRequestCachesPriorTurnBoundaryForSessionTurn(t *testing.T)
 			{Role: agent.MessageRoleUser, Content: "stable protocol"},
 			{Role: agent.MessageRoleUser, Content: testCurrentStateMessage(1)},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -783,7 +785,7 @@ func TestBuildMessagesRequestReplaysStoredAssistantPreamble(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -807,7 +809,7 @@ func TestBuildMessagesRequestReplaysStoredAssistantPreamble(t *testing.T) {
 		StepReplayData: map[string]string{
 			"step_1": `[{"type":"thinking","thinking":"","signature":"sig-step-1"},{"type":"text","text":"inspect the file first"}]`,
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -834,7 +836,7 @@ func TestBuildMessagesRequestReplaysCustomToolWrapperField(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -853,7 +855,7 @@ func TestBuildMessagesRequestReplaysCustomToolWrapperField(t *testing.T) {
 			Kind:         agent.ToolKindCustom,
 			CustomFormat: &agent.ToolFormat{Type: "grammar", Syntax: "lark", Definition: "start: PATCH\nPATCH: /.+/s"},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -874,7 +876,7 @@ func TestBuildMessagesRequestReplaysRunShellToolUse(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -893,7 +895,7 @@ func TestBuildMessagesRequestReplaysRunShellToolUse(t *testing.T) {
 			Kind:       agent.ToolKindFunction,
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"command": map[string]any{"type": "string"}}, "required": []string{"command"}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -917,7 +919,7 @@ func TestBuildMessagesRequestMarksErroredReplayToolResult(t *testing.T) {
 	t.Parallel()
 
 	driver := &Driver{model: "claude-sonnet-4-6", maxTokens: DefaultMaxTokens}
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -937,7 +939,7 @@ func TestBuildMessagesRequestMarksErroredReplayToolResult(t *testing.T) {
 			Kind:       agent.ToolKindFunction,
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -957,7 +959,7 @@ func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled
 		promptCacheTTL: "5m",
 	}
 	largeOutput := strings.Repeat("x", anthropicMinimumCacheableTokens("claude-sonnet-4-6")*4)
-	payload, err := driver.buildMessagesRequest(agent.Request{
+	payload, err := driver.buildMessagesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -995,7 +997,7 @@ func TestBuildMessagesRequestCachesLastLargeReplayResultWhenPromptCachingEnabled
 				Parameters: map[string]any{"type": "object", "properties": map[string]any{"pattern": map[string]any{"type": "string"}}, "required": []string{"pattern"}, "additionalProperties": false},
 			},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("buildMessagesRequest() error = %v", err)
 	}
@@ -1307,11 +1309,11 @@ func TestDriverNextCapturesCachedTokensFromUsage(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1336,11 +1338,11 @@ func TestDriverNextRejectsPlainTextOutsideStrictSchema(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("Next() error = nil, want strict final parser rejection")
 	}
@@ -1374,11 +1376,11 @@ func TestDriverNextContinuesEmptyEndTurnResponses(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1423,11 +1425,11 @@ func TestDriverNextContinuesPauseTurnResponses(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "search the web"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1474,11 +1476,11 @@ func TestDriverNextContinuesTruncatedResponses(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1524,11 +1526,11 @@ func TestDriverNextRejectsRefusals(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "do the unsafe thing"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("Next() error = nil, want refusal error")
 	}
@@ -1555,11 +1557,11 @@ func TestDriverNextParsesStructuredFinishThought(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1595,11 +1597,11 @@ func TestDriverNextMergesThinkingIntoStructuredFinishThought(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1629,11 +1631,11 @@ func TestDriverNextAcceptsStructuredFinishWithoutThought(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -2032,4 +2034,22 @@ func mustAnthropicBlocks(t *testing.T, content any) []map[string]any {
 		t.Fatalf("json.Unmarshal(blocks): %v", err)
 	}
 	return blocks
+}
+
+// structuredRequest fills the structured turn view for a hand-built flat
+// request, mirroring the layout the agent runtime produces. Driver requests
+// must carry the structured view; tests use this helper instead of
+// duplicating the runtime's request builder.
+func structuredRequest(req agent.Request) agent.Request {
+	if len(req.CurrentTurnMessages) > 0 || len(req.ConversationTurns) > 0 {
+		return req
+	}
+	for _, message := range req.Messages {
+		if message.Role == agent.MessageRoleSystem {
+			continue
+		}
+		req.CurrentTurnMessages = append(req.CurrentTurnMessages, message)
+	}
+	req.CurrentTurnSteps = req.Steps
+	return req
 }

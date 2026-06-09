@@ -228,10 +228,11 @@ type FileReference = toolscore.FileReference
 //
 //   - The structured view (ConversationTurns, CurrentTurnMessages,
 //     CurrentTurnSteps) preserves turn boundaries so drivers can replay
-//     provider-native context precisely. Drivers prefer this view.
+//     provider-native context precisely. Drivers require this view and
+//     reject requests without it.
 //   - The flat view (Messages, Steps) is the fully prepared prompt as a
-//     single sequence. Drivers fall back to it when the structured fields
-//     are empty, which only happens for hand-built Requests.
+//     single sequence. Drivers read only the system entries from it; the
+//     rest exists for wrappers, logging, and inspection surfaces.
 //
 // Both views describe the same conversation; the runtime always populates
 // both.

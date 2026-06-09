@@ -115,10 +115,14 @@ func New(cfg Config) (*Driver, error) {
 	}, nil
 }
 
-// Next implements [agent.Driver].
+// Next implements [agent.Driver]. Requests must carry the structured turn
+// view (see [agent.Request]); the agent runtime always builds them that way.
 func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, error) {
 	if len(req.Messages) == 0 {
 		return agent.Decision{}, fmt.Errorf("openai request must include at least one message")
+	}
+	if len(req.CurrentTurnMessages) == 0 && len(req.ConversationTurns) == 0 {
+		return agent.Decision{}, fmt.Errorf("openai request must include structured turn fields; build requests with the agent runtime")
 	}
 
 	return d.nextResponses(ctx, req, d.adapterCapabilities())

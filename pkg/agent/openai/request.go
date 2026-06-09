@@ -189,49 +189,12 @@ func shouldUsePreviousResponseID(req agent.Request, caps openAIAdapterCapabiliti
 }
 
 // buildResponsesInput renders the request conversation as Responses API
-// input items. Runtime-built requests take the structured path; the legacy
-// builders reconstruct equivalent input from the flat Messages/Steps view
-// for hand-built requests (see [agent.Request]).
+// input items from the structured turn view (see [agent.Request]).
 func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities, state openAIProviderState, usePreviousResponseID bool) []responsesInputItem {
-	if len(req.ConversationTurns) == 0 && len(req.CurrentTurnMessages) == 0 {
-		if usePreviousResponseID {
-			return buildResponsesLegacyContinuationInput(req, caps)
-		}
-		return buildResponsesLegacyReplayInput(req, caps, state)
-	}
 	if usePreviousResponseID {
 		return buildResponsesContinuationInput(req, caps)
 	}
 	return buildResponsesReplayInput(req, caps, state)
-}
-
-func buildResponsesLegacyReplayInput(req agent.Request, caps openAIAdapterCapabilities, state openAIProviderState) []responsesInputItem {
-	if len(req.Messages) == 0 {
-		return nil
-	}
-	prefix, footer := splitRequestMessages(req.Messages)
-	replays := agent.BuildStepReplays(req.Steps)
-	input := make([]responsesInputItem, 0, len(req.Messages)+len(replays)*3)
-	assistantReplacementIdx := latestAssistantReplacementIndex(prefix, req.Step, state)
-	for idx, message := range prefix {
-		if message.Role == agent.MessageRoleSystem {
-			continue
-		}
-		if idx == assistantReplacementIdx {
-			input = append(input, responsesOutputItemsAsInput(state.Output)...)
-			continue
-		}
-		input = append(input, responsesAgentMessageInput(message))
-	}
-	adapters := openAIToolAdaptersByInternalName(req.Tools, caps)
-	for _, replay := range replays {
-		adapter, ok := adapters[replay.ToolName]
-		input = append(input, buildResponsesReplayItems(replay, adapter, ok, req.StepReplayData[replay.CallID])...)
-	}
-	if footer.Role != agent.MessageRoleSystem {
-		input = append(input, responsesAgentMessageInput(footer))
-	}
-	return input
 }
 
 func buildResponsesReplayInput(req agent.Request, caps openAIAdapterCapabilities, state openAIProviderState) []responsesInputItem {
@@ -287,34 +250,6 @@ func buildResponsesContinuationInput(req agent.Request, caps openAIAdapterCapabi
 		input = append(input, responsesAgentMessageInput(currentState))
 	}
 	return input
-}
-
-func buildResponsesLegacyContinuationInput(req agent.Request, caps openAIAdapterCapabilities) []responsesInputItem {
-	input := make([]responsesInputItem, 0, 3)
-	if req.Step <= 1 {
-		currentTurn, currentState := currentTurnContinuationMessages(req.Messages)
-		if currentTurn.Content != "" {
-			input = append(input, responsesAgentMessageInput(currentTurn))
-		}
-		if currentState.Content != "" {
-			input = append(input, responsesAgentMessageInput(currentState))
-		}
-		return input
-	}
-	if outputItem, ok := buildResponsesLegacyContinuationOutputItem(req, caps); ok {
-		input = append(input, outputItem)
-	}
-	if currentState, ok := lastNonSystemMessage(req.Messages); ok {
-		input = append(input, responsesAgentMessageInput(currentState))
-	}
-	return input
-}
-
-func splitRequestMessages(messages []agent.Message) ([]agent.Message, agent.Message) {
-	if len(messages) == 0 {
-		return nil, agent.Message{}
-	}
-	return messages[:len(messages)-1], messages[len(messages)-1]
 }
 
 func buildResponsesReplayItems(replay agent.StepReplay, adapter openAIToolAdapter, ok bool, rawReplay string) []responsesInputItem {
@@ -389,10 +324,6 @@ func buildResponsesContinuationOutputItem(req agent.Request, caps openAIAdapterC
 	return buildResponsesToolOutputItem(req, caps, openAIRequestCurrentTurnSteps(req))
 }
 
-func buildResponsesLegacyContinuationOutputItem(req agent.Request, caps openAIAdapterCapabilities) (responsesInputItem, bool) {
-	return buildResponsesToolOutputItem(req, caps, req.Steps)
-}
-
 // buildResponsesToolOutputItem renders the latest executed step as the tool
 // output item that answers the provider's pending tool call.
 func buildResponsesToolOutputItem(req agent.Request, caps openAIAdapterCapabilities, steps []agent.Step) (responsesInputItem, bool) {
@@ -436,80 +367,8 @@ func latestStepReplay(steps []agent.Step) (agent.StepReplay, bool) {
 	return replays[len(replays)-1], true
 }
 
-func currentTurnContinuationMessages(messages []agent.Message) (agent.Message, agent.Message) {
-	currentState, ok := lastNonSystemMessage(messages)
-	if !ok {
-		return agent.Message{}, agent.Message{}
-	}
-	for idx := len(messages) - 1; idx >= 0; idx-- {
-		message := messages[idx]
-		if message.Role == agent.MessageRoleSystem || strings.TrimSpace(message.Content) == "" {
-			continue
-		}
-		if message.Content == currentState.Content {
-			continue
-		}
-		if isTurnProtocolMessage(message) {
-			continue
-		}
-		return message, currentState
-	}
-	return agent.Message{}, currentState
-}
-
-func latestAssistantReplacementIndex(messages []agent.Message, step int, state openAIProviderState) int {
-	if step > 1 || len(state.Output) == 0 {
-		return -1
-	}
-	currentTurn, _ := currentTurnContinuationMessages(messages)
-	if strings.TrimSpace(currentTurn.Content) == "" {
-		return -1
-	}
-	for idx := len(messages) - 1; idx >= 0; idx-- {
-		message := messages[idx]
-		if message.Role != agent.MessageRoleAssistant {
-			continue
-		}
-		return idx
-	}
-	return -1
-}
-
-func lastNonSystemMessage(messages []agent.Message) (agent.Message, bool) {
-	for idx := len(messages) - 1; idx >= 0; idx-- {
-		message := messages[idx]
-		if message.Role == agent.MessageRoleSystem || strings.TrimSpace(message.Content) == "" {
-			continue
-		}
-		return message, true
-	}
-	return agent.Message{}, false
-}
-
-func isTurnProtocolMessage(message agent.Message) bool {
-	content := strings.TrimSpace(message.Content)
-	if message.Role != agent.MessageRoleUser || content == "" {
-		return false
-	}
-	return strings.Contains(content, "Use exactly one tool call when more work is needed") &&
-		strings.Contains(content, "Never emit multiple tool calls in a single response.")
-}
-
 func openAICurrentTurnMessages(req agent.Request) []agent.Message {
-	if len(req.CurrentTurnMessages) > 0 {
-		return append([]agent.Message(nil), req.CurrentTurnMessages...)
-	}
-	nonSystem := make([]agent.Message, 0, len(req.Messages))
-	for _, message := range req.Messages {
-		if message.Role == agent.MessageRoleSystem {
-			continue
-		}
-		nonSystem = append(nonSystem, message)
-	}
-	if len(nonSystem) <= 3 {
-		return nonSystem
-	}
-	return append([]agent.Message(nil), nonSystem[len(nonSystem)-3:]...)
+	return append([]agent.Message(nil), req.CurrentTurnMessages...)
 }
 
 func openAICurrentTurnMessageParts(req agent.Request) (agent.Message, agent.Message, agent.Message) {
@@ -527,10 +386,7 @@ func openAICurrentTurnMessageParts(req agent.Request) (agent.Message, agent.Mess
 }
 
 func openAIRequestCurrentTurnSteps(req agent.Request) []agent.Step {
-	if len(req.CurrentTurnSteps) > 0 || len(req.ConversationTurns) > 0 {
-		return req.CurrentTurnSteps
-	}
-	return req.Steps
+	return req.CurrentTurnSteps
 }
 
 func appendResponsesTurnInput(

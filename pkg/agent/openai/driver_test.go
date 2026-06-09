@@ -98,11 +98,11 @@ func TestDriverNextPreservesWrappedTimeoutErrors(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say hello"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("driver.Next() error = nil, want timeout")
 	}
@@ -135,12 +135,12 @@ func TestDriverNextParsesStrictFinalDecision(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "list the current directory"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -207,11 +207,11 @@ func TestDriverNextSendsReasoningEffortFromModelSuffix(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say hello"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -248,11 +248,11 @@ func TestDriverNextCapturesCachedTokens(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "list the current directory"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -269,11 +269,11 @@ func TestBuildResponsesRequestAddsStructuredTextFormatOnSupportedNoToolModel(t *
 		model:   "gpt-5.4",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "list the current directory"},
 		},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 	if request.Text == nil || request.Text.Format == nil {
 		t.Fatal("request text.format = nil, want structured output config")
 	}
@@ -326,11 +326,11 @@ func TestBuildResponsesRequestLeavesReasoningNilForUnsupportedSummaryModel(t *te
 		model:   "gpt-4.1",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "list the current directory"},
 		},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 	if request.Reasoning != nil {
 		t.Fatalf("request reasoning = %#v, want nil for unsupported summary model", request.Reasoning)
 	}
@@ -343,7 +343,7 @@ func TestBuildResponsesRequestAddsStructuredTextFormatWhenToolsAvailable(t *test
 		model:   "gpt-5.4",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -353,7 +353,7 @@ func TestBuildResponsesRequestAddsStructuredTextFormatWhenToolsAvailable(t *test
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 	if request.Text == nil || request.Text.Format == nil {
 		t.Fatal("request text.format = nil, want structured output config")
 	}
@@ -411,11 +411,11 @@ func TestBuildResponsesRequestUsesStructuredTextFormatForCustomBaseURL(t *testin
 		model:   "gpt-5.4",
 		baseURL: "https://compatible.example/v1",
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	}, openAIAdapterCapabilities{})
+	}), openAIAdapterCapabilities{})
 	if request.Text == nil || request.Text.Format == nil {
 		t.Fatalf("request text = %#v, want structured output for supported models regardless of base URL", request.Text)
 	}
@@ -433,11 +433,11 @@ func TestDriverNextIgnoresTrailingJSONObjects(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "inspect the box"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("Next() error = nil, want strict final parser rejection")
 	}
@@ -452,13 +452,13 @@ func TestDriverNextMovesSystemMessagesIntoInstructions(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleSystem, Content: "runtime-only guidance"},
 			{Role: agent.MessageRoleUser, Content: "show it to me"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -482,7 +482,7 @@ func TestDriverNextMovesSystemMessagesIntoInstructions(t *testing.T) {
 func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 	t.Parallel()
 
-	input := buildResponsesInput(agent.Request{
+	input := buildResponsesInput(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -525,7 +525,7 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 				},
 			},
 		},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
+	}), openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
 
 	if len(input) != 7 {
 		t.Fatalf("len(input) = %d, want 7", len(input))
@@ -565,7 +565,7 @@ func TestBuildResponsesInputReplaysNativeToolHistory(t *testing.T) {
 func TestBuildResponsesInputUsesRawReplayDataWhenAvailable(t *testing.T) {
 	t.Parallel()
 
-	input := buildResponsesInput(agent.Request{
+	input := buildResponsesInput(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "trigger context"},
@@ -603,7 +603,7 @@ func TestBuildResponsesInputUsesRawReplayDataWhenAvailable(t *testing.T) {
 				},
 			}),
 		},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
+	}), openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
 
 	if len(input) != 5 {
 		t.Fatalf("len(input) = %d, want 5", len(input))
@@ -631,7 +631,7 @@ func TestBuildResponsesInputUsesRawReplayDataWhenAvailable(t *testing.T) {
 func TestBuildResponsesInputInterleavesPriorSessionTurnBeforeCurrentTurn(t *testing.T) {
 	t.Parallel()
 
-	input := buildResponsesInput(agent.Request{
+	input := buildResponsesInput(structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 		},
@@ -665,7 +665,7 @@ func TestBuildResponsesInputInterleavesPriorSessionTurnBeforeCurrentTurn(t *test
 			Kind:       agent.ToolKindFunction,
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}, "additionalProperties": false},
 		}},
-	}, openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
+	}), openAIAdapterCapabilities{SupportsCustomTools: true}, openAIProviderState{}, false)
 
 	if len(input) != 8 {
 		t.Fatalf("len(input) = %d, want 8", len(input))
@@ -703,7 +703,7 @@ func TestBuildResponsesRequestUsesPreviousResponseIDForToolContinuation(t *testi
 		model:   "gpt-5.4",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Step: 2,
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
@@ -736,7 +736,7 @@ func TestBuildResponsesRequestUsesPreviousResponseIDForToolContinuation(t *testi
 		ProviderState: compactJSON(openAIProviderState{
 			ResponseID: "resp_1",
 		}),
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 
 	if request.PreviousResponseID != "resp_1" {
 		t.Fatalf("request previous_response_id = %q, want %q", request.PreviousResponseID, "resp_1")
@@ -762,7 +762,7 @@ func TestBuildResponsesRequestUsesPreviousResponseIDForResolvedNewTurn(t *testin
 		model:   "gpt-5.4",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Step: 1,
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
@@ -779,7 +779,7 @@ func TestBuildResponsesRequestUsesPreviousResponseIDForResolvedNewTurn(t *testin
 				Role: agent.MessageRoleAssistant,
 			}},
 		}),
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 
 	if request.PreviousResponseID != "resp_1" {
 		t.Fatalf("request previous_response_id = %q, want %q", request.PreviousResponseID, "resp_1")
@@ -802,7 +802,7 @@ func TestBuildResponsesRequestFallsBackToReplayForNewTurnAfterUnresolvedToolCall
 		model:   "gpt-5.4",
 		baseURL: DefaultBaseURL,
 	}
-	request := driver.buildResponsesRequest(agent.Request{
+	request := driver.buildResponsesRequest(structuredRequest(agent.Request{
 		Step: 1,
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
@@ -841,7 +841,7 @@ func TestBuildResponsesRequestFallsBackToReplayForNewTurnAfterUnresolvedToolCall
 				Arguments: `{"file_path":"/tmp/demo.txt"}`,
 			}},
 		}),
-	}, openAIAdapterCapabilities{SupportsCustomTools: true})
+	}), openAIAdapterCapabilities{SupportsCustomTools: true})
 
 	if request.PreviousResponseID != "" {
 		t.Fatalf("request previous_response_id = %q, want empty for unresolved prior tool call", request.PreviousResponseID)
@@ -1031,11 +1031,11 @@ func TestDriverNextForwardsPromptCacheSettings(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "list files"},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1071,7 +1071,7 @@ func TestDriverNextForwardsResponsesPromptCacheSettings(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "list files"},
 		},
@@ -1081,7 +1081,7 @@ func TestDriverNextForwardsResponsesPromptCacheSettings(t *testing.T) {
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1324,7 +1324,7 @@ func TestDriverNextSendsToolsAndParsesToolCalls(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleSystem, Content: "test prompt"},
 			{Role: agent.MessageRoleUser, Content: "read the file"},
@@ -1347,7 +1347,7 @@ func TestDriverNextSendsToolsAndParsesToolCalls(t *testing.T) {
 				},
 			},
 		},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1541,7 +1541,7 @@ func TestDriverNextSendsResponsesReasoningObjectForToolRequests(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	_, err = driver.Next(context.Background(), agent.Request{
+	_, err = driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1551,7 +1551,7 @@ func TestDriverNextSendsResponsesReasoningObjectForToolRequests(t *testing.T) {
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1586,7 +1586,7 @@ func TestDriverNextCapturesCachedTokensFromResponsesUsage(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1596,7 +1596,7 @@ func TestDriverNextCapturesCachedTokensFromResponsesUsage(t *testing.T) {
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1631,7 +1631,7 @@ func TestDriverNextTreatsResponsesOutputTextAsFinish(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1641,7 +1641,7 @@ func TestDriverNextTreatsResponsesOutputTextAsFinish(t *testing.T) {
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1665,7 +1665,7 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1675,7 +1675,7 @@ func TestDriverNextParsesStructuredResponsesFinishThought(t *testing.T) {
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1708,7 +1708,7 @@ func TestDriverNextMergesReasoningIntoStructuredResponsesFinishThought(t *testin
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1718,7 +1718,7 @@ func TestDriverNextMergesReasoningIntoStructuredResponsesFinishThought(t *testin
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1742,7 +1742,7 @@ func TestDriverNextAcceptsStructuredResponsesFinishWithoutThought(t *testing.T) 
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	decision, err := driver.Next(context.Background(), agent.Request{
+	decision, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
@@ -1752,7 +1752,7 @@ func TestDriverNextAcceptsStructuredResponsesFinishWithoutThought(t *testing.T) 
 			Kind:        agent.ToolKindFunction,
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}, "required": []string{}, "additionalProperties": false},
 		}},
-	})
+	}))
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -1801,11 +1801,11 @@ func TestDriverNextRejectsPlainAssistantTextOutsideStrictSchema(t *testing.T) {
 	defer server.Close()
 
 	driver := newTestDriver(t, server.URL)
-	_, err := driver.Next(context.Background(), agent.Request{
+	_, err := driver.Next(context.Background(), structuredRequest(agent.Request{
 		Messages: []agent.Message{
 			{Role: agent.MessageRoleUser, Content: "say done"},
 		},
-	})
+	}))
 	if err == nil {
 		t.Fatal("Next() error = nil, want strict final parser rejection")
 	}
@@ -1963,4 +1963,22 @@ func newTestDriver(t *testing.T, baseURL string) *Driver {
 
 func strictFinalText(thought string, value any) string {
 	return agent.StrictFinalResponseExample(thought, value)
+}
+
+// structuredRequest fills the structured turn view for a hand-built flat
+// request, mirroring the layout the agent runtime produces. Driver requests
+// must carry the structured view; tests use this helper instead of
+// duplicating the runtime's request builder.
+func structuredRequest(req agent.Request) agent.Request {
+	if len(req.CurrentTurnMessages) > 0 || len(req.ConversationTurns) > 0 {
+		return req
+	}
+	for _, message := range req.Messages {
+		if message.Role == agent.MessageRoleSystem {
+			continue
+		}
+		req.CurrentTurnMessages = append(req.CurrentTurnMessages, message)
+	}
+	req.CurrentTurnSteps = req.Steps
+	return req
 }

@@ -111,6 +111,9 @@ func (d *Driver) Next(ctx context.Context, req agent.Request) (agent.Decision, e
 	if len(req.Messages) == 0 {
 		return agent.Decision{}, fmt.Errorf("anthropic request must include at least one message")
 	}
+	if len(req.CurrentTurnMessages) == 0 && len(req.ConversationTurns) == 0 {
+		return agent.Decision{}, fmt.Errorf("anthropic request must include structured turn fields; build requests with the agent runtime")
+	}
 	payload, err := d.buildMessagesRequest(req)
 	if err != nil {
 		return agent.Decision{}, err
