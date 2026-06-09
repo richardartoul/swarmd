@@ -393,7 +393,7 @@ func (d *Driver) buildResponsesRequest(req agent.Request, caps openAIAdapterCapa
 		Model:                d.model,
 		Instructions:         buildResponsesInstructions(req.Messages, req.Tools, caps),
 		Input:                buildResponsesInput(req, caps, state, usePreviousResponseID),
-		Text:                 d.responsesTextConfig(req),
+		Text:                 responsesFinalResponseTextConfig(),
 		PromptCacheKey:       d.promptCacheKey,
 		PromptCacheRetention: responsesPromptCacheRetention(d.promptCacheRetention),
 	}
@@ -940,43 +940,17 @@ func buildResponsesNativeReplayItems(replay agent.StepReplay, rawReplay string) 
 }
 
 func buildResponsesContinuationOutputItem(req agent.Request, caps openAIAdapterCapabilities) (responsesInputItem, bool) {
-	replay, ok := latestStepReplay(openAIRequestCurrentTurnSteps(req))
-	if !ok {
-		return responsesInputItem{}, false
-	}
-	adapter, adapterOK := openAIToolAdaptersByInternalName(req.Tools, caps)[replay.ToolName]
-	outputItems, replayOK := decodeOpenAIReplayOutputItems(req.StepReplayData[replay.CallID])
-	if !replayOK {
-		return responsesInputItem{}, false
-	}
-	toolCall, ok := latestResponsesToolCall(outputItems)
-	if !ok || strings.TrimSpace(toolCall.CallID) == "" {
-		return responsesInputItem{}, false
-	}
-	switch {
-	case toolCall.Type == "custom_tool_call":
-		return responsesInputItem{
-			Type:   "custom_tool_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
-	case adapterOK && openAIReplayBoundaryKind(replay, adapter, true) == agent.ToolBoundaryKindCustom:
-		return responsesInputItem{
-			Type:   "custom_tool_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
-	default:
-		return responsesInputItem{
-			Type:   "function_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
-	}
+	return buildResponsesToolOutputItem(req, caps, openAIRequestCurrentTurnSteps(req))
 }
 
 func buildResponsesLegacyContinuationOutputItem(req agent.Request, caps openAIAdapterCapabilities) (responsesInputItem, bool) {
-	replay, ok := latestStepReplay(req.Steps)
+	return buildResponsesToolOutputItem(req, caps, req.Steps)
+}
+
+// buildResponsesToolOutputItem renders the latest executed step as the tool
+// output item that answers the provider's pending tool call.
+func buildResponsesToolOutputItem(req agent.Request, caps openAIAdapterCapabilities, steps []agent.Step) (responsesInputItem, bool) {
+	replay, ok := latestStepReplay(steps)
 	if !ok {
 		return responsesInputItem{}, false
 	}
@@ -989,26 +963,23 @@ func buildResponsesLegacyContinuationOutputItem(req agent.Request, caps openAIAd
 	if !ok || strings.TrimSpace(toolCall.CallID) == "" {
 		return responsesInputItem{}, false
 	}
-	switch {
-	case toolCall.Type == "custom_tool_call":
-		return responsesInputItem{
-			Type:   "custom_tool_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
-	case adapterOK && openAIReplayBoundaryKind(replay, adapter, true) == agent.ToolBoundaryKindCustom:
-		return responsesInputItem{
-			Type:   "custom_tool_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
-	default:
-		return responsesInputItem{
-			Type:   "function_call_output",
-			CallID: toolCall.CallID,
-			Output: replay.Output,
-		}, true
+	return responsesInputItem{
+		Type:   responsesToolOutputType(toolCall, replay, adapter, adapterOK),
+		CallID: toolCall.CallID,
+		Output: replay.Output,
+	}, true
+}
+
+// responsesToolOutputType picks the output item type that matches the wire
+// shape of the originating tool call.
+func responsesToolOutputType(toolCall responsesOutputItem, replay agent.StepReplay, adapter openAIToolAdapter, adapterOK bool) string {
+	if toolCall.Type == "custom_tool_call" {
+		return "custom_tool_call_output"
 	}
+	if adapterOK && openAIReplayBoundaryKind(replay, adapter, true) == agent.ToolBoundaryKindCustom {
+		return "custom_tool_call_output"
+	}
+	return "function_call_output"
 }
 
 func latestStepReplay(steps []agent.Step) (agent.StepReplay, bool) {
@@ -1338,7 +1309,7 @@ func (d *Driver) adapterCapabilities() openAIAdapterCapabilities {
 	}
 }
 
-func (d *Driver) responsesTextConfig(req agent.Request) *responsesTextConfig {
+func responsesFinalResponseTextConfig() *responsesTextConfig {
 	return &responsesTextConfig{
 		Format: responsesJSONSchemaFormat(
 			"agent_final_response",

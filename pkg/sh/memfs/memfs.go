@@ -1,3 +1,11 @@
+// Package memfs provides a fully in-memory implementation of the sandbox
+// filesystem interfaces. It mirrors the disk-backed sandbox semantics —
+// root-constrained path resolution, symlinks, permissions, rename, and
+// working-directory tracking — without touching the host filesystem, which
+// makes it suitable for ephemeral agents and hermetic tests.
+//
+// An FS is safe for concurrent use; an RWMutex guards the node tree and each
+// FIFO carries its own state lock.
 package memfs
 
 import (
