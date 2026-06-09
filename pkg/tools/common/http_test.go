@@ -9,9 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
@@ -46,15 +44,10 @@ func (b *closeTrackingBody) Close() error {
 }
 
 // httpToolContext is a minimal toolscore.ToolContext for exercising
-// DoToolHTTPRequest. Only HTTPClient and StepTimeout are meaningful.
+// DoToolHTTPRequest. Only HTTPClient is meaningful.
 type httpToolContext struct {
+	toolscore.UnimplementedToolContext
 	transport http.RoundTripper
-}
-
-func (c httpToolContext) WorkingDir() string             { return "" }
-func (c httpToolContext) FileSystem() sandbox.FileSystem { return nil }
-func (c httpToolContext) ResolvePath(path string) (string, error) {
-	return "", fmt.Errorf("not supported")
 }
 
 func (c httpToolContext) HTTPClient(opts toolscore.ToolHTTPClientOptions) *http.Client {
@@ -66,24 +59,6 @@ func (c httpToolContext) HTTPClient(opts toolscore.ToolHTTPClientOptions) *http.
 	}
 	return client
 }
-
-func (c httpToolContext) RuntimeData() any           { return nil }
-func (c httpToolContext) StepTimeout() time.Duration { return 0 }
-func (c httpToolContext) SearchWeb(context.Context, string, int) (toolscore.WebSearchResponse, error) {
-	return toolscore.WebSearchResponse{}, fmt.Errorf("not supported")
-}
-
-func (c httpToolContext) DescribeImage(context.Context, toolscore.ImageDescriptionRequest) (toolscore.ImageDescriptionResponse, error) {
-	return toolscore.ImageDescriptionResponse{}, fmt.Errorf("not supported")
-}
-
-func (c httpToolContext) RunShell(context.Context, *toolscore.Step, toolscore.ShellExecution) error {
-	return fmt.Errorf("not supported")
-}
-
-func (c httpToolContext) SetOutput(*toolscore.Step, string)     {}
-func (c httpToolContext) SetPolicyError(*toolscore.Step, error) {}
-func (c httpToolContext) SetParseError(*toolscore.Step, error)  {}
 
 func TestDoToolHTTPRequestClosesBodyOnSuccess(t *testing.T) {
 	t.Parallel()

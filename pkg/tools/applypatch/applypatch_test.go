@@ -2,13 +2,10 @@ package applypatch
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
@@ -17,6 +14,7 @@ import (
 // patchToolContext is a minimal toolscore.ToolContext backed by a real
 // sandbox filesystem rooted at a test temp directory.
 type patchToolContext struct {
+	toolscore.UnimplementedToolContext
 	fs   *sandbox.FS
 	root string
 }
@@ -40,37 +38,6 @@ func (c patchToolContext) FileSystem() sandbox.FileSystem { return c.fs }
 
 func (c patchToolContext) ResolvePath(path string) (string, error) {
 	return sandbox.ResolvePath(c.fs, c.root, path)
-}
-
-func (c patchToolContext) HTTPClient(toolscore.ToolHTTPClientOptions) *http.Client { return nil }
-func (c patchToolContext) RuntimeData() any                                        { return nil }
-func (c patchToolContext) StepTimeout() time.Duration                              { return 0 }
-
-func (c patchToolContext) SearchWeb(context.Context, string, int) (toolscore.WebSearchResponse, error) {
-	return toolscore.WebSearchResponse{}, fmt.Errorf("not supported")
-}
-
-func (c patchToolContext) DescribeImage(context.Context, toolscore.ImageDescriptionRequest) (toolscore.ImageDescriptionResponse, error) {
-	return toolscore.ImageDescriptionResponse{}, fmt.Errorf("not supported")
-}
-
-func (c patchToolContext) RunShell(context.Context, *toolscore.Step, toolscore.ShellExecution) error {
-	return fmt.Errorf("not supported")
-}
-
-func (c patchToolContext) SetOutput(step *toolscore.Step, output string) {
-	step.ActionOutput = output
-	step.Status = toolscore.StepStatusOK
-}
-
-func (c patchToolContext) SetPolicyError(step *toolscore.Step, err error) {
-	step.Status = toolscore.StepStatusPolicyError
-	step.Error = err.Error()
-}
-
-func (c patchToolContext) SetParseError(step *toolscore.Step, err error) {
-	step.Status = toolscore.StepStatusParseError
-	step.Error = err.Error()
 }
 
 func applyPatchInput(t *testing.T, toolCtx patchToolContext, patch string) toolscore.Step {
