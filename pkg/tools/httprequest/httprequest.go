@@ -153,21 +153,41 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 	if method == "" {
 		method = http.MethodGet
 	}
+	if len(args.Body) > maxHTTPRequestBodyBytes {
+		toolCtx.SetPolicyError(step, fmt.Errorf("request body exceeded the limit of %d bytes", maxHTTPRequestBodyBytes))
+		return nil
+	}
+	if len(args.Headers) > maxHTTPRequestHeaders {
+		toolCtx.SetPolicyError(step, fmt.Errorf("request header count exceeded the limit of %d", maxHTTPRequestHeaders))
+		return nil
+	}
 	timeout := toolscommon.BoundedDurationMillis(args.TimeoutMS, toolscommon.DefaultHTTPRequestTimeout, toolCtx.StepTimeout())
 	if timeout > maxHTTPRequestTimeout {
 		timeout = maxHTTPRequestTimeout
 	}
-	resp, body, truncated, err := executeRequest(ctx, toolCtx, method, targetURL.String(), args.Headers, args.Body, args.FollowRedirects, timeout, toolscommon.DefaultHTTPResponseBytes)
+
+	headers := make([]toolscommon.ToolHTTPHeader, 0, len(args.Headers))
+	for _, header := range args.Headers {
+		headers = append(headers, toolscommon.ToolHTTPHeader{Name: header.Name, Value: header.Value})
+	}
+	resp, err := toolscommon.DoToolHTTPRequest(ctx, toolCtx, toolscommon.ToolHTTPRequest{
+		Method:          method,
+		URL:             targetURL.String(),
+		Headers:         headers,
+		Body:            args.Body,
+		FollowRedirects: args.FollowRedirects,
+		Timeout:         timeout,
+		MaxBodyBytes:    toolscommon.DefaultHTTPResponseBytes,
+	})
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
 		return nil
 	}
-	defer resp.Body.Close()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Method: %s\n", method)
 	fmt.Fprintf(&b, "URL: %s\n", targetURL.String())
-	fmt.Fprintf(&b, "Final URL: %s\n", resp.Request.URL.String())
+	fmt.Fprintf(&b, "Final URL: %s\n", resp.FinalURL)
 	fmt.Fprintf(&b, "Status: %s\n", resp.Status)
 	if contentType := strings.TrimSpace(resp.Header.Get("Content-Type")); contentType != "" {
 		fmt.Fprintf(&b, "Content-Type: %s\n", contentType)
@@ -176,66 +196,17 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 		b.WriteString("Headers:\n")
 		b.WriteString(headerText)
 	}
-	if len(body) > 0 {
-		bodyText := toolscommon.FormatHTTPBody(body)
+	if len(resp.Body) > 0 {
+		bodyText := toolscommon.FormatHTTPBody(resp.Body)
 		if bodyText != "" {
 			b.WriteString("Body:\n")
 			b.WriteString(bodyText)
 			b.WriteString("\n")
 		}
 	}
-	if truncated {
+	if resp.BodyTruncated {
 		b.WriteString("Body was truncated.\n")
 	}
 	toolCtx.SetOutput(step, b.String())
 	return nil
-}
-
-func executeRequest(ctx context.Context, toolCtx toolscore.ToolContext, method, rawURL string, headers []headerArg, body string, followRedirects bool, timeout time.Duration, maxBodyBytes int64) (*http.Response, []byte, bool, error) {
-	client := toolCtx.HTTPClient(toolscore.ToolHTTPClientOptions{
-		ConnectTimeout:  toolscommon.DefaultHTTPConnectTimeout,
-		FollowRedirects: followRedirects,
-	})
-	if client == nil {
-		return nil, nil, false, fmt.Errorf("HTTP client factory is not configured")
-	}
-	if followRedirects {
-		toolscommon.WrapHTTPRedirectLimit(client, toolscommon.MaxHTTPRedirects)
-	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-	if len(body) > maxHTTPRequestBodyBytes {
-		return nil, nil, false, fmt.Errorf("request body exceeded the limit of %d bytes", maxHTTPRequestBodyBytes)
-	}
-	if len(headers) > maxHTTPRequestHeaders {
-		return nil, nil, false, fmt.Errorf("request header count exceeded the limit of %d", maxHTTPRequestHeaders)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, strings.NewReader(body))
-	if err != nil {
-		return nil, nil, false, err
-	}
-	req.Header.Set("User-Agent", toolscommon.DefaultToolHTTPUserAgent)
-	for _, header := range headers {
-		name := strings.TrimSpace(header.Name)
-		if name == "" {
-			return nil, nil, false, fmt.Errorf("request headers must not include empty names")
-		}
-		if strings.EqualFold(name, "Host") {
-			req.Host = header.Value
-			continue
-		}
-		req.Header.Set(name, header.Value)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	bodyBytes, truncated, err := toolscommon.ReadHTTPBodyLimited(resp.Body, maxBodyBytes)
-	if err != nil {
-		return resp, nil, false, err
-	}
-	return resp, bodyBytes, truncated, nil
 }

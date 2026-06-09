@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	htmltomarkdown "github.com/JohannesKaufmann/html-to-markdown/v2"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
@@ -95,18 +94,18 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 	}
 
 	timeout := toolscommon.BoundedDurationMillis(0, defaultReadWebPageTimeout, toolCtx.StepTimeout())
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
-	resp, body, truncated, err := executeRequest(ctx, toolCtx, http.MethodGet, targetURL.String(), nil, "", true, timeout, defaultReadWebPageBytes)
+	resp, err := toolscommon.DoToolHTTPRequest(ctx, toolCtx, toolscommon.ToolHTTPRequest{
+		Method:          http.MethodGet,
+		URL:             targetURL.String(),
+		FollowRedirects: true,
+		Timeout:         timeout,
+		MaxBodyBytes:    defaultReadWebPageBytes,
+	})
 	if err != nil {
 		toolCtx.SetPolicyError(step, err)
 		return nil
 	}
-	defer resp.Body.Close()
+	body := resp.Body
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	title := ""
@@ -138,7 +137,7 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "URL: %s\n", targetURL.String())
-	fmt.Fprintf(&b, "Final URL: %s\n", resp.Request.URL.String())
+	fmt.Fprintf(&b, "Final URL: %s\n", resp.FinalURL)
 	fmt.Fprintf(&b, "Status: %s\n", resp.Status)
 	if contentType != "" {
 		fmt.Fprintf(&b, "Content-Type: %s\n", contentType)
@@ -155,7 +154,7 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 		b.WriteString(strings.TrimSpace(markdown))
 		b.WriteString("\n")
 	}
-	if truncated {
+	if resp.BodyTruncated {
 		b.WriteString("Body was truncated.\n")
 	}
 	if len(links) > 0 {
@@ -166,43 +165,4 @@ func handle(ctx context.Context, toolCtx toolscore.ToolContext, step *toolscore.
 	}
 	toolCtx.SetOutput(step, b.String())
 	return nil
-}
-
-func executeRequest(ctx context.Context, toolCtx toolscore.ToolContext, method, rawURL string, headers map[string]string, body string, followRedirects bool, timeout time.Duration, maxBodyBytes int64) (*http.Response, []byte, bool, error) {
-	client := toolCtx.HTTPClient(toolscore.ToolHTTPClientOptions{
-		ConnectTimeout:  toolscommon.DefaultHTTPConnectTimeout,
-		FollowRedirects: followRedirects,
-	})
-	if client == nil {
-		return nil, nil, false, fmt.Errorf("HTTP client factory is not configured")
-	}
-	if followRedirects {
-		toolscommon.WrapHTTPRedirectLimit(client, toolscommon.MaxHTTPRedirects)
-	}
-	if timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, strings.NewReader(body))
-	if err != nil {
-		return nil, nil, false, err
-	}
-	req.Header.Set("User-Agent", toolscommon.DefaultToolHTTPUserAgent)
-	for name, value := range headers {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			return nil, nil, false, fmt.Errorf("request headers must not include empty names")
-		}
-		req.Header.Set(name, value)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, nil, false, err
-	}
-	bodyBytes, truncated, err := toolscommon.ReadHTTPBodyLimited(resp.Body, maxBodyBytes)
-	if err != nil {
-		return resp, nil, false, err
-	}
-	return resp, bodyBytes, truncated, nil
 }
