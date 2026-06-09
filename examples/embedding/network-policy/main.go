@@ -74,22 +74,19 @@ func runBlockedDemo() (agent.Result, error) {
 	server.Start()
 	defer server.Close()
 
-	dialer, err := interp.NewAllowlistNetworkDialer(interp.OSNetworkDialer{}, []interp.HostMatcher{{
-		Glob: "example.com",
-	}})
-	if err != nil {
-		return agent.Result{}, err
-	}
-
 	return runScriptedAgent(agent.Config{
-		NetworkDialer: dialer,
+		// The raw dialer provides connectivity; GlobalReachableHosts is the
+		// policy. Only example.com is reachable, so the local server is
+		// blocked at dial time.
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "example.com"}},
 		Driver: agent.DriverFunc(func(_ context.Context, req agent.Request) (agent.Decision, error) {
 			if req.Step == 1 {
 				return agent.Decision{
 					Tool: &agent.ToolAction{
 						Name:  agent.ToolNameRunShell,
 						Kind:  agent.ToolKindFunction,
-						Input: fmt.Sprintf("{\"command\":%q}", "curl -s "+server.URL),
+						Input: fmt.Sprintf("{\"command\":%q}", "curl -sS "+server.URL),
 					},
 				}, nil
 			}
@@ -112,15 +109,9 @@ func runAllowlistedDemo() (agent.Result, error) {
 	server.Start()
 	defer server.Close()
 
-	dialer, err := interp.NewAllowlistNetworkDialer(interp.OSNetworkDialer{}, []interp.HostMatcher{{
-		Glob: "127.0.0.1",
-	}})
-	if err != nil {
-		return agent.Result{}, err
-	}
-
 	return runScriptedAgent(agent.Config{
-		NetworkDialer: dialer,
+		NetworkDialer:        interp.OSNetworkDialer{},
+		GlobalReachableHosts: []interp.HostMatcher{{Glob: "127.0.0.1"}},
 		HTTPHeaders: []interp.HTTPHeaderRule{{
 			Name:  "X-Demo-Header",
 			Value: "from-agent",
