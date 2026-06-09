@@ -188,6 +188,10 @@ func shouldUsePreviousResponseID(req agent.Request, caps openAIAdapterCapabiliti
 	return ok
 }
 
+// buildResponsesInput renders the request conversation as Responses API
+// input items. Runtime-built requests take the structured path; the legacy
+// builders reconstruct equivalent input from the flat Messages/Steps view
+// for hand-built requests (see [agent.Request]).
 func buildResponsesInput(req agent.Request, caps openAIAdapterCapabilities, state openAIProviderState, usePreviousResponseID bool) []responsesInputItem {
 	if len(req.ConversationTurns) == 0 && len(req.CurrentTurnMessages) == 0 {
 		if usePreviousResponseID {

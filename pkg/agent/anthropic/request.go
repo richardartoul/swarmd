@@ -85,6 +85,10 @@ type anthropicRequestToolResultBlock struct {
 	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
+// buildAnthropicMessages renders the request conversation as Messages API
+// system blocks and messages. Runtime-built requests take the structured
+// path; the legacy builder reconstructs equivalent messages from the flat
+// Messages/Steps view for hand-built requests (see [agent.Request]).
 func buildAnthropicMessages(req agent.Request, promptCacheTTL, model string) ([]anthropicRequestTextBlock, []anthropicMessage, error) {
 	if len(req.Messages) == 0 {
 		return nil, nil, nil
