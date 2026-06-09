@@ -43,7 +43,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 	defer cancel()
 	runCtx = contextWithTrigger(runCtx, trigger)
 
-	handler, ok := a.toolHandlerByName[decision.Tool.Name]
+	handler, ok := a.tools.Handler(decision.Tool.Name)
 	if !ok {
 		step.Status = StepStatusPolicyError
 		step.Error = fmt.Sprintf("tool %q is not implemented", decision.Tool.Name)

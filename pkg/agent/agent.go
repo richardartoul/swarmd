@@ -17,7 +17,6 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/moreinterp/coreutils"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	"github.com/richardartoul/swarmd/pkg/sh/syntax"
-	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
 )
 
 // ErrQueueRequired is returned when [Agent.Serve] is called without a queue.
@@ -50,11 +49,7 @@ type Agent struct {
 	currentRunSpillDir       string
 	shellNetworkEnabled      bool
 	globalReachableHosts     []interp.HostMatcher
-	toolDefinitions          []ToolDefinition
-	toolByName               map[string]ToolDefinition
-	toolHandlerByName        map[string]ToolHandler
-	toolRequiredHosts        map[string][]interp.HostMatcher
-	toolHTTPClientFactories  map[string]interp.HTTPClientFactory
+	tools                    toolset
 	toolRuntimeData          any
 	webSearchBackend         WebSearchBackend
 	imageDescriptionBackend  ImageDescriptionBackend
@@ -97,32 +92,9 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create agent global HTTP client factory: %w", err)
 	}
-	toolBindings, err := resolveToolBindings(cfg.ConfiguredTools, globalReachableHosts)
+	tools, err := newToolset(cfg, globalReachableHosts)
 	if err != nil {
-		return nil, fmt.Errorf("resolve agent tools: %w", err)
-	}
-	toolDefinitions := make([]ToolDefinition, 0, len(toolBindings))
-	toolByName := make(map[string]ToolDefinition, len(toolBindings))
-	toolHandlerByName := make(map[string]ToolHandler, len(toolBindings))
-	toolRequiredHosts := make(map[string][]interp.HostMatcher, len(toolBindings))
-	toolHTTPClientFactories := make(map[string]interp.HTTPClientFactory, len(toolBindings))
-	for _, binding := range toolBindings {
-		toolDefinitions = append(toolDefinitions, binding.Definition)
-		toolByName[binding.Definition.Name] = binding.Definition
-		toolHandlerByName[binding.Definition.Name] = binding.Handler
-		requiredHosts := toolregistry.RequiredHostsForTool(binding.Definition.Name)
-		if len(requiredHosts) > 0 {
-			toolRequiredHosts[binding.Definition.Name] = requiredHosts
-		}
-		factory, err := newAgentHTTPClientFactory(
-			cfg.NetworkDialer,
-			effectiveToolReachableHosts(binding.Definition.NetworkScope, globalReachableHosts, requiredHosts),
-			cfg.HTTPHeaders,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create HTTP client factory for tool %q: %w", binding.Definition.Name, err)
-		}
-		toolHTTPClientFactories[binding.Definition.Name] = factory
+		return nil, err
 	}
 	webSearchBackend := cfg.WebSearchBackend
 	if webSearchBackend == nil {
@@ -196,11 +168,7 @@ func New(cfg Config) (*Agent, error) {
 		spillBaseDir:             spillBaseDir,
 		shellNetworkEnabled:      len(globalReachableHosts) > 0,
 		globalReachableHosts:     globalReachableHosts,
-		toolDefinitions:          toolDefinitions,
-		toolByName:               toolByName,
-		toolHandlerByName:        toolHandlerByName,
-		toolRequiredHosts:        toolRequiredHosts,
-		toolHTTPClientFactories:  toolHTTPClientFactories,
+		tools:                    tools,
 		toolRuntimeData:          cfg.ToolRuntimeData,
 		webSearchBackend:         webSearchBackend,
 		imageDescriptionBackend:  imageDescriptionBackend,
@@ -531,7 +499,7 @@ func (a *Agent) toolHTTPClient(toolName string, opts ToolHTTPClientOptions) *htt
 	if a == nil {
 		return nil
 	}
-	factory := a.toolHTTPClientFactories[toolName]
+	factory := a.tools.HTTPClientFactory(toolName)
 	if factory == nil {
 		return nil
 	}
@@ -558,41 +526,4 @@ func newAgentHTTPClientFactory(
 		return nil, err
 	}
 	return interp.NewHTTPClientFactory(dialer, headers)
-}
-
-func effectiveToolReachableHosts(
-	scope ToolNetworkScope,
-	globalReachableHosts []interp.HostMatcher,
-	requiredHosts []interp.HostMatcher,
-) []interp.HostMatcher {
-	switch scope.Normalized() {
-	case ToolNetworkScopeNone:
-		return nil
-	case ToolNetworkScopeGlobal:
-		return slices.Clone(globalReachableHosts)
-	case ToolNetworkScopeScoped:
-		return mergeHostMatchers(globalReachableHosts, requiredHosts)
-	default:
-		return nil
-	}
-}
-
-func mergeHostMatchers(left, right []interp.HostMatcher) []interp.HostMatcher {
-	if len(left) == 0 && len(right) == 0 {
-		return nil
-	}
-	seen := make(map[interp.HostMatcher]struct{}, len(left)+len(right))
-	merged := make([]interp.HostMatcher, 0, len(left)+len(right))
-	appendMatchers := func(values []interp.HostMatcher) {
-		for _, value := range values {
-			if _, ok := seen[value]; ok {
-				continue
-			}
-			seen[value] = struct{}{}
-			merged = append(merged, value)
-		}
-	}
-	appendMatchers(left)
-	appendMatchers(right)
-	return merged
 }

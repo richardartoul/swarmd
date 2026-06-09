@@ -227,7 +227,7 @@ func (a *Agent) buildDriverRequestWithContext(
 		CWD:               cwd,
 		ConversationTurns: cloneConversationTurns(requestContext.PriorTurns),
 		CurrentTurnSteps:  cloneSteps(steps),
-		Tools:             append([]ToolDefinition(nil), a.toolDefinitions...),
+		Tools:             a.tools.Definitions(),
 		StepReplayData:    cloneStepReplayData(requestContext.StepReplayData),
 		ProviderState:     strings.TrimSpace(requestContext.ProviderState),
 	}

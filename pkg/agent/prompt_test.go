@@ -344,9 +344,11 @@ func TestBuildDriverRequestPlacesFocusedToolGuidanceInCurrentStateMessage(t *tes
 	a := &Agent{
 		sandboxRoot:  "/workspace",
 		systemPrompt: DefaultSystemPrompt,
-		toolDefinitions: []ToolDefinition{
-			builtInToolDefinitions[ToolNameApplyPatch],
-			builtInToolDefinitions[ToolNameReadFile],
+		tools: toolset{
+			definitions: []ToolDefinition{
+				builtInToolDefinitions[ToolNameApplyPatch],
+				builtInToolDefinitions[ToolNameReadFile],
+			},
 		},
 	}
 	req, _, err := a.buildDriverRequest(Trigger{
