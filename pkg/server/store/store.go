@@ -553,10 +553,6 @@ func (s *Store) currentSchemaVersion(ctx context.Context) (int, error) {
 	return current, nil
 }
 
-func normalizeSQLiteDSN(dsn string) string {
-	return normalizeSQLiteDSNWithMode(dsn, false)
-}
-
 func ensureReadOnlySQLiteExists(dsn string) error {
 	path, ok, err := sqliteLocalPathAbs(dsn)
 	if err != nil {

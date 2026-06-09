@@ -84,14 +84,6 @@ func loadManagedAgentRuntimeConfig(configJSON string) (managedAgentRuntimeConfig
 	return config, nil
 }
 
-func loadAgentMemorySettings(configJSON string) (AgentMemorySpec, error) {
-	config, err := loadManagedAgentRuntimeConfig(configJSON)
-	if err != nil {
-		return AgentMemorySpec{}, err
-	}
-	return config.memorySettings(), nil
-}
-
 func loadAgentFilesystemSettings(configJSON string) (managedAgentFilesystemConfig, error) {
 	config, err := loadManagedAgentRuntimeConfig(configJSON)
 	if err != nil {
@@ -108,14 +100,6 @@ func loadAgentMountSettings(configJSON string) ([]managedAgentMount, error) {
 	return config.mountSettings(), nil
 }
 
-func loadAgentCapabilities(configJSON string) (map[string]any, error) {
-	config, err := loadManagedAgentRuntimeConfig(configJSON)
-	if err != nil {
-		return nil, err
-	}
-	return config.capabilities(), nil
-}
-
 func loadAgentToolSettings(configJSON string) ([]agent.ConfiguredTool, error) {
 	config, err := loadManagedAgentRuntimeConfig(configJSON)
 	if err != nil {
@@ -130,14 +114,6 @@ func loadAgentNetworkSettings(configJSON string) (managedAgentNetworkConfig, err
 		return managedAgentNetworkConfig{}, err
 	}
 	return config.networkSettings(), nil
-}
-
-func loadAgentHTTPHeaderSettings(configJSON string) ([]managedAgentHTTPHeader, error) {
-	config, err := loadManagedAgentRuntimeConfig(configJSON)
-	if err != nil {
-		return nil, err
-	}
-	return config.httpHeaderSettings(), nil
 }
 
 func composeManagedSystemPrompt(record cpstore.RunnableAgent, capabilities map[string]any, memory AgentMemorySpec, mounts []managedAgentMount, network managedAgentNetworkConfig, httpHeaders []managedAgentHTTPHeader) string {

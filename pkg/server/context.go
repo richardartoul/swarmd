@@ -60,8 +60,7 @@ func triggerFromContext(ctx context.Context) (agent.Trigger, bool) {
 }
 
 func metadataInt(metadata map[string]any, key string) int {
-	value, _ := metadata[key]
-	switch value := value.(type) {
+	switch value := metadata[key].(type) {
 	case int:
 		return value
 	case int64:
@@ -74,11 +73,6 @@ func metadataInt(metadata map[string]any, key string) int {
 }
 
 func metadataString(metadata map[string]any, key string) string {
-	value, _ := metadata[key]
-	switch value := value.(type) {
-	case string:
-		return value
-	default:
-		return ""
-	}
+	value, _ := metadata[key].(string)
+	return value
 }

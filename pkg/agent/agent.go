@@ -63,7 +63,6 @@ type Agent struct {
 
 type turnRunInput struct {
 	Trigger        Trigger
-	PriorSteps     []Step
 	NextStepIndex  int
 	ResetRunner    bool
 	RequestContext driverRequestContext
@@ -498,11 +497,6 @@ func (a *Agent) finishResult(result Result, requestContext driverRequestContext)
 	result.StepReplayData = cloneStepReplayData(requestContext.StepReplayData)
 	result.ProviderState = strings.TrimSpace(requestContext.ProviderState)
 	return result
-}
-
-func finishStep(step *Step) {
-	step.FinishedAt = time.Now()
-	step.Duration = step.FinishedAt.Sub(step.StartedAt)
 }
 
 func cloneSteps(steps []Step) []Step {

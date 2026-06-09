@@ -643,10 +643,3 @@ func diffScheduleState(existing cpstore.ScheduleRecord, desired desiredScheduleS
 func joinPlanKey(parts ...string) string {
 	return strings.Join(parts, "\x00")
 }
-
-func formatStringList(values []string) string {
-	if len(values) == 0 {
-		return "[]"
-	}
-	return "[" + strings.Join(values, ", ") + "]"
-}

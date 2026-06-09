@@ -22,11 +22,6 @@ func (s *Store) CreateSchedule(ctx context.Context, params CreateScheduleParams)
 	}
 	now := s.now()
 	enabled := params.Enabled
-	if !params.Enabled {
-		enabled = false
-	} else {
-		enabled = true
-	}
 	payloadJSON, err := MarshalEnvelope("schedule_payload", params.Payload)
 	if err != nil {
 		return ScheduleRecord{}, err

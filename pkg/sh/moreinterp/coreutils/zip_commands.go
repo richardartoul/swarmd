@@ -28,7 +28,7 @@ func runZip(env *commandEnv, args []string) error {
 		}
 	}
 	if len(operands) < 2 {
-		return fmt.Errorf("usage: zip [-r] archive.zip file...")
+		return fmt.Errorf("usage: zip [-r] archive.zip file [file ...]")
 	}
 
 	archivePath, err := env.resolvePathArg(operands[0])

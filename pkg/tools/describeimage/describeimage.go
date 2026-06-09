@@ -292,7 +292,7 @@ func readFileLimited(toolCtx toolscore.ToolContext, path string, limit int64) ([
 func parseDataURL(raw string) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if !strings.HasPrefix(strings.ToLower(raw), "data:") {
-		return "", "", fmt.Errorf("image_base64 data URL must start with data:")
+		return "", "", fmt.Errorf(`image_base64 data URL must use the "data:" scheme`)
 	}
 	headerAndPrefix, payload, ok := strings.Cut(raw, ",")
 	if !ok {

@@ -214,13 +214,6 @@ func renderMailboxList(w io.Writer, messages []cpstore.MailboxMessageRecord) {
 	_ = tw.Flush()
 }
 
-func renderStringList(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	return "- " + strings.Join(values, "\n- ")
-}
-
 func displayAgentRoot(agent cpstore.RunnableAgent) string {
 	return formatRootWithFilesystemKind(agent.RootPath, agent.ConfigJSON)
 }

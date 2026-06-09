@@ -22,17 +22,6 @@ type CustomCommand struct {
 	Run  func(ctx context.Context, args []string) error
 }
 
-func customCommandInfos(commands []CustomCommand) []CommandInfo {
-	if len(commands) == 0 {
-		return nil
-	}
-	infos := make([]CommandInfo, 0, len(commands))
-	for _, command := range commands {
-		infos = append(infos, command.Info)
-	}
-	return infos
-}
-
 func customCommandExecHandler(commands []CustomCommand) func(next interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 	byName := make(map[string]CustomCommand, len(commands))
 	for _, command := range commands {

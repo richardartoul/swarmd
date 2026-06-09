@@ -45,7 +45,6 @@ func (s *Session) RunTrigger(ctx context.Context, trigger Trigger) (Result, erro
 
 	result, runErr := s.agent.runTurn(ctx, turnRunInput{
 		Trigger:       trigger,
-		PriorSteps:    flattenConversationSteps(s.turns),
 		NextStepIndex: s.nextStepIndex,
 		ResetRunner:   !s.agent.preserveState,
 		RequestContext: newSessionDriverRequestContext(s.turns).

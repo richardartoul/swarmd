@@ -867,57 +867,6 @@ func writeGrepPrefixes(w io.Writer, operand string, lineNumber int, cfg grepRunC
 	return nil
 }
 
-func parseSedSubstitutions(scripts []string) ([]sedSubstitution, error) {
-	substitutions := make([]sedSubstitution, 0, len(scripts))
-	for _, script := range scripts {
-		substitution, err := parseSedSubstitution(strings.TrimSpace(script))
-		if err != nil {
-			return nil, err
-		}
-		substitutions = append(substitutions, substitution)
-	}
-	return substitutions, nil
-}
-
-func parseSedSubstitution(script string) (sedSubstitution, error) {
-	if script == "" {
-		return sedSubstitution{}, fmt.Errorf("sed: empty script")
-	}
-	if len(script) < 2 || script[0] != 's' {
-		return sedSubstitution{}, fmt.Errorf("sed: unsupported script %q", script)
-	}
-	separator := script[1]
-	pattern, next, err := parseSedSegment(script, 2, separator)
-	if err != nil {
-		return sedSubstitution{}, err
-	}
-	replacement, next, err := parseSedSegment(script, next, separator)
-	if err != nil {
-		return sedSubstitution{}, err
-	}
-
-	substitution := sedSubstitution{
-		replacement: translateSedReplacement(replacement),
-	}
-	for _, flag := range strings.TrimSpace(script[next:]) {
-		switch flag {
-		case 'g':
-			substitution.global = true
-		case 'p':
-			substitution.print = true
-		default:
-			return sedSubstitution{}, fmt.Errorf("sed: unsupported substitute flag %q", string(flag))
-		}
-	}
-
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return sedSubstitution{}, fmt.Errorf("sed: %w", err)
-	}
-	substitution.regex = re
-	return substitution, nil
-}
-
 func parseSedSegment(script string, start int, separator byte) (string, int, error) {
 	var builder strings.Builder
 	escaped := false
@@ -981,37 +930,6 @@ func translateSedReplacement(raw string) string {
 		builder.WriteByte(ch)
 	}
 	return builder.String()
-}
-
-func runSedStream(w io.Writer, reader io.Reader, substitutions []sedSubstitution, suppressDefaultPrint bool) error {
-	buffered := bufio.NewReader(reader)
-	for {
-		rawLine, err := buffered.ReadString('\n')
-		if len(rawLine) > 0 {
-			line, newline := splitTrailingNewline(rawLine)
-			current := line
-			for _, substitution := range substitutions {
-				var changed bool
-				current, changed = applySedSubstitution(substitution, current)
-				if changed && substitution.print {
-					if _, err := io.WriteString(w, current+newline); err != nil {
-						return err
-					}
-				}
-			}
-			if !suppressDefaultPrint {
-				if _, err := io.WriteString(w, current+newline); err != nil {
-					return err
-				}
-			}
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
 }
 
 func splitTrailingNewline(line string) (string, string) {

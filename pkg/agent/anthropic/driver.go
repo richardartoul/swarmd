@@ -353,7 +353,7 @@ func (d *Driver) buildDescribeImageRequest(req agent.ImageDescriptionRequest) (m
 	if prompt == "" {
 		prompt = "Describe this image."
 	}
-	source := anthropicRequestImageSource{}
+	var source anthropicRequestImageSource
 	imageURL := strings.TrimSpace(req.ImageURL)
 	switch {
 	case imageURL != "":
@@ -1181,16 +1181,6 @@ func anthropicToolFormatLabel(format *agent.ToolFormat) string {
 	default:
 		return ""
 	}
-}
-
-func firstAnthropicToolExample(examples []string) string {
-	for _, example := range examples {
-		example = strings.TrimSpace(example)
-		if example != "" {
-			return example
-		}
-	}
-	return ""
 }
 
 func anthropicToolInputExamples(tool agent.ToolDefinition) []map[string]any {
