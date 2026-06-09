@@ -3801,11 +3801,11 @@ var runTestsUnix = []runTest{
 	},
 	{
 		"cat <(exit 0); wait $!; echo $?",
-		"0\n",
+		"0\n #IGNORE bash races procsub reaping; wait $! can report -1 on slow machines",
 	},
 	{
 		"cat <(exit 5); wait $!; echo $?",
-		"5\n",
+		"5\n #IGNORE bash races procsub reaping; wait $! can report -1 on slow machines",
 	},
 	{
 		// The reader here does not consume the named pipe.
