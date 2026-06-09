@@ -227,8 +227,9 @@ func ResolveToolBindings(tools []toolscore.ConfiguredTool, globalReachableHosts 
 	if err != nil {
 		return nil, err
 	}
-	bindings := make([]ResolvedToolBinding, 0, len(builtInToolOrder)+len(explicitTools))
-	for _, name := range BuiltInToolNames() {
+	builtInNames := BuiltInToolNames()
+	bindings := make([]ResolvedToolBinding, 0, len(builtInNames)+len(explicitTools))
+	for _, name := range builtInNames {
 		registration, ok := lookupToolRegistration(name)
 		if !ok {
 			return nil, fmt.Errorf("built-in tool %q is not registered", name)

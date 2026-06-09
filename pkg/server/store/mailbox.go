@@ -11,69 +11,7 @@ import (
 )
 
 func (s *Store) EnqueueMessage(ctx context.Context, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
-	if params.NamespaceID == "" {
-		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: namespace id must not be empty")
-	}
-	if params.RecipientAgentID == "" {
-		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: recipient agent id must not be empty")
-	}
-	now := s.now()
-	messageID := defaultString(params.MessageID, NewID("msg"))
-	threadID := defaultString(params.ThreadID, messageID)
-	kind := defaultString(params.Kind, "mailbox.message")
-	availableAt := params.AvailableAt
-	if availableAt.IsZero() {
-		availableAt = now
-	}
-	payloadJSON, err := MarshalEnvelope("mailbox_payload", params.Payload)
-	if err != nil {
-		return MailboxMessageRecord{}, err
-	}
-	metadataJSON, err := MarshalOptionalEnvelope("mailbox_metadata", params.Metadata)
-	if err != nil {
-		return MailboxMessageRecord{}, err
-	}
-	maxAttempts := defaultInt(params.MaxAttempts, 5)
-
-	if _, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO mailbox_messages (
-			namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json,
-			status, available_at_ms, lease_owner, lease_expires_at_ms, attempt_count, max_attempts, run_id,
-			dead_letter_reason, last_error, created_at_ms, updated_at_ms, claimed_at_ms, completed_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, 0, ?, '', '', '', ?, ?, NULL, NULL)`,
-		params.NamespaceID,
-		messageID,
-		threadID,
-		params.SenderAgentID,
-		params.RecipientAgentID,
-		kind,
-		payloadJSON,
-		metadataJSON,
-		string(MailboxMessageStatusQueued),
-		toMillis(availableAt),
-		maxAttempts,
-		toMillis(now),
-		toMillis(now),
-	); err != nil {
-		return MailboxMessageRecord{}, fmt.Errorf("insert mailbox message %q: %w", messageID, err)
-	}
-
-	return MailboxMessageRecord{
-		NamespaceID:      params.NamespaceID,
-		ID:               messageID,
-		ThreadID:         threadID,
-		SenderAgentID:    params.SenderAgentID,
-		RecipientAgentID: params.RecipientAgentID,
-		Kind:             kind,
-		PayloadJSON:      payloadJSON,
-		MetadataJSON:     metadataJSON,
-		Status:           MailboxMessageStatusQueued,
-		AvailableAt:      availableAt.UTC(),
-		MaxAttempts:      maxAttempts,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}, nil
+	return enqueueMessage(ctx, s.db, s.now(), params)
 }
 
 func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams) (ClaimedMailboxMessage, error) {
@@ -334,7 +272,7 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	}
 
 	for _, message := range params.Outbox {
-		if _, err := enqueueMessageTx(ctx, tx, now, message); err != nil {
+		if _, err := enqueueMessage(ctx, tx, now, message); err != nil {
 			return fmt.Errorf("enqueue outbox message for run %q: %w", params.RunID, err)
 		}
 	}
@@ -447,7 +385,19 @@ func deadLetterExhaustedMessage(ctx context.Context, tx *sql.Tx, record MailboxM
 	return nil
 }
 
-func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
+// sqlExecer abstracts the shared ExecContext surface of *sql.DB and *sql.Tx
+// so single-statement writes have exactly one implementation.
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func enqueueMessage(ctx context.Context, db sqlExecer, now time.Time, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
+	if params.NamespaceID == "" {
+		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: namespace id must not be empty")
+	}
+	if params.RecipientAgentID == "" {
+		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: recipient agent id must not be empty")
+	}
 	messageID := defaultString(params.MessageID, NewID("msg"))
 	threadID := defaultString(params.ThreadID, messageID)
 	kind := defaultString(params.Kind, "mailbox.message")
@@ -464,7 +414,7 @@ func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params Cre
 		return MailboxMessageRecord{}, err
 	}
 	maxAttempts := defaultInt(params.MaxAttempts, 5)
-	if _, err := tx.ExecContext(
+	if _, err := db.ExecContext(
 		ctx,
 		`INSERT INTO mailbox_messages (
 			namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json,
@@ -485,7 +435,7 @@ func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params Cre
 		toMillis(now),
 		toMillis(now),
 	); err != nil {
-		return MailboxMessageRecord{}, err
+		return MailboxMessageRecord{}, fmt.Errorf("insert mailbox message %q: %w", messageID, err)
 	}
 	return MailboxMessageRecord{
 		NamespaceID:      params.NamespaceID,

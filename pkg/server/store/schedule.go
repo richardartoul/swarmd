@@ -180,7 +180,7 @@ func (s *Store) fireSchedule(ctx context.Context, now time.Time, record Schedule
 		return MailboxMessageRecord{}, false, nil
 	}
 
-	message, err := enqueueMessageTx(ctx, tx, now, CreateMailboxMessageParams{
+	message, err := enqueueMessage(ctx, tx, now, CreateMailboxMessageParams{
 		NamespaceID:      record.NamespaceID,
 		ThreadID:         NewID("thread"),
 		SenderAgentID:    "",
