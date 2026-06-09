@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -90,20 +91,25 @@ func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) 
 		}
 	}
 
-	outbox, err := extractOutbox(result.Value, triggerCtx)
-	if err != nil {
-		return err
+	// The outbox is agent-produced output and therefore untrusted. Rejecting
+	// it must never fail this handler: an error here would kill the worker
+	// loop before the run is marked complete, leaving the message leased and
+	// scheduled for another full (paid) agent run after lease expiry.
+	// Instead, drop the outbox, dead-letter the message, and record why.
+	resultError := result.Error
+	outbox, outboxErr := validateOutbox(result, triggerCtx, p.AllowMessageSend)
+	if outboxErr == nil {
+		var infraErr error
+		outboxErr, infraErr = p.validateOutboxRecipients(ctx, outbox)
+		if infraErr != nil {
+			return infraErr
+		}
 	}
-	if result.Status != agent.ResultStatusFinished {
+	if outboxErr != nil {
 		outbox = nil
-	}
-	if len(outbox) > 0 && !p.AllowMessageSend {
-		return fmt.Errorf(
-			"server agent %q/%q attempted to send outbox messages without %q capability",
-			triggerCtx.NamespaceID,
-			triggerCtx.AgentID,
-			capabilityAllowMessageSend,
-		)
+		retryAt = nil
+		deadLetterReason = fmt.Sprintf("outbox rejected: %v", outboxErr)
+		resultError = joinErrorText(resultError, deadLetterReason)
 	}
 
 	if err := p.Store.CompleteRun(ctx, cpstore.CompleteRunParams{
@@ -117,7 +123,7 @@ func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) 
 		UsageCachedTokens: result.Usage.CachedTokens,
 		FinishThought:     result.FinishThought,
 		Value:             result.Value,
-		Error:             result.Error,
+		Error:             resultError,
 		RetryAt:           retryAt,
 		DeadLetterReason:  deadLetterReason,
 		Outbox:            outbox,
@@ -126,6 +132,61 @@ func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) 
 	}
 	p.Logger.LogResult(triggerCtx, result)
 	return nil
+}
+
+// validateOutbox extracts and authorizes outbox messages from a finished run.
+// Errors describe agent-side policy violations, not infrastructure failures.
+func validateOutbox(result agent.Result, triggerCtx TriggerContext, allowMessageSend bool) ([]cpstore.CreateMailboxMessageParams, error) {
+	if result.Status != agent.ResultStatusFinished {
+		return nil, nil
+	}
+	outbox, err := extractOutbox(result.Value, triggerCtx)
+	if err != nil {
+		return nil, err
+	}
+	if len(outbox) > 0 && !allowMessageSend {
+		return nil, fmt.Errorf(
+			"agent %q/%q attempted to send outbox messages without %q capability",
+			triggerCtx.NamespaceID,
+			triggerCtx.AgentID,
+			capabilityAllowMessageSend,
+		)
+	}
+	return outbox, nil
+}
+
+// validateOutboxRecipients confirms every outbox recipient exists in its
+// target namespace. Checking up front turns a bad recipient into a recordable
+// policy violation instead of a foreign-key failure inside CompleteRun that
+// would abort the whole completion transaction.
+//
+// The first return value reports agent-side policy violations; the second
+// reports infrastructure failures that should propagate to the caller.
+func (p ResultPersister) validateOutboxRecipients(ctx context.Context, outbox []cpstore.CreateMailboxMessageParams) (error, error) {
+	for _, message := range outbox {
+		_, err := p.Store.GetAgent(ctx, message.NamespaceID, message.RecipientAgentID)
+		if errors.Is(err, cpstore.ErrNotFound) {
+			return fmt.Errorf(
+				"outbox recipient %q does not exist in namespace %q",
+				message.RecipientAgentID,
+				message.NamespaceID,
+			), nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf("verify outbox recipient %q: %w", message.RecipientAgentID, err)
+		}
+	}
+	return nil, nil
+}
+
+func joinErrorText(existing, addition string) string {
+	if existing == "" {
+		return addition
+	}
+	if addition == "" {
+		return existing
+	}
+	return existing + "; " + addition
 }
 
 type WorkerResultEnvelope struct {

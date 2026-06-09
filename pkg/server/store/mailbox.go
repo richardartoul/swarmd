@@ -93,10 +93,22 @@ func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams)
 		record, err := claimCandidate(ctx, tx, params.NamespaceID, params.AgentID, now)
 		if err != nil {
 			_ = tx.Rollback()
-			if errors.Is(err, ErrNoAvailableMessage) {
+			return ClaimedMailboxMessage{}, err
+		}
+
+		// A candidate that already consumed all of its attempts can only be
+		// here because a previous lease expired without a recorded result
+		// (for example the worker process died mid-run). Dead-letter it now;
+		// leasing it again would re-run the agent indefinitely.
+		if record.MaxAttempts > 0 && record.AttemptCount >= record.MaxAttempts {
+			if err := deadLetterExhaustedMessage(ctx, tx, record, now); err != nil {
+				_ = tx.Rollback()
 				return ClaimedMailboxMessage{}, err
 			}
-			return ClaimedMailboxMessage{}, err
+			if err := tx.Commit(); err != nil {
+				return ClaimedMailboxMessage{}, fmt.Errorf("commit dead-letter for mailbox message %q: %w", record.ID, err)
+			}
+			continue
 		}
 
 		runID := NewID("run")
@@ -322,11 +334,9 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	}
 
 	for _, message := range params.Outbox {
-		record, err := enqueueMessageTx(ctx, tx, now, message)
-		if err != nil {
+		if _, err := enqueueMessageTx(ctx, tx, now, message); err != nil {
 			return fmt.Errorf("enqueue outbox message for run %q: %w", params.RunID, err)
 		}
-		_ = record
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -408,6 +418,33 @@ LIMIT 1
 		return MailboxMessageRecord{}, err
 	}
 	return record, nil
+}
+
+// deadLetterExhaustedMessage retires a message whose attempts are exhausted.
+// The WHERE clause repeats the claimability conditions so a concurrent claimer
+// cannot be raced; if zero rows match, another connection already handled it.
+func deadLetterExhaustedMessage(ctx context.Context, tx *sql.Tx, record MailboxMessageRecord, now time.Time) error {
+	_, err := tx.ExecContext(
+		ctx,
+		`UPDATE mailbox_messages
+		 SET status = ?, lease_owner = '', lease_expires_at_ms = NULL, run_id = '', dead_letter_reason = ?, updated_at_ms = ?, completed_at_ms = ?
+		 WHERE namespace_id = ? AND message_id = ? AND status IN (?, ?) AND available_at_ms <= ? AND (status = ? OR lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)`,
+		string(MailboxMessageStatusDeadLetter),
+		fmt.Sprintf("message exhausted %d of %d attempts without a recorded result", record.AttemptCount, record.MaxAttempts),
+		toMillis(now),
+		toMillis(now),
+		record.NamespaceID,
+		record.ID,
+		string(MailboxMessageStatusQueued),
+		string(MailboxMessageStatusLeased),
+		toMillis(now),
+		string(MailboxMessageStatusQueued),
+		toMillis(now),
+	)
+	if err != nil {
+		return fmt.Errorf("dead-letter exhausted mailbox message %q: %w", record.ID, err)
+	}
+	return nil
 }
 
 func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {

@@ -465,6 +465,9 @@ func TestResultPersisterRejectsOutboxWithoutCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Next() error = %v", err)
 	}
+	// A capability violation is agent-produced output, so it must never fail
+	// the handler (that would leave the message leased and re-run the agent).
+	// It must instead complete the run and dead-letter the message.
 	err = persister.HandleResult(ctx, agent.Result{
 		Trigger:    trigger,
 		FinishedAt: time.Now().UTC(),
@@ -478,11 +481,42 @@ func TestResultPersisterRejectsOutboxWithoutCapability(t *testing.T) {
 			}},
 		},
 	})
-	if err == nil {
-		t.Fatal("HandleResult() error = nil, want capability error")
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v, want recorded violation instead of handler failure", err)
 	}
-	if !strings.Contains(err.Error(), capabilityAllowMessageSend) {
-		t.Fatalf("HandleResult() error = %v, want missing capability", err)
+
+	triggerCtx, err := TriggerContextFromTrigger(trigger)
+	if err != nil {
+		t.Fatalf("TriggerContextFromTrigger() error = %v", err)
+	}
+	requireDeadLetteredOutboxViolation(t, ctx, s, triggerCtx, capabilityAllowMessageSend)
+}
+
+// requireDeadLetteredOutboxViolation asserts that an outbox policy violation
+// was recorded on the run and dead-lettered the originating message.
+func requireDeadLetteredOutboxViolation(t *testing.T, ctx context.Context, s *cpstore.Store, triggerCtx TriggerContext, wantReason string) {
+	t.Helper()
+	run, err := s.GetRun(ctx, triggerCtx.NamespaceID, triggerCtx.RunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	if !strings.Contains(run.Error, "outbox rejected") || !strings.Contains(run.Error, wantReason) {
+		t.Fatalf("run.Error = %q, want outbox rejection mentioning %q", run.Error, wantReason)
+	}
+	var status, reason string
+	if err := s.DB().QueryRowContext(
+		ctx,
+		`SELECT status, dead_letter_reason FROM mailbox_messages WHERE namespace_id = ? AND message_id = ?`,
+		triggerCtx.NamespaceID,
+		triggerCtx.MessageID,
+	).Scan(&status, &reason); err != nil {
+		t.Fatalf("query message status error = %v", err)
+	}
+	if status != string(cpstore.MailboxMessageStatusDeadLetter) {
+		t.Fatalf("message status = %q, want %q", status, cpstore.MailboxMessageStatusDeadLetter)
+	}
+	if !strings.Contains(reason, wantReason) {
+		t.Fatalf("dead letter reason = %q, want mention of %q", reason, wantReason)
 	}
 }
 
@@ -527,6 +561,8 @@ func TestResultPersisterRejectsOutboxToDifferentNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Next() error = %v", err)
 	}
+	// "receiver" exists only in the other namespace, so the outbox entry is a
+	// policy violation: recorded and dead-lettered, never a handler failure.
 	err = persister.HandleResult(ctx, agent.Result{
 		Trigger:    trigger,
 		FinishedAt: time.Now().UTC(),
@@ -540,9 +576,15 @@ func TestResultPersisterRejectsOutboxToDifferentNamespace(t *testing.T) {
 			}},
 		},
 	})
-	if err == nil {
-		t.Fatal("HandleResult() error = nil, want namespace-scoped recipient failure")
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v, want recorded violation instead of handler failure", err)
 	}
+
+	triggerCtx, err := TriggerContextFromTrigger(trigger)
+	if err != nil {
+		t.Fatalf("TriggerContextFromTrigger() error = %v", err)
+	}
+	requireDeadLetteredOutboxViolation(t, ctx, s, triggerCtx, `"receiver" does not exist`)
 
 	snapshot, err := s.SnapshotNamespace(ctx, receiverNamespace.ID)
 	if err != nil {

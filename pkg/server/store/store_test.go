@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -274,6 +275,72 @@ func TestStoreScheduleLeaseRecoveryAndDeadLetter(t *testing.T) {
 	}
 	if snapshot.Mailbox.DeadLetter != 1 {
 		t.Fatalf("dead-letter mailbox count = %d, want 1", snapshot.Mailbox.DeadLetter)
+	}
+}
+
+// TestClaimDeadLettersMessageWithExhaustedAttempts covers the crash-loop
+// safety net: when a message has consumed all of its attempts but no result
+// was ever recorded (for example the worker died before completion could be
+// persisted), the claim path must retire the message instead of leasing and
+// re-running it forever.
+func TestClaimDeadLettersMessageWithExhaustedAttempts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+	namespace := createTestNamespace(t, ctx, s, "namespace-exhausted")
+	agentRecord := createTestAgent(t, ctx, s, namespace.ID, "worker-exhausted")
+
+	enqueued, err := s.EnqueueMessage(ctx, CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		RecipientAgentID: agentRecord.ID,
+		Payload:          "poison",
+		MaxAttempts:      2,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	// Burn through every attempt without completing the run, simulating a
+	// worker that dies (or fails to persist) after each claim.
+	for attempt := 1; attempt <= 2; attempt++ {
+		claimed, err := s.ClaimNextMessage(ctx, ClaimMessageParams{
+			NamespaceID:   namespace.ID,
+			AgentID:       agentRecord.ID,
+			LeaseDuration: time.Millisecond,
+		})
+		if err != nil {
+			t.Fatalf("ClaimNextMessage() attempt %d error = %v", attempt, err)
+		}
+		if claimed.Message.AttemptCount != attempt {
+			t.Fatalf("attempt count = %d, want %d", claimed.Message.AttemptCount, attempt)
+		}
+		time.Sleep(5 * time.Millisecond) // let the lease expire
+	}
+
+	// The third claim must not lease the message again.
+	if _, err := s.ClaimNextMessage(ctx, ClaimMessageParams{
+		NamespaceID:   namespace.ID,
+		AgentID:       agentRecord.ID,
+		LeaseDuration: time.Minute,
+	}); !errors.Is(err, ErrNoAvailableMessage) {
+		t.Fatalf("ClaimNextMessage() after exhausted attempts error = %v, want ErrNoAvailableMessage", err)
+	}
+
+	var status, reason string
+	if err := s.db.QueryRowContext(
+		ctx,
+		`SELECT status, dead_letter_reason FROM mailbox_messages WHERE namespace_id = ? AND message_id = ?`,
+		namespace.ID,
+		enqueued.ID,
+	).Scan(&status, &reason); err != nil {
+		t.Fatalf("query message status error = %v", err)
+	}
+	if status != string(MailboxMessageStatusDeadLetter) {
+		t.Fatalf("message status = %q, want %q", status, MailboxMessageStatusDeadLetter)
+	}
+	if reason == "" {
+		t.Fatal("dead letter reason was empty")
 	}
 }
 
