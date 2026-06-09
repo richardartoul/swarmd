@@ -98,7 +98,17 @@ func (b anthropicContentBlock) rawJSON() json.RawMessage {
 }
 
 type anthropicUsage struct {
+	InputTokens          int `json:"input_tokens"`
+	OutputTokens         int `json:"output_tokens"`
 	CacheReadInputTokens int `json:"cache_read_input_tokens"`
+}
+
+func (u anthropicUsage) toAgentUsage() agent.Usage {
+	return agent.Usage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		CachedTokens: u.CacheReadInputTokens,
+	}
 }
 
 func parseMessageDecision(response messagesResponse, allowedTools []agent.ToolDefinition) (agent.Decision, error) {

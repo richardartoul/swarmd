@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
+
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
@@ -386,34 +388,34 @@ func seedCommandRunFixture(t *testing.T) commandRunFixture {
 	startedAt := time.Now().UTC()
 	finishedAt := startedAt.Add(20 * time.Millisecond)
 	if err := store.RecordStep(ctx, cpstore.StepRecord{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		AgentID:           agentRecord.ID,
-		StepIndex:         1,
-		Thought:           "print hi",
-		Shell:             "printf 'hi'",
-		UsageCachedTokens: 2,
-		CWDBefore:         agentRecord.RootPath,
-		CWDAfter:          agentRecord.RootPath,
-		Stdout:            "hi",
-		StartedAt:         startedAt,
-		FinishedAt:        finishedAt,
-		Duration:          finishedAt.Sub(startedAt),
-		Status:            "ok",
+		NamespaceID: namespace.ID,
+		RunID:       claimed.Run.ID,
+		MessageID:   claimed.Message.ID,
+		AgentID:     agentRecord.ID,
+		StepIndex:   1,
+		Thought:     "print hi",
+		Shell:       "printf 'hi'",
+		Usage:       toolscore.Usage{InputTokens: 10, OutputTokens: 3, CachedTokens: 2},
+		CWDBefore:   agentRecord.RootPath,
+		CWDAfter:    agentRecord.RootPath,
+		Stdout:      "hi",
+		StartedAt:   startedAt,
+		FinishedAt:  finishedAt,
+		Duration:    finishedAt.Sub(startedAt),
+		Status:      "ok",
 	}); err != nil {
 		t.Fatalf("RecordStep() error = %v", err)
 	}
 	if err := store.CompleteRun(ctx, cpstore.CompleteRunParams{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		Status:            "finished",
-		FinishedAt:        finishedAt,
-		Duration:          finishedAt.Sub(startedAt),
-		CWD:               agentRecord.RootPath,
-		UsageCachedTokens: 2,
-		Value:             map[string]any{"ok": true},
+		NamespaceID: namespace.ID,
+		RunID:       claimed.Run.ID,
+		MessageID:   claimed.Message.ID,
+		Status:      "finished",
+		FinishedAt:  finishedAt,
+		Duration:    finishedAt.Sub(startedAt),
+		CWD:         agentRecord.RootPath,
+		Usage:       toolscore.Usage{InputTokens: 10, OutputTokens: 3, CachedTokens: 2},
+		Value:       map[string]any{"ok": true},
 	}); err != nil {
 		t.Fatalf("CompleteRun() error = %v", err)
 	}

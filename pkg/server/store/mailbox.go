@@ -153,9 +153,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 		ctx,
 		`INSERT INTO steps (
 			namespace_id, run_id, step_index, step_type, message_id, agent_id, thought, shell, action_name, action_tool_kind, action_input,
-			action_output, action_output_truncated, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
+			action_output, action_output_truncated, usage_input_tokens, usage_output_tokens, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
 			stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		step.NamespaceID,
 		step.RunID,
 		step.StepIndex,
@@ -169,7 +169,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 		step.ActionInput,
 		step.ActionOutput,
 		boolInt(step.ActionOutputTruncated),
-		step.UsageCachedTokens,
+		step.Usage.InputTokens,
+		step.Usage.OutputTokens,
+		step.Usage.CachedTokens,
 		step.CWDBefore,
 		step.CWDAfter,
 		step.Stdout,
@@ -206,13 +208,15 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	runRes, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs
-		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_cached_tokens = ?, finish_thought = ?, value_json = ?, error = ?, updated_at_ms = ?
+		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_input_tokens = ?, usage_output_tokens = ?, usage_cached_tokens = ?, finish_thought = ?, value_json = ?, error = ?, updated_at_ms = ?
 		 WHERE namespace_id = ? AND run_id = ?`,
 		params.Status,
 		toMillis(params.FinishedAt),
 		toDurationMillis(params.Duration),
 		params.CWD,
-		params.UsageCachedTokens,
+		params.Usage.InputTokens,
+		params.Usage.OutputTokens,
+		params.Usage.CachedTokens,
 		params.FinishThought,
 		valueJSON,
 		params.Error,
@@ -285,7 +289,7 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 
 func (s *Store) GetRun(ctx context.Context, namespaceID, runID string) (RunRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
+SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_input_tokens, usage_output_tokens, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
 FROM runs
 WHERE namespace_id = ? AND run_id = ?
 `, namespaceID, runID)
@@ -527,7 +531,9 @@ func scanRun(scanner interface{ Scan(dest ...any) error }) (RunRecord, error) {
 		&finishedAt,
 		&durationMS,
 		&record.CWD,
-		&record.UsageCachedTokens,
+		&record.Usage.InputTokens,
+		&record.Usage.OutputTokens,
+		&record.Usage.CachedTokens,
 		&record.FinishThought,
 		&record.ValueJSON,
 		&record.Error,

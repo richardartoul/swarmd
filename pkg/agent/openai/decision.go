@@ -14,11 +14,21 @@ import (
 )
 
 type responsesUsage struct {
+	InputTokens        int                         `json:"input_tokens"`
+	OutputTokens       int                         `json:"output_tokens"`
 	InputTokensDetails responsesInputTokensDetails `json:"input_tokens_details"`
 }
 
 type responsesInputTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
+}
+
+func (u responsesUsage) toAgentUsage() agent.Usage {
+	return agent.Usage{
+		InputTokens:  u.InputTokens,
+		OutputTokens: u.OutputTokens,
+		CachedTokens: u.InputTokensDetails.CachedTokens,
+	}
 }
 
 type responsesResponse struct {

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
+
 	"github.com/richardartoul/swarmd/pkg/agent"
 	"github.com/richardartoul/swarmd/pkg/sh/interp"
 )
@@ -85,36 +87,36 @@ func TestStoreClaimMessageAndCompleteRun(t *testing.T) {
 	}
 
 	if err := s.RecordStep(ctx, StepRecord{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		AgentID:           agentRecord.ID,
-		StepIndex:         1,
-		Thought:           "inspect prompt",
-		Shell:             "printf 'hi'",
-		UsageCachedTokens: 7,
-		CWDBefore:         agentRecord.RootPath,
-		CWDAfter:          agentRecord.RootPath,
-		Stdout:            "hi",
-		StartedAt:         time.Now().UTC(),
-		FinishedAt:        time.Now().UTC().Add(10 * time.Millisecond),
-		Duration:          10 * time.Millisecond,
-		Status:            "ok",
+		NamespaceID: namespace.ID,
+		RunID:       claimed.Run.ID,
+		MessageID:   claimed.Message.ID,
+		AgentID:     agentRecord.ID,
+		StepIndex:   1,
+		Thought:     "inspect prompt",
+		Shell:       "printf 'hi'",
+		Usage:       toolscore.Usage{InputTokens: 120, OutputTokens: 30, CachedTokens: 7},
+		CWDBefore:   agentRecord.RootPath,
+		CWDAfter:    agentRecord.RootPath,
+		Stdout:      "hi",
+		StartedAt:   time.Now().UTC(),
+		FinishedAt:  time.Now().UTC().Add(10 * time.Millisecond),
+		Duration:    10 * time.Millisecond,
+		Status:      "ok",
 	}); err != nil {
 		t.Fatalf("RecordStep() error = %v", err)
 	}
 
 	if err := s.CompleteRun(ctx, CompleteRunParams{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		Status:            "finished",
-		FinishedAt:        time.Now().UTC(),
-		Duration:          25 * time.Millisecond,
-		CWD:               agentRecord.RootPath,
-		UsageCachedTokens: 11,
-		FinishThought:     "the task is complete",
-		Value:             map[string]any{"ok": true},
+		NamespaceID:   namespace.ID,
+		RunID:         claimed.Run.ID,
+		MessageID:     claimed.Message.ID,
+		Status:        "finished",
+		FinishedAt:    time.Now().UTC(),
+		Duration:      25 * time.Millisecond,
+		CWD:           agentRecord.RootPath,
+		Usage:         toolscore.Usage{InputTokens: 250, OutputTokens: 60, CachedTokens: 11},
+		FinishThought: "the task is complete",
+		Value:         map[string]any{"ok": true},
 	}); err != nil {
 		t.Fatalf("CompleteRun() error = %v", err)
 	}
@@ -131,6 +133,9 @@ func TestStoreClaimMessageAndCompleteRun(t *testing.T) {
 	}
 	if runRecord.FinishThought != "the task is complete" {
 		t.Fatalf("run finish thought = %q, want %q", runRecord.FinishThought, "the task is complete")
+	}
+	if want := (toolscore.Usage{InputTokens: 250, OutputTokens: 60, CachedTokens: 11}); runRecord.Usage != want {
+		t.Fatalf("run usage = %+v, want %+v", runRecord.Usage, want)
 	}
 	if runRecord.TriggerPrompt != "hello worker" {
 		t.Fatalf("run trigger prompt = %q, want %q", runRecord.TriggerPrompt, "hello worker")

@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
 type AgentRole string
@@ -131,24 +133,24 @@ type ScheduleRecord struct {
 }
 
 type RunRecord struct {
-	NamespaceID       string
-	ID                string
-	MessageID         string
-	AgentID           string
-	TriggerID         string
-	Status            string
-	StartedAt         time.Time
-	FinishedAt        *time.Time
-	Duration          time.Duration
-	CWD               string
-	UsageCachedTokens int
-	FinishThought     string
-	ValueJSON         string
-	Error             string
-	TriggerPrompt     string
-	SystemPrompt      string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	NamespaceID   string
+	ID            string
+	MessageID     string
+	AgentID       string
+	TriggerID     string
+	Status        string
+	StartedAt     time.Time
+	FinishedAt    *time.Time
+	Duration      time.Duration
+	CWD           string
+	Usage         toolscore.Usage
+	FinishThought string
+	ValueJSON     string
+	Error         string
+	TriggerPrompt string
+	SystemPrompt  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type StepRecord struct {
@@ -165,7 +167,7 @@ type StepRecord struct {
 	ActionInput           string
 	ActionOutput          string
 	ActionOutputTruncated bool
-	UsageCachedTokens     int
+	Usage                 toolscore.Usage
 	CWDBefore             string
 	CWDAfter              string
 	Stdout                string
@@ -284,20 +286,20 @@ type ClaimedMailboxMessage struct {
 }
 
 type CompleteRunParams struct {
-	NamespaceID       string
-	RunID             string
-	MessageID         string
-	Status            string
-	FinishedAt        time.Time
-	Duration          time.Duration
-	CWD               string
-	UsageCachedTokens int
-	FinishThought     string
-	Value             any
-	Error             string
-	RetryAt           *time.Time
-	DeadLetterReason  string
-	Outbox            []CreateMailboxMessageParams
+	NamespaceID      string
+	RunID            string
+	MessageID        string
+	Status           string
+	FinishedAt       time.Time
+	Duration         time.Duration
+	CWD              string
+	Usage            toolscore.Usage
+	FinishThought    string
+	Value            any
+	Error            string
+	RetryAt          *time.Time
+	DeadLetterReason string
+	Outbox           []CreateMailboxMessageParams
 }
 
 type CreateScheduleParams struct {

@@ -452,8 +452,8 @@ func TestProgressPrinterPrintsStepAndResult(t *testing.T) {
 	if got := stdout.String(); !strings.Contains(got, "assistant> done") {
 		t.Fatalf("stdout = %q, want assistant result", got)
 	}
-	if got := stdout.String(); !strings.Contains(got, "usage> cached prompt tokens: 42") {
-		t.Fatalf("stdout = %q, want cached token usage", got)
+	if got := stdout.String(); !strings.Contains(got, "usage> input tokens: 0 (cached: 42), output tokens: 0") {
+		t.Fatalf("stdout = %q, want token usage line", got)
 	}
 	if got := stderr.String(); !strings.Contains(got, "step 1 error> command failed") {
 		t.Fatalf("stderr = %q, want step error", got)
@@ -657,8 +657,8 @@ func TestAgentTUIModelHandlesSubmissionAndResultFlow(t *testing.T) {
 	if model.running {
 		t.Fatalf("model.running = true, want false")
 	}
-	if model.cachedTokens != 7 {
-		t.Fatalf("model.cachedTokens = %d, want 7", model.cachedTokens)
+	if model.usage.CachedTokens != 7 {
+		t.Fatalf("model.usage.CachedTokens = %d, want 7", model.usage.CachedTokens)
 	}
 	if model.currentCWD != "/tmp/workspace" {
 		t.Fatalf("model.currentCWD = %q, want /tmp/workspace", model.currentCWD)

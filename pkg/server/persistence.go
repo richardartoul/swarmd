@@ -39,7 +39,7 @@ func (p StepPersister) HandleStep(ctx context.Context, trigger agent.Trigger, st
 		ActionInput:           step.ActionInput,
 		ActionOutput:          step.ActionOutput,
 		ActionOutputTruncated: step.ActionOutputTruncated,
-		UsageCachedTokens:     step.Usage.CachedTokens,
+		Usage:                 step.Usage,
 		CWDBefore:             step.CWDBefore,
 		CWDAfter:              step.CWDAfter,
 		Stdout:                step.Stdout,
@@ -113,20 +113,20 @@ func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) 
 	}
 
 	if err := p.Store.CompleteRun(ctx, cpstore.CompleteRunParams{
-		NamespaceID:       triggerCtx.NamespaceID,
-		RunID:             triggerCtx.RunID,
-		MessageID:         triggerCtx.MessageID,
-		Status:            string(result.Status),
-		FinishedAt:        result.FinishedAt,
-		Duration:          result.Duration,
-		CWD:               result.CWD,
-		UsageCachedTokens: result.Usage.CachedTokens,
-		FinishThought:     result.FinishThought,
-		Value:             result.Value,
-		Error:             resultError,
-		RetryAt:           retryAt,
-		DeadLetterReason:  deadLetterReason,
-		Outbox:            outbox,
+		NamespaceID:      triggerCtx.NamespaceID,
+		RunID:            triggerCtx.RunID,
+		MessageID:        triggerCtx.MessageID,
+		Status:           string(result.Status),
+		FinishedAt:       result.FinishedAt,
+		Duration:         result.Duration,
+		CWD:              result.CWD,
+		Usage:            result.Usage,
+		FinishThought:    result.FinishThought,
+		Value:            result.Value,
+		Error:            resultError,
+		RetryAt:          retryAt,
+		DeadLetterReason: deadLetterReason,
+		Outbox:           outbox,
 	}); err != nil {
 		return err
 	}

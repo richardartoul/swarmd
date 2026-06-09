@@ -240,6 +240,8 @@ func TestDriverNextCapturesCachedTokens(t *testing.T) {
 	server, _ := newResponsesTestServer(t, []responsesTestServerResponse{
 		{
 			OutputText:   agent.StrictFinalResponseExample("inspect", "done"),
+			InputTokens:  4096,
+			OutputTokens: 128,
 			CachedTokens: 1536,
 		},
 	})
@@ -254,8 +256,9 @@ func TestDriverNextCapturesCachedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if decision.Usage.CachedTokens != 1536 {
-		t.Fatalf("decision.Usage.CachedTokens = %d, want %d", decision.Usage.CachedTokens, 1536)
+	want := agent.Usage{InputTokens: 4096, OutputTokens: 128, CachedTokens: 1536}
+	if decision.Usage != want {
+		t.Fatalf("decision.Usage = %+v, want %+v", decision.Usage, want)
 	}
 }
 
@@ -1236,6 +1239,8 @@ type responsesTestServerResponse struct {
 	ID           string
 	Output       []responsesOutputItem
 	OutputText   string
+	InputTokens  int
+	OutputTokens int
 	CachedTokens int
 }
 
@@ -1292,6 +1297,8 @@ func newResponsesTestServer(t *testing.T, responses []responsesTestServerRespons
 			Output:     response.Output,
 			OutputText: response.OutputText,
 			Usage: responsesUsage{
+				InputTokens:  response.InputTokens,
+				OutputTokens: response.OutputTokens,
 				InputTokensDetails: responsesInputTokensDetails{
 					CachedTokens: response.CachedTokens,
 				},

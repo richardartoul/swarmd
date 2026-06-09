@@ -214,6 +214,10 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 		apply:          applyDropAgentAllowNetworkMigration,
 		foreignKeysOff: true,
 	},
+	{
+		version: 11,
+		apply:   applyUsageTokenColumnsMigration,
+	},
 }
 
 const legacyNamespaceRenameSQL = `
@@ -549,6 +553,26 @@ func applyRunFinishThoughtMigration(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "runs", "finish_thought", "TEXT NOT NULL DEFAULT ''")
+}
+
+// applyUsageTokenColumnsMigration adds input/output token accounting to runs
+// and steps alongside the existing cached-token column.
+func applyUsageTokenColumnsMigration(ctx context.Context, tx *sql.Tx) error {
+	for _, tableName := range []string{"runs", "steps"} {
+		exists, err := tableExists(ctx, tx, tableName)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		for _, columnName := range []string{"usage_input_tokens", "usage_output_tokens"} {
+			if err := addColumnIfMissing(ctx, tx, tableName, columnName, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func applyDropAgentAllowNetworkMigration(ctx context.Context, tx *sql.Tx) error {

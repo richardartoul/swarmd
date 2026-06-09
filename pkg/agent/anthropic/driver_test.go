@@ -1299,6 +1299,8 @@ func TestDriverNextCapturesCachedTokensFromUsage(t *testing.T) {
 				Text: strictFinalText("done", "done"),
 			}},
 			StopReason:   "end_turn",
+			InputTokens:  2048,
+			OutputTokens: 96,
 			CachedTokens: 1536,
 		},
 	})
@@ -1313,8 +1315,9 @@ func TestDriverNextCapturesCachedTokensFromUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
-	if decision.Usage.CachedTokens != 1536 {
-		t.Fatalf("decision.Usage.CachedTokens = %d, want %d", decision.Usage.CachedTokens, 1536)
+	want := agent.Usage{InputTokens: 2048, OutputTokens: 96, CachedTokens: 1536}
+	if decision.Usage != want {
+		t.Fatalf("decision.Usage = %+v, want %+v", decision.Usage, want)
 	}
 }
 
@@ -1903,6 +1906,8 @@ type requestLog struct {
 type testServerResponse struct {
 	Content      []anthropicContentBlock
 	StopReason   string
+	InputTokens  int
+	OutputTokens int
 	CachedTokens int
 }
 
@@ -1961,6 +1966,8 @@ func newTestServer(t *testing.T, responses []testServerResponse) (*httptest.Serv
 			Content:    response.Content,
 			StopReason: response.StopReason,
 			Usage: anthropicUsage{
+				InputTokens:          response.InputTokens,
+				OutputTokens:         response.OutputTokens,
 				CacheReadInputTokens: response.CachedTokens,
 			},
 		})

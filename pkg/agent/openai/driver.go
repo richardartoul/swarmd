@@ -207,9 +207,7 @@ func (d *Driver) completeResponses(ctx context.Context, payload responsesRequest
 	if err != nil {
 		return agent.Decision{}, err
 	}
-	decision.Usage = agent.Usage{
-		CachedTokens: response.Usage.InputTokensDetails.CachedTokens,
-	}
+	decision.Usage = response.Usage.toAgentUsage()
 	return decision, nil
 }
 

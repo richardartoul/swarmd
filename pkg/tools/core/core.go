@@ -106,9 +106,23 @@ type ShellExecution struct {
 	TimeoutMS int
 }
 
-// Usage reports token accounting from one driver response.
+// Usage reports token accounting from one driver response. Counts are
+// provider-reported: InputTokens and OutputTokens are the prompt and
+// completion token counts, and CachedTokens is the provider's cached-read
+// count (a subset of, or supplement to, InputTokens depending on provider).
 type Usage struct {
+	InputTokens  int
+	OutputTokens int
 	CachedTokens int
+}
+
+// Add returns the field-wise sum of two usage reports.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:  u.InputTokens + other.InputTokens,
+		OutputTokens: u.OutputTokens + other.OutputTokens,
+		CachedTokens: u.CachedTokens + other.CachedTokens,
+	}
 }
 
 // ToolKind identifies the model-facing tool wire shape.

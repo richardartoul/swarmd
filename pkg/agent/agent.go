@@ -473,8 +473,7 @@ func cloneSteps(steps []Step) []Step {
 }
 
 func mergeUsage(dst, src Usage) Usage {
-	dst.CachedTokens += src.CachedTokens
-	return dst
+	return dst.Add(src)
 }
 
 func (a *Agent) toolHTTPClient(toolName string, opts ToolHTTPClientOptions) *http.Client {

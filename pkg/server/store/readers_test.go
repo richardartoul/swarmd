@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
 func TestStoreListReaders(t *testing.T) {
@@ -56,7 +58,7 @@ func TestStoreListReaders(t *testing.T) {
 		ActionInput:           `{"file_path":"config.yaml"}`,
 		ActionOutput:          "1|name: demo\n2|enabled: true\n",
 		ActionOutputTruncated: true,
-		UsageCachedTokens:     3,
+		Usage:                 toolscore.Usage{InputTokens: 40, OutputTokens: 9, CachedTokens: 3},
 		CWDBefore:             agentRecord.RootPath,
 		CWDAfter:              agentRecord.RootPath,
 		StartedAt:             startedAt,
@@ -68,16 +70,16 @@ func TestStoreListReaders(t *testing.T) {
 	}
 
 	if err := s.CompleteRun(ctx, CompleteRunParams{
-		NamespaceID:       namespace.ID,
-		RunID:             claimed.Run.ID,
-		MessageID:         claimed.Message.ID,
-		Status:            "finished",
-		FinishedAt:        finishedAt,
-		Duration:          finishedAt.Sub(startedAt),
-		CWD:               agentRecord.RootPath,
-		UsageCachedTokens: 4,
-		FinishThought:     "finished after reading the config",
-		Value:             map[string]any{"ok": true},
+		NamespaceID:   namespace.ID,
+		RunID:         claimed.Run.ID,
+		MessageID:     claimed.Message.ID,
+		Status:        "finished",
+		FinishedAt:    finishedAt,
+		Duration:      finishedAt.Sub(startedAt),
+		CWD:           agentRecord.RootPath,
+		Usage:         toolscore.Usage{InputTokens: 50, OutputTokens: 12, CachedTokens: 4},
+		FinishThought: "finished after reading the config",
+		Value:         map[string]any{"ok": true},
 	}); err != nil {
 		t.Fatalf("CompleteRun() error = %v", err)
 	}

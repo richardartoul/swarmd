@@ -110,15 +110,15 @@ type agentTUIModel struct {
 	help       help.Model
 	keys       agentTUIKeyMap
 
-	focus        agentTUIFocus
-	width        int
-	height       int
-	showHelp     bool
-	running      bool
-	status       string
-	currentCWD   string
-	cachedTokens int
-	entries      []transcriptEntry
+	focus      agentTUIFocus
+	width      int
+	height     int
+	showHelp   bool
+	running    bool
+	status     string
+	currentCWD string
+	usage      agent.Usage
+	entries    []transcriptEntry
 }
 
 func newAgentTUIModel(opts agentTUIOptions) agentTUIModel {
@@ -360,7 +360,7 @@ func (m *agentTUIModel) handleStep(step agent.Step) {
 
 func (m *agentTUIModel) handleResult(result agent.Result) {
 	m.running = false
-	m.cachedTokens = result.Usage.CachedTokens
+	m.usage = result.Usage
 	if strings.TrimSpace(result.CWD) != "" {
 		m.currentCWD = result.CWD
 	}
@@ -560,7 +560,7 @@ func (m agentTUIModel) statusLine() string {
 		fmt.Sprintf("cwd=%s", strings.TrimSpace(m.currentCWD)),
 		fmt.Sprintf("state=%s", state),
 		fmt.Sprintf("focus=%s", m.focus.label()),
-		fmt.Sprintf("cached_tokens=%d", m.cachedTokens),
+		fmt.Sprintf("tokens(in=%d cached=%d out=%d)", m.usage.InputTokens, m.usage.CachedTokens, m.usage.OutputTokens),
 	}
 	if strings.TrimSpace(m.status) != "" {
 		parts = append(parts, m.status)

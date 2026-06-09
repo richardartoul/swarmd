@@ -240,6 +240,8 @@ func (d *Driver) completeDescribeImage(ctx context.Context, payload messagesRequ
 		}
 		combined.Content = append(combined.Content, response.Content...)
 		combined.StopReason = response.StopReason
+		combined.Usage.InputTokens += response.Usage.InputTokens
+		combined.Usage.OutputTokens += response.Usage.OutputTokens
 		combined.Usage.CacheReadInputTokens += response.Usage.CacheReadInputTokens
 		switch {
 		case stopReason == "pause_turn":
@@ -270,13 +272,15 @@ func (d *Driver) completeDescribeImage(ctx context.Context, payload messagesRequ
 }
 
 func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedTools []agent.ToolDefinition) (agent.Decision, error) {
-	totalCachedTokens := 0
+	var totalUsage agent.Usage
 	for attempt := 0; ; attempt++ {
 		response, err := d.completeOnce(ctx, payload)
 		if err != nil {
 			return agent.Decision{}, err
 		}
-		totalCachedTokens += response.Usage.CacheReadInputTokens
+		// Continuation round-trips are part of the same decision; report
+		// their combined usage.
+		totalUsage = totalUsage.Add(response.Usage.toAgentUsage())
 
 		stopReason := strings.TrimSpace(response.StopReason)
 		switch stopReason {
@@ -316,9 +320,7 @@ func (d *Driver) complete(ctx context.Context, payload messagesRequest, allowedT
 				Err:        err,
 			}
 		}
-		decision.Usage = agent.Usage{
-			CachedTokens: totalCachedTokens,
-		}
+		decision.Usage = totalUsage
 		return decision, nil
 	}
 }
