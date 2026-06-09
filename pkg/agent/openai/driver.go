@@ -95,7 +95,7 @@ func New(cfg Config) (*Driver, error) {
 	if baseURL == "" {
 		baseURL = DefaultBaseURL
 	}
-	model, reasoningEffort := parseModelAndReasoningEffort(cfg.Model)
+	model, reasoningEffort := SplitModelReasoningEffort(cfg.Model)
 	if !supportsResponsesStructuredTextFormat(model) {
 		return nil, fmt.Errorf("openai model %q must support structured outputs", model)
 	}

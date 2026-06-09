@@ -103,14 +103,8 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 }
 
 func baseModel(model string) string {
-	model = strings.TrimSpace(model)
-	for _, effort := range []string{"xhigh", "high", "medium", "minimal", "low", "none"} {
-		suffix := "-x" + effort
-		if base, ok := strings.CutSuffix(model, suffix); ok && strings.TrimSpace(base) != "" {
-			return strings.TrimSpace(base)
-		}
-	}
-	return model
+	base, _ := agentopenai.SplitModelReasoningEffort(model)
+	return base
 }
 
 func supportsExtendedPromptCache(model string) bool {

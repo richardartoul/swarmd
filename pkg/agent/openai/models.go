@@ -64,7 +64,11 @@ func supportsResponsesHostedWebSearch(model, effort string) bool {
 	}
 }
 
-func parseModelAndReasoningEffort(model string) (string, string) {
+// SplitModelReasoningEffort splits a configured model name into the base
+// model and an optional reasoning-effort suffix. Efforts are written with an
+// "-x" marker so they cannot collide with real model names: "gpt-5-xhigh"
+// means model "gpt-5" with reasoning effort "high".
+func SplitModelReasoningEffort(model string) (base, effort string) {
 	model = strings.TrimSpace(model)
 	for _, effort := range []string{"xhigh", "high", "medium", "minimal", "low", "none"} {
 		suffix := "-x" + effort
