@@ -7,6 +7,7 @@ import (
 	"time"
 )
 
+// CreateAgent inserts an agent and its initial prompt version.
 func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (RunnableAgent, error) {
 	params, configJSON, err := normalizeCreateAgentParams(params)
 	if err != nil {
@@ -127,6 +128,7 @@ func (s *Store) CreateAgent(ctx context.Context, params CreateAgentParams) (Runn
 	}, nil
 }
 
+// UpdateAgentPrompt appends a prompt version and makes it current.
 func (s *Store) UpdateAgentPrompt(ctx context.Context, params UpdateAgentPromptParams) (AgentPromptVersion, error) {
 	if strings.TrimSpace(params.NamespaceID) == "" || strings.TrimSpace(params.AgentID) == "" {
 		return AgentPromptVersion{}, fmt.Errorf("update agent prompt: namespace id and agent id must not be empty")
@@ -204,6 +206,7 @@ func (s *Store) UpdateAgentPrompt(ctx context.Context, params UpdateAgentPromptP
 	}, nil
 }
 
+// UpdateAgentDesiredState sets the operator-requested lifecycle state.
 func (s *Store) UpdateAgentDesiredState(ctx context.Context, params UpdateAgentDesiredStateParams) error {
 	now := s.now()
 	res, err := s.db.ExecContext(
@@ -227,6 +230,7 @@ func (s *Store) UpdateAgentDesiredState(ctx context.Context, params UpdateAgentD
 	return nil
 }
 
+// GetAgent loads one agent with its current system prompt.
 func (s *Store) GetAgent(ctx context.Context, namespaceID, agentID string) (RunnableAgent, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT
@@ -247,6 +251,7 @@ WHERE a.namespace_id = ? AND a.agent_id = ?
 	return RunnableAgent{AgentRecord: agentRecord, SystemPrompt: prompt}, nil
 }
 
+// ListRunnableAgents lists worker agents whose desired state is running.
 func (s *Store) ListRunnableAgents(ctx context.Context) ([]RunnableAgent, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT

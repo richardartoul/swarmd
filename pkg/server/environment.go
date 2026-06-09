@@ -6,11 +6,14 @@ import (
 	"sync"
 )
 
+// Environment bundles the long-running server components.
 type Environment struct {
 	Runtime   *RuntimeManager
 	Scheduler *Scheduler
 }
 
+// Run starts every configured component and blocks until the first one
+// fails or ctx is canceled.
 func (e Environment) Run(ctx context.Context) error {
 	if e.Runtime == nil {
 		return fmt.Errorf("server environment requires a runtime manager")

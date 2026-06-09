@@ -12,11 +12,13 @@ import (
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
 )
 
+// StepPersister records each completed agent step on the run's step log.
 type StepPersister struct {
 	Store  *cpstore.Store
 	Logger *RuntimeLogger
 }
 
+// HandleStep implements [agent.StepHandler].
 func (p StepPersister) HandleStep(ctx context.Context, trigger agent.Trigger, step agent.Step) error {
 	if p.Store == nil {
 		return fmt.Errorf("server step persister requires a store")
@@ -58,6 +60,8 @@ func (p StepPersister) HandleStep(ctx context.Context, trigger agent.Trigger, st
 	return nil
 }
 
+// ResultPersister completes the run and its mailbox message when a trigger
+// finishes, applying retry, dead-letter, and outbox policy.
 type ResultPersister struct {
 	Store            *cpstore.Store
 	RetryDelay       time.Duration
@@ -65,6 +69,9 @@ type ResultPersister struct {
 	AllowMessageSend bool
 }
 
+// HandleResult implements [agent.ResultHandler]. Outbox violations in
+// agent-produced output are recorded and dead-lettered, never returned:
+// failing here would leave the message leased and re-run the agent.
 func (p ResultPersister) HandleResult(ctx context.Context, result agent.Result) error {
 	if p.Store == nil {
 		return fmt.Errorf("server result persister requires a store")
@@ -189,11 +196,14 @@ func joinErrorText(existing, addition string) string {
 	return existing + "; " + addition
 }
 
+// WorkerResultEnvelope is the optional structured result a worker agent may
+// return: a user-facing reply plus outbox messages to other agents.
 type WorkerResultEnvelope struct {
 	Reply  any                   `json:"reply,omitempty"`
 	Outbox []WorkerOutboxMessage `json:"outbox,omitempty"`
 }
 
+// WorkerOutboxMessage is one agent-requested mailbox delivery.
 type WorkerOutboxMessage struct {
 	RecipientAgentID string `json:"recipient_agent_id"`
 	ThreadID         string `json:"thread_id,omitempty"`

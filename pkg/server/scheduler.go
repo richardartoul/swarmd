@@ -8,6 +8,7 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// Scheduler turns due cron schedules into mailbox messages.
 type Scheduler struct {
 	Store        *cpstore.Store
 	PollInterval time.Duration
@@ -44,6 +45,8 @@ func (s Scheduler) Run(ctx context.Context) error {
 	}
 }
 
+// FireOnce enqueues messages for every schedule due at the current time and
+// returns the enqueued records.
 func (s Scheduler) FireOnce(ctx context.Context) ([]cpstore.MailboxMessageRecord, error) {
 	if s.Store == nil {
 		return nil, fmt.Errorf("server scheduler requires a store")

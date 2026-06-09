@@ -16,10 +16,13 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 )
 
+// WorkerDriverFactory constructs the model driver for one worker agent.
 type WorkerDriverFactory interface {
 	NewWorkerDriver(ctx context.Context, agent cpstore.RunnableAgent) (agent.Driver, error)
 }
 
+// RuntimeManager supervises one worker goroutine per runnable agent,
+// reconciling the running set against the store on every poll interval.
 type RuntimeManager struct {
 	Store         *cpstore.Store
 	DriverFactory WorkerDriverFactory

@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// ListAgents lists agents, optionally filtered by namespace.
 func (s *Store) ListAgents(ctx context.Context, params ListAgentsParams) ([]RunnableAgent, error) {
 	query := `
 SELECT
@@ -52,6 +53,7 @@ LEFT JOIN agent_prompt_versions p
 	return agents, nil
 }
 
+// ListMailboxMessages lists mailbox messages, newest first.
 func (s *Store) ListMailboxMessages(ctx context.Context, params ListMailboxMessagesParams) ([]MailboxMessageRecord, error) {
 	limit := params.Limit
 	if limit <= 0 {
@@ -104,6 +106,7 @@ FROM mailbox_messages
 	return messages, nil
 }
 
+// GetMailboxMessage loads one mailbox message.
 func (s *Store) GetMailboxMessage(ctx context.Context, namespaceID, messageID string) (MailboxMessageRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json, status,
@@ -115,6 +118,7 @@ WHERE namespace_id = ? AND message_id = ?
 	return scanMailboxMessage(row)
 }
 
+// ListRuns lists runs, newest first, with optional filters.
 func (s *Store) ListRuns(ctx context.Context, params ListRunsParams) ([]RunRecord, error) {
 	limit := params.Limit
 	if limit <= 0 {
@@ -165,6 +169,7 @@ FROM runs
 	return runs, nil
 }
 
+// ListStepsByRun lists a run's steps in execution order.
 func (s *Store) ListStepsByRun(ctx context.Context, namespaceID, runID string) ([]StepRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT namespace_id, run_id, message_id, agent_id, step_index, step_type, thought, shell, action_name, action_tool_kind,

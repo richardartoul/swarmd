@@ -9,6 +9,7 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// ChangeAction classifies one planned reconciliation change.
 type ChangeAction string
 
 const (
@@ -17,18 +18,21 @@ const (
 	ChangeActionDelete ChangeAction = "delete"
 )
 
+// FieldChange is one before/after field difference in a planned update.
 type FieldChange struct {
 	Field  string
 	Before string
 	After  string
 }
 
+// AgentSpecSummary counts the entities declared by a set of agent specs.
 type AgentSpecSummary struct {
 	Namespaces int
 	Agents     int
 	Schedules  int
 }
 
+// SyncPlanSummary counts the changes a sync plan would apply.
 type SyncPlanSummary struct {
 	NamespacesCreated int
 	NamespacesUpdated int
@@ -40,6 +44,8 @@ type SyncPlanSummary struct {
 	SchedulesDeleted  int
 }
 
+// SyncPlan is a dry-run reconciliation of config-root specs against the
+// store, grouped by entity.
 type SyncPlan struct {
 	Summary          SyncPlanSummary
 	NamespaceChanges []NamespacePlanChange
@@ -47,12 +53,14 @@ type SyncPlan struct {
 	ScheduleChanges  []SchedulePlanChange
 }
 
+// NamespacePlanChange is one planned namespace create or update.
 type NamespacePlanChange struct {
 	Action      ChangeAction
 	NamespaceID string
 	Changes     []FieldChange
 }
 
+// AgentPlanChange is one planned agent create, update, or delete.
 type AgentPlanChange struct {
 	Action      ChangeAction
 	NamespaceID string
@@ -63,6 +71,7 @@ type AgentPlanChange struct {
 	Changes     []FieldChange
 }
 
+// SchedulePlanChange is one planned schedule create, update, or delete.
 type SchedulePlanChange struct {
 	Action      ChangeAction
 	NamespaceID string
@@ -75,6 +84,7 @@ type SchedulePlanChange struct {
 	Changes     []FieldChange
 }
 
+// SummarizeAgentSpecs counts namespaces, agents, and schedules in specs.
 func SummarizeAgentSpecs(specs []AgentSpec) AgentSpecSummary {
 	namespaces := make(map[string]struct{}, len(specs))
 	scheduleCount := 0
@@ -89,10 +99,13 @@ func SummarizeAgentSpecs(specs []AgentSpec) AgentSpecSummary {
 	}
 }
 
+// HasChanges reports whether applying the plan would modify the store.
 func (p SyncPlan) HasChanges() bool {
 	return len(p.NamespaceChanges) > 0 || len(p.AgentChanges) > 0 || len(p.ScheduleChanges) > 0
 }
 
+// PlanSyncFromConfigRoot computes the dry-run reconciliation plan for the
+// specs under configRoot without modifying the store.
 func PlanSyncFromConfigRoot(ctx context.Context, store *cpstore.Store, configRoot, defaultRootBase string) (SyncPlan, error) {
 	if store == nil {
 		return SyncPlan{}, fmt.Errorf("sync plan requires a store")

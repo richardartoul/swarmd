@@ -10,10 +10,15 @@ import (
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
 
+// EnqueueMessage queues one mailbox message for delivery.
 func (s *Store) EnqueueMessage(ctx context.Context, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
 	return enqueueMessage(ctx, s.db, s.now(), params)
 }
 
+// ClaimNextMessage leases the next available message for an agent and
+// creates its run record in the same transaction. Messages whose attempts
+// are exhausted without a recorded result are dead-lettered instead of
+// re-leased. Returns [ErrNoAvailableMessage] when nothing is claimable.
 func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams) (ClaimedMailboxMessage, error) {
 	if params.NamespaceID == "" || params.AgentID == "" {
 		return ClaimedMailboxMessage{}, fmt.Errorf("claim next message: namespace id and agent id must not be empty")
@@ -145,6 +150,7 @@ func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams)
 	return ClaimedMailboxMessage{}, ErrNoAvailableMessage
 }
 
+// RecordStep appends one step to a run's step log.
 func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 	if step.NamespaceID == "" || step.RunID == "" {
 		return fmt.Errorf("record step: namespace id and run id must not be empty")
@@ -190,6 +196,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 	return nil
 }
 
+// CompleteRun finalizes a run and settles its mailbox message: completed,
+// requeued for retry, or dead-lettered, plus any outbox deliveries — all in
+// one transaction.
 func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error {
 	if params.NamespaceID == "" || params.RunID == "" || params.MessageID == "" {
 		return fmt.Errorf("complete run: namespace id, run id, and message id must not be empty")
@@ -287,6 +296,7 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	return nil
 }
 
+// GetRun loads one run record.
 func (s *Store) GetRun(ctx context.Context, namespaceID, runID string) (RunRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_input_tokens, usage_output_tokens, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
@@ -296,6 +306,7 @@ WHERE namespace_id = ? AND run_id = ?
 	return scanRun(row)
 }
 
+// ListThreadMessages lists a thread's messages in creation order.
 func (s *Store) ListThreadMessages(ctx context.Context, namespaceID, threadID string, limit int) ([]MailboxThreadMessage, error) {
 	if limit <= 0 {
 		limit = 20

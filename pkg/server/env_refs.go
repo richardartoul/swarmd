@@ -11,6 +11,8 @@ import (
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
 )
 
+// ValidateReferencedAgentConfigEnv confirms every environment variable
+// referenced by the specs' config sections is set.
 func ValidateReferencedAgentConfigEnv(specs []AgentSpec, lookupEnv func(string) string) error {
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv

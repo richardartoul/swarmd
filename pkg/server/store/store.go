@@ -16,16 +16,22 @@ var (
 	ErrNoAvailableMessage = errors.New("server/store: no available mailbox message")
 )
 
+// Store is the SQLite-backed control plane. It is safe for concurrent use;
+// writes serialize through SQLite's WAL with a busy timeout.
 type Store struct {
 	db         *sql.DB
 	now        func() time.Time
 	leaseOwner string
 }
 
+// Open opens (creating if needed) the database at dsn and applies any
+// outstanding migrations.
 func Open(ctx context.Context, dsn string) (*Store, error) {
 	return openStore(ctx, dsn, false)
 }
 
+// OpenReadOnly opens an existing database without applying migrations,
+// for inspection surfaces such as the TUI.
 func OpenReadOnly(ctx context.Context, dsn string) (*Store, error) {
 	return openStore(ctx, dsn, true)
 }
@@ -66,6 +72,7 @@ func openStore(ctx context.Context, dsn string, readOnly bool) (*Store, error) {
 	return s, nil
 }
 
+// Close releases the underlying database handle.
 func (s *Store) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -73,10 +80,12 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// DB exposes the underlying handle for tests and inspection commands.
 func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+// LeaseOwner returns this process's stable mailbox lease owner id.
 func (s *Store) LeaseOwner() string {
 	return s.leaseOwner
 }

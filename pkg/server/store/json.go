@@ -7,6 +7,7 @@ import (
 
 const envelopeVersion = 1
 
+// MarshalEnvelope encodes value inside a kind-tagged JSON envelope.
 func MarshalEnvelope(kind string, value any) (string, error) {
 	body, err := json.Marshal(value)
 	if err != nil {
@@ -23,6 +24,8 @@ func MarshalEnvelope(kind string, value any) (string, error) {
 	return string(data), nil
 }
 
+// MarshalOptionalEnvelope is MarshalEnvelope, mapping nil to the empty
+// string.
 func MarshalOptionalEnvelope(kind string, value any) (string, error) {
 	if value == nil {
 		return "", nil
@@ -30,6 +33,7 @@ func MarshalOptionalEnvelope(kind string, value any) (string, error) {
 	return MarshalEnvelope(kind, value)
 }
 
+// DecodeEnvelopeAny decodes an envelope's payload as a generic value.
 func DecodeEnvelopeAny(data string) (any, error) {
 	if data == "" {
 		return nil, nil
@@ -51,6 +55,7 @@ func DecodeEnvelopeAny(data string) (any, error) {
 	return value, nil
 }
 
+// DecodeEnvelopeInto decodes an envelope's payload into dst.
 func DecodeEnvelopeInto(data string, dst any) error {
 	if data == "" {
 		return nil

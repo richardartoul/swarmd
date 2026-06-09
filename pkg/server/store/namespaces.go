@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// CreateNamespace inserts a namespace, generating an id when absent.
 func (s *Store) CreateNamespace(ctx context.Context, params CreateNamespaceParams) (Namespace, error) {
 	now := s.now()
 	namespaceID := defaultString(params.ID, NewID("namespace"))
@@ -39,6 +40,7 @@ func (s *Store) CreateNamespace(ctx context.Context, params CreateNamespaceParam
 	}, nil
 }
 
+// GetNamespace loads one namespace.
 func (s *Store) GetNamespace(ctx context.Context, namespaceID string) (Namespace, error) {
 	row := s.db.QueryRowContext(
 		ctx,
@@ -58,6 +60,8 @@ func (s *Store) GetNamespace(ctx context.Context, namespaceID string) (Namespace
 	return namespace, nil
 }
 
+// SnapshotNamespace loads a namespace with its agents, schedules, and
+// mailbox counters.
 func (s *Store) SnapshotNamespace(ctx context.Context, namespaceID string) (NamespaceSnapshot, error) {
 	namespace, err := s.GetNamespace(ctx, namespaceID)
 	if err != nil {

@@ -10,6 +10,8 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// MessageQueue adapts the store's mailbox lease lifecycle to [agent.Queue]:
+// each Next call claims one message for this agent and opens its run record.
 type MessageQueue struct {
 	Store         *cpstore.Store
 	NamespaceID   string
@@ -21,6 +23,8 @@ type MessageQueue struct {
 	Logger        *RuntimeLogger
 }
 
+// Next implements [agent.Queue]. It polls until a message is claimable or
+// ctx is canceled.
 func (q *MessageQueue) Next(ctx context.Context) (agent.Trigger, error) {
 	if q.Store == nil {
 		return agent.Trigger{}, fmt.Errorf("server message queue requires a store")
