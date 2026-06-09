@@ -607,7 +607,9 @@ func tarExtract(env *commandEnv, archivePath, destRaw string, verbose bool) erro
 			if err := mutableFS.MkdirAll(targetPath, mode.Perm()); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		// archive/tar normalizes the legacy TypeRegA flag to TypeReg when
+		// reading headers, so matching TypeReg alone covers both.
+		case tar.TypeReg:
 			if err := mutableFS.MkdirAll(filepath.Dir(targetPath), os.ModePerm); err != nil {
 				return err
 			}

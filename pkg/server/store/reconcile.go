@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// ListNamespaces lists every namespace.
 func (s *Store) ListNamespaces(ctx context.Context) ([]Namespace, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
@@ -38,6 +39,7 @@ func (s *Store) ListNamespaces(ctx context.Context) ([]Namespace, error) {
 	return namespaces, nil
 }
 
+// PutNamespace creates or updates a namespace idempotently.
 func (s *Store) PutNamespace(ctx context.Context, params CreateNamespaceParams) (PutNamespaceResult, error) {
 	namespaceID := defaultString(params.ID, NewID("namespace"))
 	name := strings.TrimSpace(params.Name)
@@ -87,6 +89,8 @@ func (s *Store) PutNamespace(ctx context.Context, params CreateNamespaceParams) 
 	return PutNamespaceResult{Namespace: namespace, Updated: true}, nil
 }
 
+// PutAgent creates or updates an agent idempotently, appending a prompt
+// version when the prompt or action schema changed.
 func (s *Store) PutAgent(ctx context.Context, params CreateAgentParams) (PutAgentResult, error) {
 	normalized, configJSON, err := normalizeCreateAgentParams(params)
 	if err != nil {
@@ -207,6 +211,7 @@ func (s *Store) currentActionSchemaJSON(ctx context.Context, namespaceID, prompt
 	}
 }
 
+// DeleteAgent removes an agent; dependent records cascade.
 func (s *Store) DeleteAgent(ctx context.Context, namespaceID, agentID string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM agents WHERE namespace_id = ? AND agent_id = ?`, namespaceID, agentID)
 	if err != nil {
@@ -222,6 +227,7 @@ func (s *Store) DeleteAgent(ctx context.Context, namespaceID, agentID string) er
 	return nil
 }
 
+// DeleteSchedulesByAgent removes all schedules owned by an agent.
 func (s *Store) DeleteSchedulesByAgent(ctx context.Context, namespaceID, agentID string) (int, error) {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM schedules WHERE namespace_id = ? AND agent_id = ?`, namespaceID, agentID)
 	if err != nil {

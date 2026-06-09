@@ -10,6 +10,8 @@ import (
 	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
 )
 
+// ValidateReferencedToolEnv confirms the environment variables required by
+// each spec's configured tools are set.
 func ValidateReferencedToolEnv(specs []AgentSpec, lookupEnv func(string) string) error {
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv

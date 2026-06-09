@@ -278,7 +278,7 @@ func (c *DatadogClient) queryMetrics(ctx context.Context, req DatadogReadRequest
 	if err != nil {
 		return DatadogReadResult{}, fmt.Errorf("query metrics: %w", err)
 	}
-	series := make([]DatadogMetricSeries, 0, toolscommon.MinInt(len(response.Series), datadogMaxMetricsSeries))
+	series := make([]DatadogMetricSeries, 0, min(len(response.Series), datadogMaxMetricsSeries))
 	for index, metadata := range response.Series {
 		if index >= datadogMaxMetricsSeries {
 			break
@@ -589,7 +589,7 @@ func normalizeDatadogMetricSeries(metadata datadogV1.MetricsQueryMetadata) Datad
 	if metadata.End != nil {
 		result.EndMS = *metadata.End
 	}
-	points := make([]DatadogMetricPoint, 0, toolscommon.MinInt(len(metadata.Pointlist), datadogMaxMetricPoints))
+	points := make([]DatadogMetricPoint, 0, min(len(metadata.Pointlist), datadogMaxMetricPoints))
 	for index, point := range metadata.Pointlist {
 		if index >= datadogMaxMetricPoints {
 			result.PointsTruncated = true
@@ -681,7 +681,7 @@ func normalizeDatadogLogsAggregateBucketValue(value datadogV2.LogsAggregateBucke
 		return *single
 	}
 	if series := value.LogsAggregateBucketValueTimeseries; series != nil {
-		points := make([]DatadogLogsAggregatePoint, 0, toolscommon.MinInt(len(series.Items), datadogMaxMetricPoints))
+		points := make([]DatadogLogsAggregatePoint, 0, min(len(series.Items), datadogMaxMetricPoints))
 		var truncated bool
 		for idx, point := range series.Items {
 			if idx >= datadogMaxMetricPoints {

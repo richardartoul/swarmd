@@ -7,6 +7,7 @@ import (
 	"strings"
 )
 
+// ListAgents lists agents, optionally filtered by namespace.
 func (s *Store) ListAgents(ctx context.Context, params ListAgentsParams) ([]RunnableAgent, error) {
 	query := `
 SELECT
@@ -52,6 +53,7 @@ LEFT JOIN agent_prompt_versions p
 	return agents, nil
 }
 
+// ListMailboxMessages lists mailbox messages, newest first.
 func (s *Store) ListMailboxMessages(ctx context.Context, params ListMailboxMessagesParams) ([]MailboxMessageRecord, error) {
 	limit := params.Limit
 	if limit <= 0 {
@@ -104,6 +106,7 @@ FROM mailbox_messages
 	return messages, nil
 }
 
+// GetMailboxMessage loads one mailbox message.
 func (s *Store) GetMailboxMessage(ctx context.Context, namespaceID, messageID string) (MailboxMessageRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json, status,
@@ -115,6 +118,7 @@ WHERE namespace_id = ? AND message_id = ?
 	return scanMailboxMessage(row)
 }
 
+// ListRuns lists runs, newest first, with optional filters.
 func (s *Store) ListRuns(ctx context.Context, params ListRunsParams) ([]RunRecord, error) {
 	limit := params.Limit
 	if limit <= 0 {
@@ -122,7 +126,7 @@ func (s *Store) ListRuns(ctx context.Context, params ListRunsParams) ([]RunRecor
 	}
 
 	query := `
-SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
+SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_input_tokens, usage_output_tokens, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
 FROM runs
 `
 	var conditions []string
@@ -165,34 +169,13 @@ FROM runs
 	return runs, nil
 }
 
+// ListStepsByRun lists a run's steps in execution order.
 func (s *Store) ListStepsByRun(ctx context.Context, namespaceID, runID string) ([]StepRecord, error) {
-	hasActionColumns, err := stepActionColumnsAvailable(ctx, s.db)
-	if err != nil {
-		return nil, fmt.Errorf("inspect steps schema for run %q/%q: %w", namespaceID, runID, err)
-	}
-	hasStepTypeColumn, err := stepTypeColumnAvailable(ctx, s.db)
-	if err != nil {
-		return nil, fmt.Errorf("inspect step type schema for run %q/%q: %w", namespaceID, runID, err)
-	}
-	selectColumns := `namespace_id, run_id, message_id, agent_id, step_index, thought, shell, usage_cached_tokens, cwd_before, cwd_after,
-       stdout, stderr, stdout_truncated, stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status,
-       exit_status, error`
-	switch {
-	case hasStepTypeColumn && hasActionColumns:
-		selectColumns = `namespace_id, run_id, message_id, agent_id, step_index, step_type, thought, shell, action_name, action_tool_kind,
-       action_input, action_output, action_output_truncated, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr,
-       stdout_truncated, stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error`
-	case hasStepTypeColumn:
-		selectColumns = `namespace_id, run_id, message_id, agent_id, step_index, step_type, thought, shell, usage_cached_tokens, cwd_before,
-       cwd_after, stdout, stderr, stdout_truncated, stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status,
-       exit_status, error`
-	case hasActionColumns:
-		selectColumns = `namespace_id, run_id, message_id, agent_id, step_index, thought, shell, action_name, action_tool_kind, action_input,
-       action_output, action_output_truncated, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
-       stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error`
-	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT `+selectColumns+`
+SELECT namespace_id, run_id, message_id, agent_id, step_index, step_type, thought, shell, action_name, action_tool_kind,
+       action_input, action_output, action_output_truncated, usage_input_tokens, usage_output_tokens, usage_cached_tokens,
+       cwd_before, cwd_after, stdout, stderr, stdout_truncated, stderr_truncated, started_at_ms, finished_at_ms,
+       duration_millis, status, exit_status, error
 FROM steps
 WHERE namespace_id = ? AND run_id = ?
 ORDER BY step_index ASC
@@ -204,7 +187,7 @@ ORDER BY step_index ASC
 
 	var steps []StepRecord
 	for rows.Next() {
-		record, err := scanStep(rows, hasStepTypeColumn, hasActionColumns)
+		record, err := scanStep(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -216,7 +199,7 @@ ORDER BY step_index ASC
 	return steps, nil
 }
 
-func scanStep(scanner interface{ Scan(dest ...any) error }, hasStepTypeColumn, hasActionColumns bool) (StepRecord, error) {
+func scanStep(scanner interface{ Scan(dest ...any) error }) (StepRecord, error) {
 	var record StepRecord
 	var actionOutputTruncated int
 	var stdoutTruncated int
@@ -224,114 +207,36 @@ func scanStep(scanner interface{ Scan(dest ...any) error }, hasStepTypeColumn, h
 	var startedAtMS int64
 	var finishedAtMS int64
 	var durationMS int64
-	var err error
-	switch {
-	case hasStepTypeColumn && hasActionColumns:
-		err = scanner.Scan(
-			&record.NamespaceID,
-			&record.RunID,
-			&record.MessageID,
-			&record.AgentID,
-			&record.StepIndex,
-			&record.StepType,
-			&record.Thought,
-			&record.Shell,
-			&record.ActionName,
-			&record.ActionToolKind,
-			&record.ActionInput,
-			&record.ActionOutput,
-			&actionOutputTruncated,
-			&record.UsageCachedTokens,
-			&record.CWDBefore,
-			&record.CWDAfter,
-			&record.Stdout,
-			&record.Stderr,
-			&stdoutTruncated,
-			&stderrTruncated,
-			&startedAtMS,
-			&finishedAtMS,
-			&durationMS,
-			&record.Status,
-			&record.ExitStatus,
-			&record.Error,
-		)
-	case hasStepTypeColumn:
-		err = scanner.Scan(
-			&record.NamespaceID,
-			&record.RunID,
-			&record.MessageID,
-			&record.AgentID,
-			&record.StepIndex,
-			&record.StepType,
-			&record.Thought,
-			&record.Shell,
-			&record.UsageCachedTokens,
-			&record.CWDBefore,
-			&record.CWDAfter,
-			&record.Stdout,
-			&record.Stderr,
-			&stdoutTruncated,
-			&stderrTruncated,
-			&startedAtMS,
-			&finishedAtMS,
-			&durationMS,
-			&record.Status,
-			&record.ExitStatus,
-			&record.Error,
-		)
-	case hasActionColumns:
-		err = scanner.Scan(
-			&record.NamespaceID,
-			&record.RunID,
-			&record.MessageID,
-			&record.AgentID,
-			&record.StepIndex,
-			&record.Thought,
-			&record.Shell,
-			&record.ActionName,
-			&record.ActionToolKind,
-			&record.ActionInput,
-			&record.ActionOutput,
-			&actionOutputTruncated,
-			&record.UsageCachedTokens,
-			&record.CWDBefore,
-			&record.CWDAfter,
-			&record.Stdout,
-			&record.Stderr,
-			&stdoutTruncated,
-			&stderrTruncated,
-			&startedAtMS,
-			&finishedAtMS,
-			&durationMS,
-			&record.Status,
-			&record.ExitStatus,
-			&record.Error,
-		)
-	default:
-		err = scanner.Scan(
-			&record.NamespaceID,
-			&record.RunID,
-			&record.MessageID,
-			&record.AgentID,
-			&record.StepIndex,
-			&record.Thought,
-			&record.Shell,
-			&record.UsageCachedTokens,
-			&record.CWDBefore,
-			&record.CWDAfter,
-			&record.Stdout,
-			&record.Stderr,
-			&stdoutTruncated,
-			&stderrTruncated,
-			&startedAtMS,
-			&finishedAtMS,
-			&durationMS,
-			&record.Status,
-			&record.ExitStatus,
-			&record.Error,
-		)
-	}
-	if err != nil {
+	if err := scanner.Scan(
+		&record.NamespaceID,
+		&record.RunID,
+		&record.MessageID,
+		&record.AgentID,
+		&record.StepIndex,
+		&record.StepType,
+		&record.Thought,
+		&record.Shell,
+		&record.ActionName,
+		&record.ActionToolKind,
+		&record.ActionInput,
+		&record.ActionOutput,
+		&actionOutputTruncated,
+		&record.Usage.InputTokens,
+		&record.Usage.OutputTokens,
+		&record.Usage.CachedTokens,
+		&record.CWDBefore,
+		&record.CWDAfter,
+		&record.Stdout,
+		&record.Stderr,
+		&stdoutTruncated,
+		&stderrTruncated,
+		&startedAtMS,
+		&finishedAtMS,
+		&durationMS,
+		&record.Status,
+		&record.ExitStatus,
+		&record.Error,
+	); err != nil {
 		if err == sql.ErrNoRows {
 			return StepRecord{}, ErrNotFound
 		}
@@ -344,18 +249,6 @@ func scanStep(scanner interface{ Scan(dest ...any) error }, hasStepTypeColumn, h
 	record.FinishedAt = fromMillis(finishedAtMS)
 	record.Duration = fromDurationMillis(durationMS)
 	return record, nil
-}
-
-func stepActionColumnsAvailable(ctx context.Context, query interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}) (bool, error) {
-	return tableColumnExists(ctx, query, "steps", "action_name")
-}
-
-func stepTypeColumnAvailable(ctx context.Context, query interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}) (bool, error) {
-	return tableColumnExists(ctx, query, "steps", "step_type")
 }
 
 func tableColumnExists(ctx context.Context, query interface {

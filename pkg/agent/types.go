@@ -12,6 +12,12 @@ import (
 	toolscore "github.com/richardartoul/swarmd/pkg/tools/core"
 )
 
+// The tool-facing types below are aliases for their definitions in
+// pkg/tools/core. The aliases are deliberate: embedders and driver
+// implementations work entirely in terms of this package, while tool
+// implementations depend only on toolscore, keeping the dependency graph
+// acyclic (tools never import the runtime).
+
 type WebSearchBackend = toolscore.WebSearchBackend
 type WebSearchResponse = toolscore.WebSearchResponse
 type WebSearchResult = toolscore.WebSearchResult
@@ -217,8 +223,19 @@ type ToolDefinition = toolscore.ToolDefinition
 type FileReference = toolscore.FileReference
 
 // Request is the input to one [Driver.Next] call.
-// Messages holds the fully prepared prompt context. The remaining fields expose
-// the originating agent state for wrappers and custom drivers.
+//
+// Requests built by the runtime carry two views of the conversation:
+//
+//   - The structured view (ConversationTurns, CurrentTurnMessages,
+//     CurrentTurnSteps) preserves turn boundaries so drivers can replay
+//     provider-native context precisely. Drivers require this view and
+//     reject requests without it.
+//   - The flat view (Messages, Steps) is the fully prepared prompt as a
+//     single sequence. Drivers read only the system entries from it; the
+//     rest exists for wrappers, logging, and inspection surfaces.
+//
+// Both views describe the same conversation; the runtime always populates
+// both.
 type Request struct {
 	Trigger     Trigger
 	Step        int

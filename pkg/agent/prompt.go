@@ -227,7 +227,7 @@ func (a *Agent) buildDriverRequestWithContext(
 		CWD:               cwd,
 		ConversationTurns: cloneConversationTurns(requestContext.PriorTurns),
 		CurrentTurnSteps:  cloneSteps(steps),
-		Tools:             append([]ToolDefinition(nil), a.toolDefinitions...),
+		Tools:             a.tools.Definitions(),
 		StepReplayData:    cloneStepReplayData(requestContext.StepReplayData),
 		ProviderState:     strings.TrimSpace(requestContext.ProviderState),
 	}
@@ -245,7 +245,7 @@ func (a *Agent) buildDriverRequestWithContext(
 	req.CurrentTurnMessages = cloneMessages(currentTurnMessages)
 	currentStateMessage := Message{
 		Role:    MessageRoleUser,
-		Content: formatDynamicCurrentStateForPromptWithContext(prompt, req, requestContext),
+		Content: formatCurrentExecutionState(req, requestContext),
 	}
 	req.CurrentTurnMessages = append(req.CurrentTurnMessages, currentStateMessage)
 	req.Messages = []Message{
@@ -280,27 +280,6 @@ func formatTriggerContext(prompt string, trigger Trigger) string {
 	return b.String()
 }
 
-func formatCurrentState(req Request) string {
-	return formatCurrentStateForPrompt("", req)
-}
-
-func formatCurrentStateForPrompt(prompt string, req Request) string {
-	return formatCurrentStateForPromptWithContext(prompt, req, newTriggerDriverRequestContext())
-}
-
-func formatCurrentStateForPromptWithContext(prompt string, req Request, requestContext driverRequestContext) string {
-	protocol := strings.TrimSpace(currentTurnProtocolPrompt())
-	dynamic := strings.TrimSpace(formatDynamicCurrentStateForPromptWithContext(prompt, req, requestContext))
-	switch {
-	case protocol == "":
-		return dynamic
-	case dynamic == "":
-		return protocol
-	default:
-		return protocol + "\n\n" + dynamic
-	}
-}
-
 func currentTurnProtocolPrompt() string {
 	var b strings.Builder
 	b.WriteString("Native tool metadata is included elsewhere in this request. Retry guidance appears below only when the last attempted tool needs repair.\n")
@@ -313,7 +292,10 @@ func currentTurnProtocolPrompt() string {
 	return strings.TrimSpace(b.String())
 }
 
-func formatDynamicCurrentStateForPromptWithContext(prompt string, req Request, requestContext driverRequestContext) string {
+// formatCurrentExecutionState renders the per-request execution-state footer:
+// sandbox location, current step, run timing, and focused retry guidance when
+// the previous tool call needs repair.
+func formatCurrentExecutionState(req Request, requestContext driverRequestContext) string {
 	var b strings.Builder
 	b.WriteString("Current execution state\n")
 	if strings.TrimSpace(req.SandboxRoot) != "" {
@@ -330,7 +312,7 @@ func formatDynamicCurrentStateForPromptWithContext(prompt string, req Request, r
 	if len(requestCurrentTurnSteps(req)) == 0 {
 		fmt.Fprintf(&b, "No prior steps have been run for this %s.\n", requestContext.currentStateTarget())
 	}
-	if expanded := toolExpandedGuidancePrompt(prompt, req); expanded != "" {
+	if expanded := toolExpandedGuidancePrompt(req); expanded != "" {
 		b.WriteString("\n")
 		b.WriteString(expanded)
 	}
@@ -360,8 +342,7 @@ func hasTool(tools []ToolDefinition, name string) bool {
 	return false
 }
 
-func toolExpandedGuidancePrompt(prompt string, req Request) string {
-	_ = prompt
+func toolExpandedGuidancePrompt(req Request) string {
 	tool, ok := selectRetryTool(req)
 	if !ok {
 		return ""

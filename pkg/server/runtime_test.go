@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -465,6 +466,9 @@ func TestResultPersisterRejectsOutboxWithoutCapability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Next() error = %v", err)
 	}
+	// A capability violation is agent-produced output, so it must never fail
+	// the handler (that would leave the message leased and re-run the agent).
+	// It must instead complete the run and dead-letter the message.
 	err = persister.HandleResult(ctx, agent.Result{
 		Trigger:    trigger,
 		FinishedAt: time.Now().UTC(),
@@ -478,11 +482,42 @@ func TestResultPersisterRejectsOutboxWithoutCapability(t *testing.T) {
 			}},
 		},
 	})
-	if err == nil {
-		t.Fatal("HandleResult() error = nil, want capability error")
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v, want recorded violation instead of handler failure", err)
 	}
-	if !strings.Contains(err.Error(), capabilityAllowMessageSend) {
-		t.Fatalf("HandleResult() error = %v, want missing capability", err)
+
+	triggerCtx, err := TriggerContextFromTrigger(trigger)
+	if err != nil {
+		t.Fatalf("TriggerContextFromTrigger() error = %v", err)
+	}
+	requireDeadLetteredOutboxViolation(t, ctx, s, triggerCtx, capabilityAllowMessageSend)
+}
+
+// requireDeadLetteredOutboxViolation asserts that an outbox policy violation
+// was recorded on the run and dead-lettered the originating message.
+func requireDeadLetteredOutboxViolation(t *testing.T, ctx context.Context, s *cpstore.Store, triggerCtx TriggerContext, wantReason string) {
+	t.Helper()
+	run, err := s.GetRun(ctx, triggerCtx.NamespaceID, triggerCtx.RunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	if !strings.Contains(run.Error, "outbox rejected") || !strings.Contains(run.Error, wantReason) {
+		t.Fatalf("run.Error = %q, want outbox rejection mentioning %q", run.Error, wantReason)
+	}
+	var status, reason string
+	if err := s.DB().QueryRowContext(
+		ctx,
+		`SELECT status, dead_letter_reason FROM mailbox_messages WHERE namespace_id = ? AND message_id = ?`,
+		triggerCtx.NamespaceID,
+		triggerCtx.MessageID,
+	).Scan(&status, &reason); err != nil {
+		t.Fatalf("query message status error = %v", err)
+	}
+	if status != string(cpstore.MailboxMessageStatusDeadLetter) {
+		t.Fatalf("message status = %q, want %q", status, cpstore.MailboxMessageStatusDeadLetter)
+	}
+	if !strings.Contains(reason, wantReason) {
+		t.Fatalf("dead letter reason = %q, want mention of %q", reason, wantReason)
 	}
 }
 
@@ -527,6 +562,8 @@ func TestResultPersisterRejectsOutboxToDifferentNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("queue.Next() error = %v", err)
 	}
+	// "receiver" exists only in the other namespace, so the outbox entry is a
+	// policy violation: recorded and dead-lettered, never a handler failure.
 	err = persister.HandleResult(ctx, agent.Result{
 		Trigger:    trigger,
 		FinishedAt: time.Now().UTC(),
@@ -540,9 +577,15 @@ func TestResultPersisterRejectsOutboxToDifferentNamespace(t *testing.T) {
 			}},
 		},
 	})
-	if err == nil {
-		t.Fatal("HandleResult() error = nil, want namespace-scoped recipient failure")
+	if err != nil {
+		t.Fatalf("HandleResult() error = %v, want recorded violation instead of handler failure", err)
 	}
+
+	triggerCtx, err := TriggerContextFromTrigger(trigger)
+	if err != nil {
+		t.Fatalf("TriggerContextFromTrigger() error = %v", err)
+	}
+	requireDeadLetteredOutboxViolation(t, ctx, s, triggerCtx, `"receiver" does not exist`)
 
 	snapshot, err := s.SnapshotNamespace(ctx, receiverNamespace.ID)
 	if err != nil {
@@ -550,6 +593,189 @@ func TestResultPersisterRejectsOutboxToDifferentNamespace(t *testing.T) {
 	}
 	if snapshot.Mailbox.Queued != 0 || snapshot.Mailbox.Leased != 0 || snapshot.Mailbox.Completed != 0 {
 		t.Fatalf("receiver namespace mailbox = %#v, want no delivered message", snapshot.Mailbox)
+	}
+}
+
+// TestRuntimeManagerIsolatesWorkerStartFailures verifies that one agent whose
+// worker cannot be constructed (for example a missing credential) does not
+// prevent other agents from running, and does not terminate the manager.
+func TestRuntimeManagerIsolatesWorkerStartFailures(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-isolation")
+	createServerWorker(t, ctx, s, namespace.ID, "broken-worker", filepath.Join(t.TempDir(), "broken"))
+	createServerWorker(t, ctx, s, namespace.ID, "healthy-worker", filepath.Join(t.TempDir(), "healthy"))
+
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		RecipientAgentID: "healthy-worker",
+		Payload:          "do the work",
+		MaxAttempts:      1,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	var logStdout, logStderr bytes.Buffer
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			if record.ID == "broken-worker" {
+				return nil, fmt.Errorf("synthetic driver construction failure")
+			}
+			return &scriptedDriver{decisions: []agent.Decision{
+				{Finish: &agent.FinishAction{Value: "done"}},
+			}}, nil
+		}),
+		PollInterval: 25 * time.Millisecond,
+		Logger:       NewRuntimeLogger(&logStdout, &logStderr),
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	// The healthy worker must finish its run even though the broken worker
+	// fails to start on every sync.
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		snapshot, err := s.SnapshotNamespace(ctx, namespace.ID)
+		if err != nil {
+			return false, err
+		}
+		return snapshot.Mailbox.Completed == 1, nil
+	})
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
+	}
+	if !strings.Contains(logStderr.String(), "synthetic driver construction failure") {
+		t.Fatalf("stderr log = %q, want worker start failure", logStderr.String())
+	}
+	if !strings.Contains(logStderr.String(), "will retry") {
+		t.Fatalf("stderr log = %q, want retry notice", logStderr.String())
+	}
+}
+
+// TestRuntimeManagerReplacementWaitsForOldWorker verifies that when an agent's
+// spec changes, the manager waits for the old worker to fully exit before
+// starting its replacement. Old and new workers share a sandbox root and
+// lease owner, so their lifetimes must never overlap.
+func TestRuntimeManagerReplacementWaitsForOldWorker(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newServerStore(t)
+	namespace := createServerNamespace(t, ctx, s, "namespace-replacement")
+	if _, err := s.CreateAgent(ctx, cpstore.CreateAgentParams{
+		NamespaceID:   namespace.ID,
+		AgentID:       "worker",
+		Name:          "worker",
+		Role:          cpstore.AgentRoleWorker,
+		DesiredState:  cpstore.AgentDesiredStateRunning,
+		RootPath:      filepath.Join(t.TempDir(), "worker"),
+		ModelName:     "test-model",
+		SystemPrompt:  "You are a test worker.",
+		MaxAttempts:   5,
+		LeaseDuration: 250 * time.Millisecond,
+	}); err != nil {
+		t.Fatalf("CreateAgent() error = %v", err)
+	}
+	if _, err := s.EnqueueMessage(ctx, cpstore.CreateMailboxMessageParams{
+		NamespaceID:      namespace.ID,
+		RecipientAgentID: "worker",
+		Payload:          "long task",
+		MaxAttempts:      5,
+	}); err != nil {
+		t.Fatalf("EnqueueMessage() error = %v", err)
+	}
+
+	var (
+		mu          sync.Mutex
+		activeNexts int
+		maxActive   int
+		generation  int
+		gen2Called  bool
+	)
+	manager := &RuntimeManager{
+		Store: s,
+		DriverFactory: driverFactoryFunc(func(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
+			mu.Lock()
+			generation++
+			gen := generation
+			mu.Unlock()
+			return agent.DriverFunc(func(driverCtx context.Context, _ agent.Request) (agent.Decision, error) {
+				mu.Lock()
+				activeNexts++
+				if activeNexts > maxActive {
+					maxActive = activeNexts
+				}
+				if gen >= 2 {
+					gen2Called = true
+				}
+				mu.Unlock()
+				defer func() {
+					mu.Lock()
+					activeNexts--
+					mu.Unlock()
+				}()
+				<-driverCtx.Done()
+				if gen == 1 {
+					// Simulate slow teardown of the first worker so any
+					// overlapping replacement would be observed.
+					time.Sleep(750 * time.Millisecond)
+				}
+				return agent.Decision{}, driverCtx.Err()
+			}), nil
+		}),
+		PollInterval: 50 * time.Millisecond,
+		Logger:       NewRuntimeLogger(io.Discard, io.Discard),
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- manager.Run(runCtx)
+	}()
+
+	// Wait until the first worker is busy inside the driver.
+	waitForCondition(t, 5*time.Second, func() (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return activeNexts >= 1, nil
+	})
+
+	// Change the agent spec; the manager must replace the worker.
+	if _, err := s.UpdateAgentPrompt(ctx, cpstore.UpdateAgentPromptParams{
+		NamespaceID: namespace.ID,
+		AgentID:     "worker",
+		Prompt:      "You are an updated test worker.",
+	}); err != nil {
+		t.Fatalf("UpdateAgentPrompt() error = %v", err)
+	}
+
+	// Wait for the replacement worker to pick up the (re-leased) message.
+	waitForCondition(t, 10*time.Second, func() (bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return gen2Called, nil
+	})
+
+	mu.Lock()
+	observedMax := maxActive
+	mu.Unlock()
+	if observedMax > 1 {
+		t.Fatalf("max concurrent driver calls = %d, want 1 (old and new workers overlapped)", observedMax)
+	}
+
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("RuntimeManager.Run() error = %v, want %v", err, context.Canceled)
 	}
 }
 

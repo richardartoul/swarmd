@@ -595,7 +595,13 @@ func (p progressPrinter) HandleResult(ctx context.Context, result agent.Result) 
 			fmt.Fprintf(p.stderr, "result [%s]\n", result.Status)
 		}
 	}
-	fmt.Fprintf(p.stdout, "usage> cached prompt tokens: %d\n", result.Usage.CachedTokens)
+	fmt.Fprintf(
+		p.stdout,
+		"usage> input tokens: %d (cached: %d), output tokens: %d\n",
+		result.Usage.InputTokens,
+		result.Usage.CachedTokens,
+		result.Usage.OutputTokens,
+	)
 
 	if len(result.Steps) > 0 {
 		fmt.Fprintln(p.stdout)

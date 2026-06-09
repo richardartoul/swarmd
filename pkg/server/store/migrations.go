@@ -6,14 +6,17 @@ import (
 	"fmt"
 )
 
-type migration struct {
-	version int
-	sql     string
-	apply   func(context.Context, *sql.Tx) error
+// migrationStep is one schema migration. Either sql or apply must be set;
+// foreignKeysOff requests that the step run with foreign-key enforcement
+// disabled (used for table rebuilds), followed by a foreign_key_check.
+type migrationStep struct {
+	version        int
+	sql            string
+	apply          func(context.Context, *sql.Tx) error
 	foreignKeysOff bool
 }
 
-var migrations = []migration{
+var migrations = []migrationStep{
 	{
 		version: 1,
 		sql: `
@@ -186,8 +189,8 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 `,
 	},
 	{
-		version: 5,
-		apply:           applyLegacyNamespaceMigration,
+		version:        5,
+		apply:          applyLegacyNamespaceMigration,
 		foreignKeysOff: true,
 	},
 	{
@@ -210,6 +213,10 @@ ALTER TABLE runs ADD COLUMN system_prompt TEXT NOT NULL DEFAULT '';
 		version:        10,
 		apply:          applyDropAgentAllowNetworkMigration,
 		foreignKeysOff: true,
+	},
+	{
+		version: 11,
+		apply:   applyUsageTokenColumnsMigration,
 	},
 }
 
@@ -546,6 +553,26 @@ func applyRunFinishThoughtMigration(ctx context.Context, tx *sql.Tx) error {
 		return nil
 	}
 	return addColumnIfMissing(ctx, tx, "runs", "finish_thought", "TEXT NOT NULL DEFAULT ''")
+}
+
+// applyUsageTokenColumnsMigration adds input/output token accounting to runs
+// and steps alongside the existing cached-token column.
+func applyUsageTokenColumnsMigration(ctx context.Context, tx *sql.Tx) error {
+	for _, tableName := range []string{"runs", "steps"} {
+		exists, err := tableExists(ctx, tx, tableName)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			continue
+		}
+		for _, columnName := range []string{"usage_input_tokens", "usage_output_tokens"} {
+			if err := addColumnIfMissing(ctx, tx, tableName, columnName, "INTEGER NOT NULL DEFAULT 0"); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func applyDropAgentAllowNetworkMigration(ctx context.Context, tx *sql.Tx) error {

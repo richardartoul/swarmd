@@ -8,6 +8,117 @@ import (
 	"testing"
 )
 
+// TestApplyMigrationForeignKeysOffSharesConnection pins the fix for a pooled
+// pragma race: PRAGMA foreign_keys is connection-scoped, so issuing it through
+// the *sql.DB pool could disable enforcement on one connection while the
+// migration transaction ran on another with foreign keys still enabled.
+// Migrations must run their pragma and transaction on the same connection.
+func TestApplyMigrationForeignKeysOffSharesConnection(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, err := s.db.ExecContext(ctx, `
+CREATE TABLE rebuild_parents (id INTEGER PRIMARY KEY);
+CREATE TABLE rebuild_children (
+	id INTEGER PRIMARY KEY,
+	parent_id INTEGER NOT NULL REFERENCES rebuild_parents(id)
+);
+INSERT INTO rebuild_parents (id) VALUES (1);
+INSERT INTO rebuild_children (id, parent_id) VALUES (1, 1);
+`); err != nil {
+		t.Fatalf("create rebuild fixture error = %v", err)
+	}
+
+	// A classic table rebuild: with foreign keys enforced, DROP TABLE performs
+	// an implicit DELETE that violates the child constraint and fails.
+	rebuildParents := func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+DROP TABLE rebuild_parents;
+CREATE TABLE rebuild_parents (id INTEGER PRIMARY KEY, note TEXT NOT NULL DEFAULT '');
+INSERT INTO rebuild_parents (id) VALUES (1);
+`)
+		return err
+	}
+
+	// Demonstrate the failure mode the connection-scoped path must avoid: the
+	// same rebuild on a pool transaction (foreign keys enabled) is rejected.
+	poolTx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("BeginTx() error = %v", err)
+	}
+	if err := rebuildParents(ctx, poolTx); err == nil {
+		t.Fatal("rebuild with foreign keys enforced succeeded, want constraint failure")
+	} else if !strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+		t.Fatalf("rebuild error = %v, want foreign key constraint failure", err)
+	}
+	_ = poolTx.Rollback()
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn() error = %v", err)
+	}
+	defer conn.Close()
+
+	if err := applyMigration(ctx, conn, migrationStep{
+		version:        9999,
+		apply:          rebuildParents,
+		foreignKeysOff: true,
+	}); err != nil {
+		t.Fatalf("applyMigration() error = %v", err)
+	}
+
+	// Foreign-key enforcement must be restored on the migration connection.
+	if _, err := conn.ExecContext(ctx, `INSERT INTO rebuild_children (id, parent_id) VALUES (2, 999)`); err == nil {
+		t.Fatal("insert of orphan child row succeeded, want foreign key violation")
+	}
+}
+
+// TestApplyMigrationForeignKeyCheckDetectsOrphans verifies that a rebuild
+// migration which silently leaves dangling references is rejected by the
+// post-migration foreign_key_check instead of being committed unnoticed.
+func TestApplyMigrationForeignKeyCheckDetectsOrphans(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, err := s.db.ExecContext(ctx, `
+CREATE TABLE orphan_parents (id INTEGER PRIMARY KEY);
+CREATE TABLE orphan_children (
+	id INTEGER PRIMARY KEY,
+	parent_id INTEGER NOT NULL REFERENCES orphan_parents(id)
+);
+INSERT INTO orphan_parents (id) VALUES (1);
+INSERT INTO orphan_children (id, parent_id) VALUES (1, 1);
+`); err != nil {
+		t.Fatalf("create orphan fixture error = %v", err)
+	}
+
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("db.Conn() error = %v", err)
+	}
+	defer conn.Close()
+
+	err = applyMigration(ctx, conn, migrationStep{
+		version:        9998,
+		foreignKeysOff: true,
+		apply: func(ctx context.Context, tx *sql.Tx) error {
+			// Drop the parent table without rebuilding it, stranding the child.
+			_, err := tx.ExecContext(ctx, `DROP TABLE orphan_parents`)
+			return err
+		},
+	})
+	if err == nil {
+		t.Fatal("applyMigration() error = nil, want foreign key violation report")
+	}
+	if !strings.Contains(err.Error(), "foreign key violation") {
+		t.Fatalf("applyMigration() error = %v, want foreign key violation report", err)
+	}
+}
+
 func TestMigrateRenamesServerMetadataKeys(t *testing.T) {
 	t.Parallel()
 

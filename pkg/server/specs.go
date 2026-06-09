@@ -25,6 +25,7 @@ const (
 	supportedAgentSpecVersion = 1
 )
 
+// AgentSpec is one agent declaration loaded from a config-root YAML file.
 type AgentSpec struct {
 	SourcePath   string              `yaml:"-"`
 	NamespaceID  string              `yaml:"-"`
@@ -46,17 +47,20 @@ type AgentSpec struct {
 	Config       map[string]any      `yaml:"config,omitempty"`
 }
 
+// AgentModelSpec selects the provider and model for an agent.
 type AgentModelSpec struct {
 	Provider string `yaml:"provider,omitempty"`
 	Name     string `yaml:"name"`
 	BaseURL  string `yaml:"base_url,omitempty"`
 }
 
+// AgentMemorySpec configures the persistent .memory/ guidance for an agent.
 type AgentMemorySpec struct {
 	Disable        bool   `yaml:"disable,omitempty" json:"disable,omitempty"`
 	PromptOverride string `yaml:"prompt_override,omitempty" json:"prompt_override,omitempty"`
 }
 
+// AgentRuntimeSpec tunes per-agent runtime limits and lease behavior.
 type AgentRuntimeSpec struct {
 	DesiredState             string              `yaml:"desired_state,omitempty"`
 	Filesystem               AgentFilesystemSpec `yaml:"filesystem,omitempty"`
@@ -70,18 +74,22 @@ type AgentRuntimeSpec struct {
 	MaxAttempts              int                 `yaml:"max_attempts,omitempty"`
 }
 
+// AgentFilesystemSpec selects the sandbox filesystem backend.
 type AgentFilesystemSpec struct {
 	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
 }
 
+// AgentHTTPSpec configures host-owned HTTP header injection.
 type AgentHTTPSpec struct {
 	Headers []AgentHTTPHeaderSpec `yaml:"headers,omitempty" json:"headers,omitempty"`
 }
 
+// AgentNetworkSpec declares the agent's outbound network allowlist.
 type AgentNetworkSpec struct {
 	ReachableHosts []AgentHostMatcherSpec `yaml:"reachable_hosts,omitempty" json:"reachable_hosts,omitempty"`
 }
 
+// AgentHTTPHeaderSpec is one injected header with its domain matchers.
 type AgentHTTPHeaderSpec struct {
 	Name    string                 `yaml:"name,omitempty" json:"name,omitempty"`
 	Value   *string                `yaml:"value,omitempty" json:"value,omitempty"`
@@ -89,19 +97,23 @@ type AgentHTTPHeaderSpec struct {
 	Domains []AgentHostMatcherSpec `yaml:"domains,omitempty" json:"domains,omitempty"`
 }
 
+// AgentHostMatcherSpec matches hosts by glob or regular expression.
 type AgentHostMatcherSpec struct {
 	Glob  string `yaml:"glob,omitempty" json:"glob,omitempty"`
 	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
 }
 
+// AgentHTTPDomainMatcherSpec matches HTTP header injection domains.
 type AgentHTTPDomainMatcherSpec = AgentHostMatcherSpec
 
+// AgentToolSpec enables one custom tool for an agent, with optional config.
 type AgentToolSpec struct {
 	ID      string         `yaml:"id,omitempty" json:"id,omitempty"`
 	Enabled *bool          `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	Config  map[string]any `yaml:"config,omitempty" json:"config,omitempty"`
 }
 
+// UnmarshalYAML accepts either a bare tool-id string or a mapping form.
 func (s *AgentToolSpec) UnmarshalYAML(value *yaml.Node) error {
 	switch value.Kind {
 	case yaml.ScalarNode:
@@ -124,6 +136,7 @@ func (s *AgentToolSpec) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
+// AgentScheduleSpec is one cron schedule declared on an agent.
 type AgentScheduleSpec struct {
 	ID       string `yaml:"id,omitempty"`
 	CronExpr string `yaml:"cron,omitempty"`
@@ -132,6 +145,7 @@ type AgentScheduleSpec struct {
 	Payload  any    `yaml:"payload,omitempty"`
 }
 
+// SyncSummary counts the changes applied by one config sync.
 type SyncSummary struct {
 	NamespacesCreated int
 	NamespacesUpdated int
@@ -142,6 +156,7 @@ type SyncSummary struct {
 	SchedulesDeleted  int
 }
 
+// LoadAgentSpecs loads and validates every agent spec under configRoot.
 func LoadAgentSpecs(configRoot string) ([]AgentSpec, error) {
 	configRoot = filepath.Clean(strings.TrimSpace(configRoot))
 	if configRoot == "" {
@@ -227,6 +242,8 @@ func LoadAgentSpecs(configRoot string) ([]AgentSpec, error) {
 	return specs, nil
 }
 
+// SyncSpecsFromConfigRoot reconciles the store to match the specs under
+// configRoot, creating, updating, and deleting entities as needed.
 func SyncSpecsFromConfigRoot(ctx context.Context, store *cpstore.Store, configRoot, defaultRootBase string) (SyncSummary, error) {
 	if store == nil {
 		return SyncSummary{}, fmt.Errorf("sync specs requires a store")

@@ -197,7 +197,7 @@ func selectIndentedRange(lines []string, args args) (int, int) {
 	if anchorLine <= 0 {
 		anchorLine = 1
 	}
-	anchorIdx := toolscommon.MinInt(toolscommon.MaxInt(anchorLine-1, 0), len(lines)-1)
+	anchorIdx := min(max(anchorLine-1, 0), len(lines)-1)
 	anchorIndent := lineIndent(lines[anchorIdx])
 	start := anchorIdx
 	for start > 0 {

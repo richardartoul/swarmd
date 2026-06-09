@@ -8,12 +8,17 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// Scheduler turns due cron schedules into mailbox messages.
 type Scheduler struct {
 	Store        *cpstore.Store
 	PollInterval time.Duration
 	BatchSize    int
+	Logger       *RuntimeLogger
 }
 
+// Run fires due schedules until ctx is canceled. Transient firing errors
+// (for example a briefly locked database) are logged and retried on the next
+// tick rather than terminating the scheduler.
 func (s Scheduler) Run(ctx context.Context) error {
 	if s.Store == nil {
 		return fmt.Errorf("server scheduler requires a store")
@@ -25,21 +30,23 @@ func (s Scheduler) Run(ctx context.Context) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	if _, err := s.FireOnce(ctx); err != nil {
-		return err
-	}
 	for {
+		if _, err := s.FireOnce(ctx); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			s.Logger.LogComponentError("scheduler", err)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if _, err := s.FireOnce(ctx); err != nil {
-				return err
-			}
 		}
 	}
 }
 
+// FireOnce enqueues messages for every schedule due at the current time and
+// returns the enqueued records.
 func (s Scheduler) FireOnce(ctx context.Context) ([]cpstore.MailboxMessageRecord, error) {
 	if s.Store == nil {
 		return nil, fmt.Errorf("server scheduler requires a store")

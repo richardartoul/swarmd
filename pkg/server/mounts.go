@@ -19,12 +19,15 @@ const (
 	managedAgentMountKindDirectory = "directory"
 )
 
+// AgentMountSpec is one sandbox mount declared in an agent spec: a target
+// path populated from a host path, an environment variable, or inline content.
 type AgentMountSpec struct {
 	Path        string               `yaml:"path,omitempty" json:"path,omitempty"`
 	Description string               `yaml:"description,omitempty" json:"description,omitempty"`
 	Source      AgentMountSourceSpec `yaml:"source,omitempty" json:"source,omitempty"`
 }
 
+// AgentMountSourceSpec selects exactly one mount content source.
 type AgentMountSourceSpec struct {
 	Path   string  `yaml:"path,omitempty" json:"path,omitempty"`
 	EnvVar string  `yaml:"env_var,omitempty" json:"env_var,omitempty"`
@@ -40,9 +43,9 @@ type managedAgentMount struct {
 }
 
 type managedAgentMountSource struct {
-	Path         string  `json:"path,omitempty"`
-	ResolvedPath string  `json:"resolved_path,omitempty"`
-	EnvVar       string  `json:"env_var,omitempty"`
+	Path         string `json:"path,omitempty"`
+	ResolvedPath string `json:"resolved_path,omitempty"`
+	EnvVar       string `json:"env_var,omitempty"`
 }
 
 func validateAgentMounts(spec AgentSpec) error {

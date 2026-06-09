@@ -1,3 +1,11 @@
+// Package memfs provides a fully in-memory implementation of the sandbox
+// filesystem interfaces. It mirrors the disk-backed sandbox semantics —
+// root-constrained path resolution, symlinks, permissions, rename, and
+// working-directory tracking — without touching the host filesystem, which
+// makes it suitable for ephemeral agents and hermetic tests.
+//
+// An FS is safe for concurrent use; an RWMutex guards the node tree and each
+// FIFO carries its own state lock.
 package memfs
 
 import (
@@ -370,8 +378,23 @@ func (f *FS) Rename(oldpath, newpath string) error {
 	if err != nil {
 		return pathError("rename", newpath, err)
 	}
+	// Renaming a directory into its own subtree would detach it from the
+	// tree and create an unreachable cycle; rename(2) reports EINVAL.
+	if node.kind == nodeDirectory && nodeContains(node, newParent) {
+		return pathError("rename", newpath, fs.ErrInvalid)
+	}
 	if existing, ok := newParent.children[newBase]; ok {
-		if existing.kind == nodeDirectory && len(existing.children) > 0 {
+		// Per rename(2), when both paths refer to the same file the rename
+		// does nothing and reports success.
+		if existing == node {
+			return nil
+		}
+		switch {
+		case existing.kind == nodeDirectory && node.kind != nodeDirectory:
+			return pathError("rename", newpath, errIsDirectory)
+		case existing.kind != nodeDirectory && node.kind == nodeDirectory:
+			return pathError("rename", newpath, errNotDirectory)
+		case existing.kind == nodeDirectory && len(existing.children) > 0:
 			return pathError("rename", newpath, errDirectoryNotEmpty)
 		}
 		delete(newParent.children, newBase)
@@ -380,6 +403,19 @@ func (f *FS) Rename(oldpath, newpath string) error {
 	delete(oldParent.children, oldBase)
 	newParent.children[newBase] = node
 	return nil
+}
+
+// nodeContains reports whether target is root or any node in root's subtree.
+func nodeContains(root, target *node) bool {
+	if root == target {
+		return true
+	}
+	for _, child := range root.children {
+		if nodeContains(child, target) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *FS) Chmod(name string, mode os.FileMode) error {

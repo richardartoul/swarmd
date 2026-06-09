@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -105,9 +106,23 @@ type ShellExecution struct {
 	TimeoutMS int
 }
 
-// Usage reports token accounting from one driver response.
+// Usage reports token accounting from one driver response. Counts are
+// provider-reported: InputTokens and OutputTokens are the prompt and
+// completion token counts, and CachedTokens is the provider's cached-read
+// count (a subset of, or supplement to, InputTokens depending on provider).
 type Usage struct {
+	InputTokens  int
+	OutputTokens int
 	CachedTokens int
+}
+
+// Add returns the field-wise sum of two usage reports.
+func (u Usage) Add(other Usage) Usage {
+	return Usage{
+		InputTokens:  u.InputTokens + other.InputTokens,
+		OutputTokens: u.OutputTokens + other.OutputTokens,
+		CachedTokens: u.CachedTokens + other.CachedTokens,
+	}
 }
 
 // ToolKind identifies the model-facing tool wire shape.
@@ -245,20 +260,99 @@ type Step struct {
 	Error                 string
 }
 
-// ToolContext exposes sandbox-safe runtime capabilities to tool handlers.
-type ToolContext interface {
+// SandboxAccess exposes the agent's root-constrained filesystem to tool
+// handlers. ResolvePath resolves relative to the current working directory
+// and rejects paths that escape the sandbox root.
+type SandboxAccess interface {
 	WorkingDir() string
 	FileSystem() sandbox.FileSystem
 	ResolvePath(path string) (string, error)
+}
+
+// RuntimeAccess exposes host-owned runtime state and policy-scoped clients.
+// HTTPClient returns a client restricted to the calling tool's effective
+// host allowlist, or nil when the tool has no network access.
+type RuntimeAccess interface {
 	HTTPClient(opts ToolHTTPClientOptions) *http.Client
 	RuntimeData() any
 	StepTimeout() time.Duration
+}
+
+// HostBackends exposes runtime-owned capabilities that tools delegate to
+// rather than implement themselves: web search, image description, and
+// sandboxed shell execution.
+type HostBackends interface {
 	SearchWeb(ctx context.Context, query string, limit int) (WebSearchResponse, error)
 	DescribeImage(ctx context.Context, req ImageDescriptionRequest) (ImageDescriptionResponse, error)
 	RunShell(ctx context.Context, step *Step, exec ShellExecution) error
+}
+
+// StepRecorder records tool outcomes onto the current step. SetOutput applies
+// the runtime's output budget (truncation, spill files); the error setters
+// classify recoverable failures without aborting the run.
+type StepRecorder interface {
 	SetOutput(step *Step, output string)
 	SetPolicyError(step *Step, err error)
 	SetParseError(step *Step, err error)
+}
+
+// ToolContext exposes sandbox-safe runtime capabilities to tool handlers.
+// Most handlers use only a slice of it; the capability interfaces above
+// document the seams, and tests can embed [UnimplementedToolContext] to fake
+// only what they need.
+type ToolContext interface {
+	SandboxAccess
+	RuntimeAccess
+	HostBackends
+	StepRecorder
+}
+
+// UnimplementedToolContext is a [ToolContext] base for test fakes: embed it
+// by value and override only the methods the code under test exercises.
+// Unsupported methods return errors or zero values instead of panicking.
+type UnimplementedToolContext struct{}
+
+var _ ToolContext = UnimplementedToolContext{}
+
+func (UnimplementedToolContext) WorkingDir() string { return "" }
+
+func (UnimplementedToolContext) FileSystem() sandbox.FileSystem { return nil }
+
+func (UnimplementedToolContext) ResolvePath(string) (string, error) {
+	return "", errors.New("ResolvePath is not implemented")
+}
+
+func (UnimplementedToolContext) HTTPClient(ToolHTTPClientOptions) *http.Client { return nil }
+
+func (UnimplementedToolContext) RuntimeData() any { return nil }
+
+func (UnimplementedToolContext) StepTimeout() time.Duration { return 0 }
+
+func (UnimplementedToolContext) SearchWeb(context.Context, string, int) (WebSearchResponse, error) {
+	return WebSearchResponse{}, errors.New("SearchWeb is not implemented")
+}
+
+func (UnimplementedToolContext) DescribeImage(context.Context, ImageDescriptionRequest) (ImageDescriptionResponse, error) {
+	return ImageDescriptionResponse{}, errors.New("DescribeImage is not implemented")
+}
+
+func (UnimplementedToolContext) RunShell(context.Context, *Step, ShellExecution) error {
+	return errors.New("RunShell is not implemented")
+}
+
+func (UnimplementedToolContext) SetOutput(step *Step, output string) {
+	step.ActionOutput = output
+	step.Status = StepStatusOK
+}
+
+func (UnimplementedToolContext) SetPolicyError(step *Step, err error) {
+	step.Status = StepStatusPolicyError
+	step.Error = err.Error()
+}
+
+func (UnimplementedToolContext) SetParseError(step *Step, err error) {
+	step.Status = StepStatusParseError
+	step.Error = err.Error()
 }
 
 // ToolHandler executes one tool invocation.

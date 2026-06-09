@@ -18,6 +18,8 @@ const (
 	metadataMaxAttempts   = "server_max_attempts"
 )
 
+// TriggerContext identifies the server-side records behind one trigger:
+// the namespace, agent, mailbox message, thread, and run.
 type TriggerContext struct {
 	NamespaceID   string
 	AgentID       string
@@ -27,10 +29,14 @@ type TriggerContext struct {
 	SenderAgentID string
 }
 
+// TriggerContextFromTrigger extracts the server trigger context recorded in
+// the trigger metadata by [MessageQueue].
 func TriggerContextFromTrigger(trigger agent.Trigger) (TriggerContext, error) {
 	return TriggerContextFromMetadata(trigger.Metadata)
 }
 
+// TriggerContextFromMetadata extracts the server trigger context from raw
+// trigger metadata.
 func TriggerContextFromMetadata(metadata map[string]any) (TriggerContext, error) {
 	if metadata == nil {
 		return TriggerContext{}, fmt.Errorf("server trigger metadata missing")
@@ -60,8 +66,7 @@ func triggerFromContext(ctx context.Context) (agent.Trigger, bool) {
 }
 
 func metadataInt(metadata map[string]any, key string) int {
-	value, _ := metadata[key]
-	switch value := value.(type) {
+	switch value := metadata[key].(type) {
 	case int:
 		return value
 	case int64:
@@ -74,11 +79,6 @@ func metadataInt(metadata map[string]any, key string) int {
 }
 
 func metadataString(metadata map[string]any, key string) string {
-	value, _ := metadata[key]
-	switch value := value.(type) {
-	case string:
-		return value
-	default:
-		return ""
-	}
+	value, _ := metadata[key].(string)
+	return value
 }

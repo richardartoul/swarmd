@@ -11,12 +11,16 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// RuntimeLogger serializes human-readable server runtime logging onto a
+// stdout/stderr pair. A nil RuntimeLogger is safe to use and logs nothing.
 type RuntimeLogger struct {
 	stdout io.Writer
 	stderr io.Writer
 	mu     sync.Mutex
 }
 
+// NewRuntimeLogger returns a logger writing to the given streams; nil
+// streams discard output.
 func NewRuntimeLogger(stdout, stderr io.Writer) *RuntimeLogger {
 	if stdout == nil {
 		stdout = io.Discard
@@ -30,6 +34,7 @@ func NewRuntimeLogger(stdout, stderr io.Writer) *RuntimeLogger {
 	}
 }
 
+// LogRunStart records one claimed message starting a run.
 func (l *RuntimeLogger) LogRunStart(claimed cpstore.ClaimedMailboxMessage) {
 	if l == nil {
 		return
@@ -46,6 +51,7 @@ func (l *RuntimeLogger) LogRunStart(claimed cpstore.ClaimedMailboxMessage) {
 	)
 }
 
+// LogResult records one finished run, routing failures to stderr.
 func (l *RuntimeLogger) LogResult(triggerCtx TriggerContext, result agent.Result) {
 	if l == nil {
 		return
@@ -69,6 +75,7 @@ func (l *RuntimeLogger) LogResult(triggerCtx TriggerContext, result agent.Result
 	l.printf(writer, "%s\n", line)
 }
 
+// LogAgentCommand records one agent-initiated server_log entry.
 func (l *RuntimeLogger) LogAgentCommand(triggerCtx TriggerContext, level, message string) {
 	if l == nil {
 		return
@@ -88,6 +95,30 @@ func (l *RuntimeLogger) LogAgentCommand(triggerCtx TriggerContext, level, messag
 		summarizeLogText(message, 400),
 	)
 	l.printf(writer, "%s\n", line)
+}
+
+// LogComponentError records a non-fatal error from a long-running server
+// component (runtime manager, scheduler) that will be retried.
+func (l *RuntimeLogger) LogComponentError(component string, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.printf(l.stderr, "%s> error=%q (will retry)\n", component, summarizeLogText(err.Error(), 400))
+}
+
+// LogWorkerStartError records a per-agent worker start failure that the
+// runtime manager will retry on its next sync.
+func (l *RuntimeLogger) LogWorkerStartError(namespaceID, agentID string, err error) {
+	if l == nil || err == nil {
+		return
+	}
+	l.printf(
+		l.stderr,
+		"manager> %s/%s worker start failed error=%q (will retry)\n",
+		namespaceID,
+		agentID,
+		summarizeLogText(err.Error(), 400),
+	)
 }
 
 func (l *RuntimeLogger) printf(w io.Writer, format string, args ...any) {

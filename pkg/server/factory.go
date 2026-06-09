@@ -12,11 +12,13 @@ import (
 	cpstore "github.com/richardartoul/swarmd/pkg/server/store"
 )
 
+// OpenAIWorkerDriverFactory builds OpenAI-backed drivers for worker agents.
 type OpenAIWorkerDriverFactory struct {
 	APIKey     string
 	HTTPClient *http.Client
 }
 
+// NewWorkerDriver implements [WorkerDriverFactory].
 func (f OpenAIWorkerDriverFactory) NewWorkerDriver(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 	if record.ModelProvider != "" && record.ModelProvider != "openai" {
 		return nil, fmt.Errorf("unsupported worker model provider %q for agent %q/%q", record.ModelProvider, record.NamespaceID, record.ID)
@@ -36,11 +38,13 @@ func (f OpenAIWorkerDriverFactory) NewWorkerDriver(_ context.Context, record cps
 	return driver, nil
 }
 
+// AnthropicWorkerDriverFactory builds Anthropic-backed drivers for worker agents.
 type AnthropicWorkerDriverFactory struct {
 	APIKey     string
 	HTTPClient *http.Client
 }
 
+// NewWorkerDriver implements [WorkerDriverFactory].
 func (f AnthropicWorkerDriverFactory) NewWorkerDriver(_ context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 	if strings.TrimSpace(record.ModelProvider) != "anthropic" {
 		return nil, fmt.Errorf("unsupported worker model provider %q for agent %q/%q", record.ModelProvider, record.NamespaceID, record.ID)
@@ -59,12 +63,15 @@ func (f AnthropicWorkerDriverFactory) NewWorkerDriver(_ context.Context, record 
 	return driver, nil
 }
 
+// MultiProviderWorkerDriverFactory routes each agent to the driver factory
+// matching its configured model provider.
 type MultiProviderWorkerDriverFactory struct {
 	OpenAIAPIKey    string
 	AnthropicAPIKey string
 	HTTPClient      *http.Client
 }
 
+// NewWorkerDriver implements [WorkerDriverFactory].
 func (f MultiProviderWorkerDriverFactory) NewWorkerDriver(ctx context.Context, record cpstore.RunnableAgent) (agent.Driver, error) {
 	switch strings.TrimSpace(record.ModelProvider) {
 	case "", "openai":
@@ -103,14 +110,8 @@ func normalizeOpenAIBaseURL(baseURL string) string {
 }
 
 func baseModel(model string) string {
-	model = strings.TrimSpace(model)
-	for _, effort := range []string{"xhigh", "high", "medium", "minimal", "low", "none"} {
-		suffix := "-x" + effort
-		if base, ok := strings.CutSuffix(model, suffix); ok && strings.TrimSpace(base) != "" {
-			return strings.TrimSpace(base)
-		}
-	}
-	return model
+	base, _ := agentopenai.SplitModelReasoningEffort(model)
+	return base
 }
 
 func supportsExtendedPromptCache(model string) bool {

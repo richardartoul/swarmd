@@ -8,6 +8,7 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+// CreateSchedule inserts a schedule and computes its first fire time.
 func (s *Store) CreateSchedule(ctx context.Context, params CreateScheduleParams) (ScheduleRecord, error) {
 	if params.NamespaceID == "" || params.AgentID == "" {
 		return ScheduleRecord{}, fmt.Errorf("create schedule: namespace id and agent id must not be empty")
@@ -22,11 +23,6 @@ func (s *Store) CreateSchedule(ctx context.Context, params CreateScheduleParams)
 	}
 	now := s.now()
 	enabled := params.Enabled
-	if !params.Enabled {
-		enabled = false
-	} else {
-		enabled = true
-	}
 	payloadJSON, err := MarshalEnvelope("schedule_payload", params.Payload)
 	if err != nil {
 		return ScheduleRecord{}, err
@@ -69,6 +65,7 @@ func (s *Store) CreateSchedule(ctx context.Context, params CreateScheduleParams)
 	}, nil
 }
 
+// DisableSchedule stops a schedule from firing.
 func (s *Store) DisableSchedule(ctx context.Context, namespaceID, scheduleID string) error {
 	now := s.now()
 	res, err := s.db.ExecContext(
@@ -91,6 +88,8 @@ func (s *Store) DisableSchedule(ctx context.Context, namespaceID, scheduleID str
 	return nil
 }
 
+// FireDueSchedules enqueues mailbox messages for schedules due at now,
+// advancing their next fire times; concurrent firers are race-safe.
 func (s *Store) FireDueSchedules(ctx context.Context, now time.Time, limit int) ([]MailboxMessageRecord, error) {
 	if limit <= 0 {
 		limit = 32
@@ -185,7 +184,7 @@ func (s *Store) fireSchedule(ctx context.Context, now time.Time, record Schedule
 		return MailboxMessageRecord{}, false, nil
 	}
 
-	message, err := enqueueMessageTx(ctx, tx, now, CreateMailboxMessageParams{
+	message, err := enqueueMessage(ctx, tx, now, CreateMailboxMessageParams{
 		NamespaceID:      record.NamespaceID,
 		ThreadID:         NewID("thread"),
 		SenderAgentID:    "",
@@ -224,4 +223,31 @@ func timePtrToMillis(t *time.Time) any {
 		return nil
 	}
 	return toMillis(*t)
+}
+
+// ListSchedules lists a namespace's schedules.
+func (s *Store) ListSchedules(ctx context.Context, namespaceID string) ([]ScheduleRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT namespace_id, schedule_id, agent_id, cron_expr, timezone, payload_json, enabled, next_fire_at_ms, last_fire_at_ms, created_at_ms, updated_at_ms
+FROM schedules
+WHERE namespace_id = ?
+ORDER BY schedule_id
+`, namespaceID)
+	if err != nil {
+		return nil, fmt.Errorf("query schedules for namespace %q: %w", namespaceID, err)
+	}
+	defer rows.Close()
+
+	var schedules []ScheduleRecord
+	for rows.Next() {
+		record, err := scanSchedule(rows)
+		if err != nil {
+			return nil, err
+		}
+		schedules = append(schedules, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate schedules for namespace %q: %w", namespaceID, err)
+	}
+	return schedules, nil
 }

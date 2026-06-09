@@ -10,72 +10,15 @@ import (
 	"github.com/richardartoul/swarmd/pkg/agent"
 )
 
+// EnqueueMessage queues one mailbox message for delivery.
 func (s *Store) EnqueueMessage(ctx context.Context, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
-	if params.NamespaceID == "" {
-		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: namespace id must not be empty")
-	}
-	if params.RecipientAgentID == "" {
-		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: recipient agent id must not be empty")
-	}
-	now := s.now()
-	messageID := defaultString(params.MessageID, NewID("msg"))
-	threadID := defaultString(params.ThreadID, messageID)
-	kind := defaultString(params.Kind, "mailbox.message")
-	availableAt := params.AvailableAt
-	if availableAt.IsZero() {
-		availableAt = now
-	}
-	payloadJSON, err := MarshalEnvelope("mailbox_payload", params.Payload)
-	if err != nil {
-		return MailboxMessageRecord{}, err
-	}
-	metadataJSON, err := MarshalOptionalEnvelope("mailbox_metadata", params.Metadata)
-	if err != nil {
-		return MailboxMessageRecord{}, err
-	}
-	maxAttempts := defaultInt(params.MaxAttempts, 5)
-
-	if _, err := s.db.ExecContext(
-		ctx,
-		`INSERT INTO mailbox_messages (
-			namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json,
-			status, available_at_ms, lease_owner, lease_expires_at_ms, attempt_count, max_attempts, run_id,
-			dead_letter_reason, last_error, created_at_ms, updated_at_ms, claimed_at_ms, completed_at_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', NULL, 0, ?, '', '', '', ?, ?, NULL, NULL)`,
-		params.NamespaceID,
-		messageID,
-		threadID,
-		params.SenderAgentID,
-		params.RecipientAgentID,
-		kind,
-		payloadJSON,
-		metadataJSON,
-		string(MailboxMessageStatusQueued),
-		toMillis(availableAt),
-		maxAttempts,
-		toMillis(now),
-		toMillis(now),
-	); err != nil {
-		return MailboxMessageRecord{}, fmt.Errorf("insert mailbox message %q: %w", messageID, err)
-	}
-
-	return MailboxMessageRecord{
-		NamespaceID:      params.NamespaceID,
-		ID:               messageID,
-		ThreadID:         threadID,
-		SenderAgentID:    params.SenderAgentID,
-		RecipientAgentID: params.RecipientAgentID,
-		Kind:             kind,
-		PayloadJSON:      payloadJSON,
-		MetadataJSON:     metadataJSON,
-		Status:           MailboxMessageStatusQueued,
-		AvailableAt:      availableAt.UTC(),
-		MaxAttempts:      maxAttempts,
-		CreatedAt:        now,
-		UpdatedAt:        now,
-	}, nil
+	return enqueueMessage(ctx, s.db, s.now(), params)
 }
 
+// ClaimNextMessage leases the next available message for an agent and
+// creates its run record in the same transaction. Messages whose attempts
+// are exhausted without a recorded result are dead-lettered instead of
+// re-leased. Returns [ErrNoAvailableMessage] when nothing is claimable.
 func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams) (ClaimedMailboxMessage, error) {
 	if params.NamespaceID == "" || params.AgentID == "" {
 		return ClaimedMailboxMessage{}, fmt.Errorf("claim next message: namespace id and agent id must not be empty")
@@ -93,10 +36,22 @@ func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams)
 		record, err := claimCandidate(ctx, tx, params.NamespaceID, params.AgentID, now)
 		if err != nil {
 			_ = tx.Rollback()
-			if errors.Is(err, ErrNoAvailableMessage) {
+			return ClaimedMailboxMessage{}, err
+		}
+
+		// A candidate that already consumed all of its attempts can only be
+		// here because a previous lease expired without a recorded result
+		// (for example the worker process died mid-run). Dead-letter it now;
+		// leasing it again would re-run the agent indefinitely.
+		if record.MaxAttempts > 0 && record.AttemptCount >= record.MaxAttempts {
+			if err := deadLetterExhaustedMessage(ctx, tx, record, now); err != nil {
+				_ = tx.Rollback()
 				return ClaimedMailboxMessage{}, err
 			}
-			return ClaimedMailboxMessage{}, err
+			if err := tx.Commit(); err != nil {
+				return ClaimedMailboxMessage{}, fmt.Errorf("commit dead-letter for mailbox message %q: %w", record.ID, err)
+			}
+			continue
 		}
 
 		runID := NewID("run")
@@ -195,6 +150,7 @@ func (s *Store) ClaimNextMessage(ctx context.Context, params ClaimMessageParams)
 	return ClaimedMailboxMessage{}, ErrNoAvailableMessage
 }
 
+// RecordStep appends one step to a run's step log.
 func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 	if step.NamespaceID == "" || step.RunID == "" {
 		return fmt.Errorf("record step: namespace id and run id must not be empty")
@@ -203,9 +159,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 		ctx,
 		`INSERT INTO steps (
 			namespace_id, run_id, step_index, step_type, message_id, agent_id, thought, shell, action_name, action_tool_kind, action_input,
-			action_output, action_output_truncated, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
+			action_output, action_output_truncated, usage_input_tokens, usage_output_tokens, usage_cached_tokens, cwd_before, cwd_after, stdout, stderr, stdout_truncated,
 			stderr_truncated, started_at_ms, finished_at_ms, duration_millis, status, exit_status, error
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		step.NamespaceID,
 		step.RunID,
 		step.StepIndex,
@@ -219,7 +175,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 		step.ActionInput,
 		step.ActionOutput,
 		boolInt(step.ActionOutputTruncated),
-		step.UsageCachedTokens,
+		step.Usage.InputTokens,
+		step.Usage.OutputTokens,
+		step.Usage.CachedTokens,
 		step.CWDBefore,
 		step.CWDAfter,
 		step.Stdout,
@@ -238,6 +196,9 @@ func (s *Store) RecordStep(ctx context.Context, step StepRecord) error {
 	return nil
 }
 
+// CompleteRun finalizes a run and settles its mailbox message: completed,
+// requeued for retry, or dead-lettered, plus any outbox deliveries — all in
+// one transaction.
 func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error {
 	if params.NamespaceID == "" || params.RunID == "" || params.MessageID == "" {
 		return fmt.Errorf("complete run: namespace id, run id, and message id must not be empty")
@@ -256,13 +217,15 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	runRes, err := tx.ExecContext(
 		ctx,
 		`UPDATE runs
-		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_cached_tokens = ?, finish_thought = ?, value_json = ?, error = ?, updated_at_ms = ?
+		 SET status = ?, finished_at_ms = ?, duration_millis = ?, cwd = ?, usage_input_tokens = ?, usage_output_tokens = ?, usage_cached_tokens = ?, finish_thought = ?, value_json = ?, error = ?, updated_at_ms = ?
 		 WHERE namespace_id = ? AND run_id = ?`,
 		params.Status,
 		toMillis(params.FinishedAt),
 		toDurationMillis(params.Duration),
 		params.CWD,
-		params.UsageCachedTokens,
+		params.Usage.InputTokens,
+		params.Usage.OutputTokens,
+		params.Usage.CachedTokens,
 		params.FinishThought,
 		valueJSON,
 		params.Error,
@@ -322,11 +285,9 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	}
 
 	for _, message := range params.Outbox {
-		record, err := enqueueMessageTx(ctx, tx, now, message)
-		if err != nil {
+		if _, err := enqueueMessage(ctx, tx, now, message); err != nil {
 			return fmt.Errorf("enqueue outbox message for run %q: %w", params.RunID, err)
 		}
-		_ = record
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -335,15 +296,17 @@ func (s *Store) CompleteRun(ctx context.Context, params CompleteRunParams) error
 	return nil
 }
 
+// GetRun loads one run record.
 func (s *Store) GetRun(ctx context.Context, namespaceID, runID string) (RunRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
+SELECT namespace_id, run_id, message_id, agent_id, trigger_id, status, started_at_ms, finished_at_ms, duration_millis, cwd, usage_input_tokens, usage_output_tokens, usage_cached_tokens, finish_thought, value_json, error, trigger_prompt, system_prompt, created_at_ms, updated_at_ms
 FROM runs
 WHERE namespace_id = ? AND run_id = ?
 `, namespaceID, runID)
 	return scanRun(row)
 }
 
+// ListThreadMessages lists a thread's messages in creation order.
 func (s *Store) ListThreadMessages(ctx context.Context, namespaceID, threadID string, limit int) ([]MailboxThreadMessage, error) {
 	if limit <= 0 {
 		limit = 20
@@ -410,7 +373,46 @@ LIMIT 1
 	return record, nil
 }
 
-func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
+// deadLetterExhaustedMessage retires a message whose attempts are exhausted.
+// The WHERE clause repeats the claimability conditions so a concurrent claimer
+// cannot be raced; if zero rows match, another connection already handled it.
+func deadLetterExhaustedMessage(ctx context.Context, tx *sql.Tx, record MailboxMessageRecord, now time.Time) error {
+	_, err := tx.ExecContext(
+		ctx,
+		`UPDATE mailbox_messages
+		 SET status = ?, lease_owner = '', lease_expires_at_ms = NULL, run_id = '', dead_letter_reason = ?, updated_at_ms = ?, completed_at_ms = ?
+		 WHERE namespace_id = ? AND message_id = ? AND status IN (?, ?) AND available_at_ms <= ? AND (status = ? OR lease_expires_at_ms IS NULL OR lease_expires_at_ms <= ?)`,
+		string(MailboxMessageStatusDeadLetter),
+		fmt.Sprintf("message exhausted %d of %d attempts without a recorded result", record.AttemptCount, record.MaxAttempts),
+		toMillis(now),
+		toMillis(now),
+		record.NamespaceID,
+		record.ID,
+		string(MailboxMessageStatusQueued),
+		string(MailboxMessageStatusLeased),
+		toMillis(now),
+		string(MailboxMessageStatusQueued),
+		toMillis(now),
+	)
+	if err != nil {
+		return fmt.Errorf("dead-letter exhausted mailbox message %q: %w", record.ID, err)
+	}
+	return nil
+}
+
+// sqlExecer abstracts the shared ExecContext surface of *sql.DB and *sql.Tx
+// so single-statement writes have exactly one implementation.
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func enqueueMessage(ctx context.Context, db sqlExecer, now time.Time, params CreateMailboxMessageParams) (MailboxMessageRecord, error) {
+	if params.NamespaceID == "" {
+		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: namespace id must not be empty")
+	}
+	if params.RecipientAgentID == "" {
+		return MailboxMessageRecord{}, fmt.Errorf("enqueue message: recipient agent id must not be empty")
+	}
 	messageID := defaultString(params.MessageID, NewID("msg"))
 	threadID := defaultString(params.ThreadID, messageID)
 	kind := defaultString(params.Kind, "mailbox.message")
@@ -427,7 +429,7 @@ func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params Cre
 		return MailboxMessageRecord{}, err
 	}
 	maxAttempts := defaultInt(params.MaxAttempts, 5)
-	if _, err := tx.ExecContext(
+	if _, err := db.ExecContext(
 		ctx,
 		`INSERT INTO mailbox_messages (
 			namespace_id, message_id, thread_id, sender_agent_id, recipient_agent_id, kind, payload_json, metadata_json,
@@ -448,7 +450,7 @@ func enqueueMessageTx(ctx context.Context, tx *sql.Tx, now time.Time, params Cre
 		toMillis(now),
 		toMillis(now),
 	); err != nil {
-		return MailboxMessageRecord{}, err
+		return MailboxMessageRecord{}, fmt.Errorf("insert mailbox message %q: %w", messageID, err)
 	}
 	return MailboxMessageRecord{
 		NamespaceID:      params.NamespaceID,
@@ -540,7 +542,9 @@ func scanRun(scanner interface{ Scan(dest ...any) error }) (RunRecord, error) {
 		&finishedAt,
 		&durationMS,
 		&record.CWD,
-		&record.UsageCachedTokens,
+		&record.Usage.InputTokens,
+		&record.Usage.OutputTokens,
+		&record.Usage.CachedTokens,
 		&record.FinishThought,
 		&record.ValueJSON,
 		&record.Error,

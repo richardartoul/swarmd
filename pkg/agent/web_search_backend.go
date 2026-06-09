@@ -4,6 +4,8 @@ package agent
 
 import websearchtool "github.com/richardartoul/swarmd/pkg/tools/websearch"
 
+// NewDuckDuckGoWebSearchBackend returns the default web_search backend,
+// which scrapes the DuckDuckGo HTML endpoint.
 func NewDuckDuckGoWebSearchBackend() WebSearchBackend {
 	return websearchtool.NewDuckDuckGoBackend()
 }

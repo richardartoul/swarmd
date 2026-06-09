@@ -17,7 +17,6 @@ import (
 	"github.com/richardartoul/swarmd/pkg/sh/moreinterp/coreutils"
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	"github.com/richardartoul/swarmd/pkg/sh/syntax"
-	toolregistry "github.com/richardartoul/swarmd/pkg/tools/registry"
 )
 
 // ErrQueueRequired is returned when [Agent.Serve] is called without a queue.
@@ -50,11 +49,7 @@ type Agent struct {
 	currentRunSpillDir       string
 	shellNetworkEnabled      bool
 	globalReachableHosts     []interp.HostMatcher
-	toolDefinitions          []ToolDefinition
-	toolByName               map[string]ToolDefinition
-	toolHandlerByName        map[string]ToolHandler
-	toolRequiredHosts        map[string][]interp.HostMatcher
-	toolHTTPClientFactories  map[string]interp.HTTPClientFactory
+	tools                    toolset
 	toolRuntimeData          any
 	webSearchBackend         WebSearchBackend
 	imageDescriptionBackend  ImageDescriptionBackend
@@ -63,7 +58,6 @@ type Agent struct {
 
 type turnRunInput struct {
 	Trigger        Trigger
-	PriorSteps     []Step
 	NextStepIndex  int
 	ResetRunner    bool
 	RequestContext driverRequestContext
@@ -98,32 +92,9 @@ func New(cfg Config) (*Agent, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create agent global HTTP client factory: %w", err)
 	}
-	toolBindings, err := resolveToolBindings(cfg.ConfiguredTools, globalReachableHosts)
+	tools, err := newToolset(cfg, globalReachableHosts)
 	if err != nil {
-		return nil, fmt.Errorf("resolve agent tools: %w", err)
-	}
-	toolDefinitions := make([]ToolDefinition, 0, len(toolBindings))
-	toolByName := make(map[string]ToolDefinition, len(toolBindings))
-	toolHandlerByName := make(map[string]ToolHandler, len(toolBindings))
-	toolRequiredHosts := make(map[string][]interp.HostMatcher, len(toolBindings))
-	toolHTTPClientFactories := make(map[string]interp.HTTPClientFactory, len(toolBindings))
-	for _, binding := range toolBindings {
-		toolDefinitions = append(toolDefinitions, binding.Definition)
-		toolByName[binding.Definition.Name] = binding.Definition
-		toolHandlerByName[binding.Definition.Name] = binding.Handler
-		requiredHosts := toolregistry.RequiredHostsForTool(binding.Definition.Name)
-		if len(requiredHosts) > 0 {
-			toolRequiredHosts[binding.Definition.Name] = requiredHosts
-		}
-		factory, err := newAgentHTTPClientFactory(
-			cfg.NetworkDialer,
-			effectiveToolReachableHosts(binding.Definition.NetworkScope, globalReachableHosts, requiredHosts),
-			cfg.HTTPHeaders,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("create HTTP client factory for tool %q: %w", binding.Definition.Name, err)
-		}
-		toolHTTPClientFactories[binding.Definition.Name] = factory
+		return nil, err
 	}
 	webSearchBackend := cfg.WebSearchBackend
 	if webSearchBackend == nil {
@@ -197,11 +168,7 @@ func New(cfg Config) (*Agent, error) {
 		spillBaseDir:             spillBaseDir,
 		shellNetworkEnabled:      len(globalReachableHosts) > 0,
 		globalReachableHosts:     globalReachableHosts,
-		toolDefinitions:          toolDefinitions,
-		toolByName:               toolByName,
-		toolHandlerByName:        toolHandlerByName,
-		toolRequiredHosts:        toolRequiredHosts,
-		toolHTTPClientFactories:  toolHTTPClientFactories,
+		tools:                    tools,
 		toolRuntimeData:          cfg.ToolRuntimeData,
 		webSearchBackend:         webSearchBackend,
 		imageDescriptionBackend:  imageDescriptionBackend,
@@ -254,11 +221,29 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		Trigger:   input.Trigger,
 		StartedAt: time.Now(),
 	}
+	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
+	turnSteps := make([]Step, 0, a.maxSteps)
+
+	// endTurn finalizes the turn. failure is recorded on the result; retErr is
+	// what runTurn itself returns (nil for failures the driver loop absorbed,
+	// non-nil for ones the caller must see, e.g. cancellation).
+	endTurn := func(status ResultStatus, failure, retErr error) (Result, error) {
+		result.Status = status
+		if failure != nil {
+			result.Error = failure.Error()
+		}
+		result.Steps = turnSteps
+		return a.finishResult(result, requestContext), retErr
+	}
+	// canceledBy reports whether err is the cancellation of the run context,
+	// as opposed to a step-local timeout with the run context still live.
+	canceledBy := func(err error) bool {
+		return ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+	}
+
 	cleanupSpill, err := a.beginRunSpillDir(input.Trigger)
 	if err != nil {
-		result.Status = ResultStatusFatalError
-		result.Error = err.Error()
-		return a.finishResult(result, input.RequestContext.withRunStartedAt(result.StartedAt)), err
+		return endTurn(ResultStatusFatalError, err, err)
 	}
 	defer cleanupSpill()
 
@@ -270,14 +255,9 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 	if nextStepIndex <= 0 {
 		nextStepIndex = 1
 	}
-	requestContext := input.RequestContext.withRunStartedAt(result.StartedAt)
-	turnSteps := make([]Step, 0, a.maxSteps)
 	for requestStep := 1; requestStep <= a.maxSteps; requestStep++ {
 		if err := ctx.Err(); err != nil {
-			result.Status = ResultStatusCanceled
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), err
+			return endTurn(ResultStatusCanceled, err, err)
 		}
 
 		request, _, err := a.buildDriverRequestWithContext(
@@ -288,39 +268,25 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 			requestContext,
 		)
 		if err != nil {
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 
 		decision, err := a.nextDecision(ctx, request)
 		if err != nil {
-			if ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-				result.Status = ResultStatusCanceled
-				result.Error = ctx.Err().Error()
-				result.Steps = turnSteps
-				return a.finishResult(result, requestContext), ctx.Err()
+			if canceledBy(err) {
+				return endTurn(ResultStatusCanceled, ctx.Err(), ctx.Err())
 			}
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 		requestContext = requestContext.withProviderState(decision.ProviderState)
 		result.Usage = mergeUsage(result.Usage, decision.Usage)
 		if err := validateDecision(decision); err != nil {
-			result.Status = ResultStatusDriverError
-			result.Error = err.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusDriverError, err, nil)
 		}
 		if decision.Finish != nil {
-			result.Status = ResultStatusFinished
 			result.FinishThought = strings.TrimSpace(decision.Thought)
 			result.Value = decision.Finish.Value
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusFinished, nil, nil)
 		}
 
 		stepIndex := nextStepIndex + len(turnSteps)
@@ -329,35 +295,18 @@ func (a *Agent) runTurn(ctx context.Context, input turnRunInput) (Result, error)
 		requestContext = requestContext.withStepReplayData(StepCallID(step), decision.ReplayData)
 		if a.onStep != nil {
 			if stepErr := a.onStep.HandleStep(ctx, input.Trigger, step); stepErr != nil {
-				return a.finishResult(Result{
-					Trigger:   input.Trigger,
-					StartedAt: result.StartedAt,
-					Status:    ResultStatusFatalError,
-					CWD:       a.runner.Dir,
-					Usage:     result.Usage,
-					Steps:     turnSteps,
-					Error:     stepErr.Error(),
-				}, requestContext), stepErr
+				return endTurn(ResultStatusFatalError, stepErr, stepErr)
 			}
 		}
 		if runErr != nil {
-			if ctx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
-				result.Status = ResultStatusCanceled
-				result.Error = ctx.Err().Error()
-				result.Steps = turnSteps
-				return a.finishResult(result, requestContext), ctx.Err()
+			if canceledBy(runErr) {
+				return endTurn(ResultStatusCanceled, ctx.Err(), ctx.Err())
 			}
-			result.Status = ResultStatusFatalError
-			result.Error = runErr.Error()
-			result.Steps = turnSteps
-			return a.finishResult(result, requestContext), nil
+			return endTurn(ResultStatusFatalError, runErr, nil)
 		}
 	}
 
-	result.Status = ResultStatusMaxSteps
-	result.Error = fmt.Sprintf("agent reached max steps (%d)", a.maxSteps)
-	result.Steps = turnSteps
-	return a.finishResult(result, requestContext), nil
+	return endTurn(ResultStatusMaxSteps, fmt.Errorf("agent reached max steps (%d)", a.maxSteps), nil)
 }
 
 func (a *Agent) stepContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -500,11 +449,6 @@ func (a *Agent) finishResult(result Result, requestContext driverRequestContext)
 	return result
 }
 
-func finishStep(step *Step) {
-	step.FinishedAt = time.Now()
-	step.Duration = step.FinishedAt.Sub(step.StartedAt)
-}
-
 func cloneSteps(steps []Step) []Step {
 	if len(steps) == 0 {
 		return nil
@@ -529,15 +473,14 @@ func cloneSteps(steps []Step) []Step {
 }
 
 func mergeUsage(dst, src Usage) Usage {
-	dst.CachedTokens += src.CachedTokens
-	return dst
+	return dst.Add(src)
 }
 
 func (a *Agent) toolHTTPClient(toolName string, opts ToolHTTPClientOptions) *http.Client {
 	if a == nil {
 		return nil
 	}
-	factory := a.toolHTTPClientFactories[toolName]
+	factory := a.tools.HTTPClientFactory(toolName)
 	if factory == nil {
 		return nil
 	}
@@ -564,41 +507,4 @@ func newAgentHTTPClientFactory(
 		return nil, err
 	}
 	return interp.NewHTTPClientFactory(dialer, headers)
-}
-
-func effectiveToolReachableHosts(
-	scope ToolNetworkScope,
-	globalReachableHosts []interp.HostMatcher,
-	requiredHosts []interp.HostMatcher,
-) []interp.HostMatcher {
-	switch scope.Normalized() {
-	case ToolNetworkScopeNone:
-		return nil
-	case ToolNetworkScopeGlobal:
-		return slices.Clone(globalReachableHosts)
-	case ToolNetworkScopeScoped:
-		return mergeHostMatchers(globalReachableHosts, requiredHosts)
-	default:
-		return nil
-	}
-}
-
-func mergeHostMatchers(left, right []interp.HostMatcher) []interp.HostMatcher {
-	if len(left) == 0 && len(right) == 0 {
-		return nil
-	}
-	seen := make(map[interp.HostMatcher]struct{}, len(left)+len(right))
-	merged := make([]interp.HostMatcher, 0, len(left)+len(right))
-	appendMatchers := func(values []interp.HostMatcher) {
-		for _, value := range values {
-			if _, ok := seen[value]; ok {
-				continue
-			}
-			seen[value] = struct{}{}
-			merged = append(merged, value)
-		}
-	}
-	appendMatchers(left)
-	appendMatchers(right)
-	return merged
 }

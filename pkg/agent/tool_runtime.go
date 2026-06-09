@@ -11,6 +11,7 @@ import (
 	"io"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/richardartoul/swarmd/pkg/sh/sandbox"
 	toolscommon "github.com/richardartoul/swarmd/pkg/tools/common"
@@ -42,7 +43,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 	defer cancel()
 	runCtx = contextWithTrigger(runCtx, trigger)
 
-	handler, ok := a.toolHandlerByName[decision.Tool.Name]
+	handler, ok := a.tools.Handler(decision.Tool.Name)
 	if !ok {
 		step.Status = StepStatusPolicyError
 		step.Error = fmt.Sprintf("tool %q is not implemented", decision.Tool.Name)
@@ -53,13 +54,7 @@ func (a *Agent) runToolStep(ctx context.Context, trigger Trigger, stepIndex int,
 		stepNum:  stepIndex,
 		toolName: decision.Tool.Name,
 	}
-	err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			step.Status = StepStatusFatalError
-			step.Error = err.Error()
-			return step, err
-		}
+	if err := handler.Invoke(runCtx, toolCtx, &step, decision.Tool); err != nil {
 		step.Status = StepStatusFatalError
 		step.Error = err.Error()
 		return step, err
@@ -196,7 +191,7 @@ func (a *Agent) setToolOutput(step *Step, output string) {
 
 	applied, err := a.applyStructuredToolOutput(step, output)
 	if err != nil {
-		step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+		step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 		step.Status = StepStatusFatalError
 		step.Error = err.Error()
 		return
@@ -209,14 +204,14 @@ func (a *Agent) setToolOutput(step *Step, output string) {
 	if threshold > 0 && len(output) > threshold {
 		ref, err := a.writeStepSpillFile(step.Index, "action_output.txt", "text/plain", "Full tool output", []byte(output))
 		if err != nil {
-			step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+			step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 			step.Status = StepStatusFatalError
 			step.Error = err.Error()
 			return
 		}
 		step.ActionOutputFiles = []toolscore.FileReference{*ref}
 	}
-	step.ActionOutput, step.ActionOutputTruncated = truncateText(output, toolscommon.MaxInt(1, limit))
+	step.ActionOutput, step.ActionOutputTruncated = truncateText(output, max(1, limit))
 }
 
 func (a *Agent) applyStructuredToolOutput(step *Step, output string) (bool, error) {
@@ -227,7 +222,7 @@ func (a *Agent) applyStructuredToolOutput(step *Step, output string) (bool, erro
 	if len(output) <= limit {
 		return false, nil
 	}
-	budget := toolscommon.MaxInt(1, toolscommon.MinInt(limit, toolscommon.DefaultJSONStubBytes))
+	budget := max(1, min(limit, toolscommon.DefaultJSONStubBytes))
 	probe, ok, err := toolscommon.CompactStructuredJSONOutput(output, toolscommon.JSONCompactOptions{
 		Budget: budget,
 	})
@@ -271,15 +266,54 @@ func fallbackStructuredOutputPreview(file toolscore.FileReference, originalBytes
 		strings.TrimSpace(file.Path),
 		originalBytes,
 	)
-	preview, _ := truncateText(message, toolscommon.MaxInt(1, limit))
+	preview, _ := truncateText(message, max(1, limit))
 	return preview
 }
 
+// truncateText bounds text to at most limit bytes without splitting a UTF-8
+// rune: previews are echoed back into model prompts and persisted, so they
+// must never carry a mangled trailing byte sequence.
 func truncateText(text string, limit int) (string, bool) {
 	if limit <= 0 || len(text) <= limit {
 		return text, false
 	}
-	return text[:limit], true
+	cut := text[:limit]
+	return cut[:len(cut)-partialRuneSuffixLen(cut)], true
+}
+
+// partialRuneSuffixLen returns the byte length of an incomplete UTF-8
+// sequence at the end of s (a multi-byte rune cut short by a byte-bounded
+// copy), or 0 when s ends with a complete rune. Already-invalid byte
+// sequences are reported as complete so binary data is never reshaped.
+func partialRuneSuffixLen(s string) int {
+	for back := 1; back <= utf8.UTFMax && back <= len(s); back++ {
+		c := s[len(s)-back]
+		if !utf8.RuneStart(c) {
+			continue
+		}
+		if expectedRuneLen(c) > back {
+			return back
+		}
+		break
+	}
+	return 0
+}
+
+// expectedRuneLen returns the encoded length implied by a UTF-8 leading
+// byte, or 1 for bytes that cannot start a multi-byte sequence.
+func expectedRuneLen(b byte) int {
+	switch {
+	case b&0x80 == 0x00:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	default:
+		return 1
+	}
 }
 
 func setToolPolicyError(step *Step, err error) {

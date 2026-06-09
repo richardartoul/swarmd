@@ -71,6 +71,7 @@ func runServer(ctx context.Context, args []string, streams commandIO) error {
 		liveStderr = streams.stderr
 	}
 
+	logger := server.NewRuntimeLogger(streams.stdout, streams.stderr)
 	env := server.Environment{
 		Runtime: &server.RuntimeManager{
 			Store: store,
@@ -81,13 +82,14 @@ func runServer(ctx context.Context, args []string, streams commandIO) error {
 			PollInterval: cfg.runtimePollInterval,
 			Stdout:       liveStdout,
 			Stderr:       liveStderr,
-			Logger:       server.NewRuntimeLogger(streams.stdout, streams.stderr),
+			Logger:       logger,
 			EnvLookup:    envLookup,
 		},
 		Scheduler: &server.Scheduler{
 			Store:        store,
 			PollInterval: cfg.schedulerPoll,
 			BatchSize:    cfg.schedulerBatchSize,
+			Logger:       logger,
 		},
 	}
 

@@ -214,13 +214,6 @@ func renderMailboxList(w io.Writer, messages []cpstore.MailboxMessageRecord) {
 	_ = tw.Flush()
 }
 
-func renderStringList(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	return "- " + strings.Join(values, "\n- ")
-}
-
 func displayAgentRoot(agent cpstore.RunnableAgent) string {
 	return formatRootWithFilesystemKind(agent.RootPath, agent.ConfigJSON)
 }
@@ -309,7 +302,9 @@ func renderRunShow(w io.Writer, data runShowData) {
 	writeKeyValue(w, "finished_at", formatTimePtr(run.FinishedAt))
 	writeKeyValue(w, "duration", formatDuration(run.Duration))
 	writeKeyValue(w, "cwd", displayEmpty(run.CWD))
-	writeKeyValue(w, "cached_tokens", fmt.Sprintf("%d", run.UsageCachedTokens))
+	writeKeyValue(w, "input_tokens", fmt.Sprintf("%d", run.Usage.InputTokens))
+	writeKeyValue(w, "output_tokens", fmt.Sprintf("%d", run.Usage.OutputTokens))
+	writeKeyValue(w, "cached_tokens", fmt.Sprintf("%d", run.Usage.CachedTokens))
 	writeKeyValue(w, "error", displayEmpty(run.Error))
 	writeBlock(w, "trigger_prompt", run.TriggerPrompt)
 	writeBlock(w, "system_prompt", run.SystemPrompt)
