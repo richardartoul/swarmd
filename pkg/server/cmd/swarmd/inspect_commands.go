@@ -17,6 +17,7 @@ var (
 	}
 	agentCommands = []commandSpec{
 		{name: "show", handler: runAgentShow},
+		{name: "run", handler: runAgentRun},
 	}
 	mailboxCommands = []commandSpec{
 		{name: "ls", handler: runMailboxList},
