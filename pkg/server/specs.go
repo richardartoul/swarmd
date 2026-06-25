@@ -338,6 +338,61 @@ func loadAgentSpecFile(path string) (AgentSpec, error) {
 	return spec, nil
 }
 
+// DefaultStandaloneNamespaceID is assigned to a spec loaded with
+// LoadAgentSpecFile when its file is not located under the canonical
+// namespaces/<namespace>/agents/ layout that LoadAgentSpecs walks.
+const DefaultStandaloneNamespaceID = "local"
+
+// LoadAgentSpecFile loads and validates a single AgentSpec from one YAML file
+// path, independent of the namespaces/<namespace>/agents/ config-root layout
+// that LoadAgentSpecs requires. It is intended for callers that run one agent
+// from a standalone file (for example a local single-agent run).
+//
+// NamespaceID and AgentID are derived the same way LoadAgentSpecs derives them
+// when the file does sit under a namespaces/<namespace>/agents/<file>.yaml
+// layout; otherwise NamespaceID falls back to DefaultStandaloneNamespaceID and
+// AgentID falls back to the file name without its extension.
+func LoadAgentSpecFile(path string) (AgentSpec, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return AgentSpec{}, fmt.Errorf("agent spec path must not be empty")
+	}
+	cleanPath := filepath.Clean(path)
+	spec, err := loadAgentSpecFile(cleanPath)
+	if err != nil {
+		return AgentSpec{}, err
+	}
+	spec.SourcePath = cleanPath
+	spec.NamespaceID = strings.TrimSpace(spec.NamespaceID)
+	if spec.NamespaceID == "" {
+		spec.NamespaceID = namespaceIDFromPath(cleanPath)
+	}
+	spec.AgentID = strings.TrimSpace(spec.AgentID)
+	if spec.AgentID == "" {
+		base := filepath.Base(cleanPath)
+		spec.AgentID = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	if err := validateAgentSpec(spec); err != nil {
+		return AgentSpec{}, fmt.Errorf("agent spec %q invalid: %w", cleanPath, err)
+	}
+	return spec, nil
+}
+
+// namespaceIDFromPath returns the namespace segment when path matches the
+// canonical .../namespaces/<namespace>/agents/<file>.yaml layout, otherwise it
+// returns DefaultStandaloneNamespaceID.
+func namespaceIDFromPath(path string) string {
+	parts := splitPath(filepath.ToSlash(path))
+	for i := 0; i+2 < len(parts); i++ {
+		if parts[i] == "namespaces" && parts[i+2] == "agents" {
+			if ns := strings.TrimSpace(parts[i+1]); ns != "" {
+				return ns
+			}
+		}
+	}
+	return DefaultStandaloneNamespaceID
+}
+
 func validateAgentSpec(spec AgentSpec) error {
 	if strings.TrimSpace(spec.NamespaceID) == "" {
 		return fmt.Errorf("namespace id must not be empty")
