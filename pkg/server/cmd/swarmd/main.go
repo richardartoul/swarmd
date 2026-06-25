@@ -67,6 +67,7 @@ Subcommands:
   namespaces ls     List namespaces and mailbox/runtime counts.
   agents ls         List agents, optionally scoped to a namespace.
   agent show        Show one agent, its config, prompt, and schedules.
+  agent run         Run one agent once from a single YAML spec.
   mailbox ls        List mailbox messages with status and retry info.
   mailbox show      Show one mailbox message with decoded payload/metadata.
   runs ls           List runs with status, duration, and final error.
