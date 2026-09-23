@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -753,18 +754,20 @@ func anthropicApproxTokenCount(text string) int {
 
 func anthropicMinimumCacheableTokens(model string) int {
 	model = strings.TrimSpace(model)
-	switch {
-	case strings.HasPrefix(model, "claude-opus-4-6"),
-		strings.HasPrefix(model, "claude-opus-4-5"),
-		strings.HasPrefix(model, "claude-haiku-4-5"):
-		return 4096
-	case strings.HasPrefix(model, "claude-sonnet-4-6"),
-		strings.HasPrefix(model, "claude-haiku-3-5"),
-		strings.HasPrefix(model, "claude-haiku-3"):
+	if strings.HasPrefix(model, "claude-sonnet-4-6") {
 		return 2048
-	default:
+	}
+	if strings.HasPrefix(model, "claude-haiku-3") {
+		return 2048
+	}
+	major, minor, ok := parseClaudeVersion(model)
+	if !ok {
 		return anthropicReplayCacheMinApproxTokens
 	}
+	if major >= 5 || (major == 4 && minor >= 5) {
+		return 4096
+	}
+	return anthropicReplayCacheMinApproxTokens
 }
 
 func anthropicReplayToolInput(replay agent.StepReplay, def agent.ToolDefinition) (map[string]any, error) {
@@ -1514,15 +1517,84 @@ func parseModelAndReasoningLevel(model string) (string, string) {
 }
 
 func supportsAnthropicStructuredOutputs(model string) bool {
-	model = strings.TrimSpace(model)
-	switch {
-	case strings.HasPrefix(model, "claude-opus-4-6"),
-		strings.HasPrefix(model, "claude-sonnet-4-6"),
-		strings.HasPrefix(model, "claude-opus-4-5"),
-		strings.HasPrefix(model, "claude-sonnet-4-5"),
-		strings.HasPrefix(model, "claude-haiku-4-5"):
+	major, minor, ok := parseClaudeVersion(model)
+	if !ok {
 		return true
-	default:
+	}
+	return major > 4 || (major == 4 && minor >= 5)
+}
+
+func parseClaudeVersion(model string) (major, minor int, ok bool) {
+	model = strings.TrimSpace(model)
+	const prefix = "claude-"
+	if !strings.HasPrefix(model, prefix) {
+		return 0, 0, false
+	}
+	rest := model[len(prefix):]
+	for {
+		dash := strings.IndexByte(rest, '-')
+		if dash <= 0 {
+			break
+		}
+		seg := rest[:dash]
+		if claudeVersionSegmentAllDigits(seg) {
+			break
+		}
+		if !claudeVersionSegmentAllLowerAlpha(seg) {
+			return 0, 0, false
+		}
+		rest = rest[dash+1:]
+	}
+	if rest == "" {
+		return 0, 0, false
+	}
+	dash := strings.IndexByte(rest, '-')
+	majorStr := rest
+	minorStr := ""
+	if dash >= 0 {
+		majorStr = rest[:dash]
+		after := rest[dash+1:]
+		end := 0
+		for end < len(after) && after[end] >= '0' && after[end] <= '9' {
+			end++
+		}
+		if end > 0 {
+			minorStr = after[:end]
+		}
+	}
+	major, err := strconv.Atoi(majorStr)
+	if err != nil || !claudeVersionSegmentAllDigits(majorStr) {
+		return 0, 0, false
+	}
+	if minorStr != "" {
+		minor, err = strconv.Atoi(minorStr)
+		if err != nil {
+			return 0, 0, false
+		}
+	}
+	return major, minor, true
+}
+
+func claudeVersionSegmentAllDigits(s string) bool {
+	if s == "" {
 		return false
 	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func claudeVersionSegmentAllLowerAlpha(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < 'a' || s[i] > 'z' {
+			return false
+		}
+	}
+	return true
 }

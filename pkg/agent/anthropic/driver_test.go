@@ -42,16 +42,110 @@ func TestNewParsesReasoningLevelFromModelSuffix(t *testing.T) {
 
 	driver, err := New(Config{
 		APIKey: "test-key",
-		Model:  "claude-sonnet-4-6-high",
+		Model:  "claude-opus-5-high",
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if driver.model != "claude-sonnet-4-6" {
-		t.Fatalf("driver.model = %q, want %q", driver.model, "claude-sonnet-4-6")
+	if driver.model != "claude-opus-5" {
+		t.Fatalf("driver.model = %q, want %q", driver.model, "claude-opus-5")
 	}
 	if driver.reasoning != "high" {
 		t.Fatalf("driver.reasoning = %q, want %q", driver.reasoning, "high")
+	}
+	if got := anthropicMinimumCacheableTokens(driver.model); got != 4096 {
+		t.Fatalf("anthropicMinimumCacheableTokens() = %d, want 4096", got)
+	}
+}
+
+func TestSupportsAnthropicStructuredOutputsByVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  bool
+	}{
+		{model: "claude-opus-5", want: true},
+		{model: "claude-opus-5-1", want: true},
+		{model: "claude-sonnet-4-6", want: true},
+		{model: "claude-haiku-4-5-20251001", want: true},
+		{model: "claude-sonnet-4-5", want: true},
+		{model: "claude-sonnet-4", want: false},
+		{model: "claude-3-5-sonnet", want: false},
+		{model: "claude-opus-4-1", want: false},
+		{model: "some-future-alias", want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := supportsAnthropicStructuredOutputs(tc.model); got != tc.want {
+				t.Fatalf("supportsAnthropicStructuredOutputs(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAnthropicMinimumCacheableTokensByVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model string
+		want  int
+	}{
+		{model: "claude-opus-5", want: 4096},
+		{model: "claude-opus-5-1", want: 4096},
+		{model: "claude-haiku-4-5", want: 4096},
+		{model: "claude-opus-4-5", want: 4096},
+		{model: "claude-sonnet-4-6", want: 2048},
+		{model: "claude-haiku-3-5", want: 2048},
+		{model: "claude-haiku-3", want: 2048},
+		{model: "claude-sonnet-4", want: 1024},
+		{model: "unknown-model", want: 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			if got := anthropicMinimumCacheableTokens(tc.model); got != tc.want {
+				t.Fatalf("anthropicMinimumCacheableTokens(%q) = %d, want %d", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseClaudeVersion(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		model       string
+		wantMajor   int
+		wantMinor   int
+		wantOK      bool
+	}{
+		{model: "claude-opus-5", wantMajor: 5, wantMinor: 0, wantOK: true},
+		{model: "claude-opus-5-1", wantMajor: 5, wantMinor: 1, wantOK: true},
+		{model: "claude-sonnet-4-6", wantMajor: 4, wantMinor: 6, wantOK: true},
+		{model: "claude-haiku-4-5-20251001", wantMajor: 4, wantMinor: 5, wantOK: true},
+		{model: "claude-3-5-sonnet", wantMajor: 3, wantMinor: 5, wantOK: true},
+		{model: "claude-sonnet-4", wantMajor: 4, wantMinor: 0, wantOK: true},
+		{model: "gpt-4o", wantOK: false},
+		{model: "some-future-alias", wantOK: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			t.Parallel()
+			major, minor, ok := parseClaudeVersion(tc.model)
+			if ok != tc.wantOK || major != tc.wantMajor || minor != tc.wantMinor {
+				t.Fatalf("parseClaudeVersion(%q) = (%d, %d, %v), want (%d, %d, %v)",
+					tc.model, major, minor, ok, tc.wantMajor, tc.wantMinor, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestNewRejectsOldClaudeWithoutStructuredOutputs(t *testing.T) {
+	t.Parallel()
+	if _, err := New(Config{APIKey: "test-key", Model: "claude-sonnet-4"}); err == nil {
+		t.Fatal("New() error = nil, want structured-outputs rejection")
+	}
+	if _, err := New(Config{APIKey: "test-key", Model: "claude-3-5-sonnet"}); err == nil {
+		t.Fatal("New() error = nil, want structured-outputs rejection")
 	}
 }
 
