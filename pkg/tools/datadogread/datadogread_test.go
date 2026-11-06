@@ -3,6 +3,7 @@ package datadogread
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -125,6 +126,65 @@ func TestNormalizeDatadogReadRequestAggregateLogsDefaultsCountAndGroupLimit(t *t
 	}
 	if got := req.GroupBy[0].Limit; got != datadogDefaultAggregateGroupLimit {
 		t.Fatalf("req.GroupBy[0].Limit = %d, want %d", got, datadogDefaultAggregateGroupLimit)
+	}
+}
+
+func TestNormalizeDatadogReadRequestAggregateLogsAllowsFourBoundedGroupBy(t *testing.T) {
+	t.Parallel()
+
+	limits := []int64{20, 1, 1, 5}
+	groupBy := make([]logsAggregateGroupByInput, 0, len(limits))
+	for i, limit := range limits {
+		groupBy = append(groupBy, logsAggregateGroupByInput{
+			Facet: fmt.Sprintf("facet_%d", i),
+			Limit: &limit,
+		})
+	}
+	req, err := NormalizeReadRequest(Input{
+		Action:  DatadogReadActionAggregateLogs,
+		Query:   "service:webby",
+		GroupBy: groupBy,
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("NormalizeReadRequest() error = %v", err)
+	}
+	if got := len(req.GroupBy); got != 4 {
+		t.Fatalf("len(req.GroupBy) = %d, want 4", got)
+	}
+}
+
+func TestNormalizeDatadogReadRequestAggregateLogsRejectsUnsafeGroupBy(t *testing.T) {
+	t.Parallel()
+
+	one := int64(1)
+	five := make([]logsAggregateGroupByInput, 5)
+	for i := range five {
+		five[i] = logsAggregateGroupByInput{Facet: fmt.Sprintf("facet_%d", i), Limit: &one}
+	}
+	_, err := NormalizeReadRequest(Input{
+		Action:  DatadogReadActionAggregateLogs,
+		Query:   "service:webby",
+		GroupBy: five,
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "at most 4") {
+		t.Fatalf("NormalizeReadRequest() error = %v, want four-facet limit error", err)
+	}
+
+	limits := []int64{20, 2, 1, 5}
+	groupBy := make([]logsAggregateGroupByInput, 0, len(limits))
+	for i, limit := range limits {
+		groupBy = append(groupBy, logsAggregateGroupByInput{
+			Facet: fmt.Sprintf("facet_%d", i),
+			Limit: &limit,
+		})
+	}
+	_, err = NormalizeReadRequest(Input{
+		Action:  DatadogReadActionAggregateLogs,
+		Query:   "service:webby",
+		GroupBy: groupBy,
+	}, time.Date(2026, 3, 15, 12, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "bucket product") {
+		t.Fatalf("NormalizeReadRequest() error = %v, want bucket-product error", err)
 	}
 }
 
