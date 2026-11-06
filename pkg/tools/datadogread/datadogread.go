@@ -23,7 +23,7 @@ const (
 	datadogDefaultAggregateGroupLimit = 10
 	datadogMaxAggregateGroupLimit     = 20
 	datadogMaxAggregateComputes       = 3
-	datadogMaxAggregateGroupBy        = 3
+	datadogMaxAggregateGroupBy        = 4
 	datadogMaxAggregateBucketProduct  = 100
 	datadogMaxAggregateIndexes        = 10
 )
